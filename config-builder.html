@@ -1,0 +1,1294 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>埋点配置生成器</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #eef6df;
+      --panel: rgba(255, 254, 246, 0.94);
+      --panel-solid: #fffef6;
+      --text: #263821;
+      --muted: #68785d;
+      --border: #d9ddb8;
+      --soft: #f5f7e6;
+      --soft-2: #fff8e8;
+      --accent: #5a8f27;
+      --accent-deep: #3c6f18;
+      --accent-2: #d9902f;
+      --danger: #d64d4d;
+      --code: #172232;
+      --shadow: 0 16px 48px rgba(70, 92, 43, 0.16);
+    }
+    * { box-sizing: border-box; }
+    html { min-height: 100%; }
+    body {
+      margin: 0;
+      min-height: 100%;
+      background:
+        linear-gradient(rgba(244, 250, 229, 0.72), rgba(232, 244, 214, 0.82)),
+        url("uidesign.png") top center / cover fixed no-repeat,
+        var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+      line-height: 1.5;
+    }
+    header {
+      padding: 24px 18px 10px;
+    }
+    .header-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      max-width: 1480px;
+      margin: 0 auto;
+      min-height: 132px;
+      padding: 22px 26px;
+      background:
+        linear-gradient(90deg, rgba(255, 253, 235, 0.96), rgba(251, 244, 201, 0.82) 52%, rgba(255, 255, 255, 0.58)),
+        linear-gradient(135deg, rgba(120, 169, 61, 0.16), rgba(255, 255, 255, 0));
+      border: 1px solid rgba(226, 220, 169, 0.9);
+      border-radius: 18px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(8px);
+    }
+    h1 {
+      margin: 0;
+      font-size: 32px;
+      line-height: 1.2;
+      letter-spacing: 0;
+      color: #3f5d22;
+    }
+    .subtle {
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .hero-copy {
+      display: grid;
+      gap: 8px;
+      max-width: 650px;
+    }
+    .hero-badge {
+      display: inline-flex;
+      width: fit-content;
+      padding: 4px 10px;
+      border: 1px solid #d7dda8;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.72);
+      color: #5b7c2a;
+      font-size: 12px;
+      font-weight: 800;
+    }
+    .hero-steps {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 4px;
+    }
+    .hero-steps span {
+      display: inline-flex;
+      align-items: center;
+      min-height: 28px;
+      padding: 0 10px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.7);
+      border: 1px solid rgba(214, 222, 174, 0.9);
+      color: #566b31;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    main {
+      max-width: 1480px;
+      margin: 0 auto;
+      padding: 14px 18px 24px;
+      display: grid;
+      grid-template-columns: minmax(0, 1.25fr) minmax(380px, 0.75fr);
+      gap: 16px;
+      align-items: start;
+    }
+    .stack {
+      display: grid;
+      gap: 14px;
+    }
+    section {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 8px 28px rgba(78, 98, 54, 0.09);
+      backdrop-filter: blur(8px);
+    }
+    .section-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+      padding: 15px 16px;
+      border-bottom: 1px solid var(--border);
+      background: linear-gradient(90deg, rgba(253, 252, 235, 0.98), rgba(246, 249, 225, 0.96));
+    }
+    h2 {
+      margin: 0;
+      font-size: 17px;
+      line-height: 1.2;
+      color: #496d20;
+    }
+    .body {
+      padding: 16px;
+      display: grid;
+      gap: 12px;
+    }
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+    }
+    label {
+      display: grid;
+      gap: 5px;
+      color: #344054;
+      font-size: 13px;
+      font-weight: 600;
+    }
+    input, select, textarea {
+      width: 100%;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 9px 11px;
+      font: inherit;
+      color: var(--text);
+      background: rgba(255, 255, 255, 0.86);
+      min-width: 0;
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
+    }
+    input:focus, select:focus, textarea:focus {
+      outline: 2px solid rgba(111, 164, 45, 0.24);
+      border-color: #91ad4f;
+    }
+    textarea {
+      resize: vertical;
+      min-height: 82px;
+      font-family: Consolas, "Cascadia Mono", monospace;
+      font-size: 13px;
+    }
+    button {
+      border: 1px solid #cfd8a2;
+      background: linear-gradient(#fffef6, #f7f8e8);
+      color: var(--text);
+      border-radius: 7px;
+      padding: 5px 9px;
+      font: inherit;
+      font-size: 13px;
+      font-weight: 650;
+      cursor: pointer;
+      white-space: nowrap;
+      min-height: 30px;
+    }
+    button:hover {
+      border-color: #9fb763;
+      background: #fbfff0;
+    }
+    .primary {
+      border-color: #4c8722;
+      background: linear-gradient(#75a83e, #4e8a22);
+      color: #ffffff;
+      box-shadow: 0 6px 16px rgba(70, 127, 34, 0.22);
+    }
+    .warn {
+      border-color: #f0c7a8;
+      color: #8a3b08;
+      background: #fff8f2;
+    }
+    .danger {
+      border-color: #efb0b0;
+      color: var(--danger);
+      background: #fff6f6;
+    }
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      align-items: center;
+    }
+    .header-row .toolbar button {
+      padding: 6px 10px;
+      min-height: 34px;
+    }
+    .table-wrap {
+      overflow-x: auto;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.62);
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 620px;
+    }
+    th, td {
+      border-top: 1px solid var(--border);
+      padding: 8px;
+      text-align: left;
+      vertical-align: top;
+      font-size: 13px;
+    }
+    thead th {
+      border-top: 0;
+      background: var(--soft);
+      color: #344054;
+    }
+    td.actions {
+      width: 1%;
+      white-space: nowrap;
+    }
+    .event-block, .alias-block, .group-block {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow: hidden;
+      background: rgba(255, 255, 255, 0.72);
+    }
+    .block-head {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 12px;
+      background: linear-gradient(90deg, #f7f7e7, #fffaf0);
+      border-bottom: 1px solid var(--border);
+    }
+    .block-title {
+      display: grid;
+      grid-template-columns: minmax(180px, 1fr) minmax(180px, 1fr);
+      gap: 8px;
+      width: 100%;
+    }
+    .count-badge {
+      display: inline-flex;
+      align-items: center;
+      width: fit-content;
+      min-height: 38px;
+      padding: 0 10px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: #ffffff;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .preview {
+      position: sticky;
+      top: 18px;
+    }
+    #jsonPreview {
+      min-height: 680px;
+      background: var(--code);
+      color: #eef2f6;
+      border-color: #263142;
+      border-radius: 10px;
+    }
+    .status {
+      min-height: 24px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .ok { color: var(--accent); }
+    .bad { color: var(--danger); }
+    .hint {
+      background: #fffaf0;
+      border: 1px solid #ead89b;
+      border-radius: 10px;
+      padding: 10px 12px;
+      color: #604510;
+      font-size: 13px;
+    }
+    .guide {
+      display: grid;
+      gap: 8px;
+      padding: 12px 14px;
+      border: 1px solid #dde5b6;
+      border-radius: 10px;
+      background: linear-gradient(180deg, rgba(252, 255, 239, 0.96), rgba(255, 251, 235, 0.94));
+      color: #405c23;
+      font-size: 13px;
+    }
+    .guide-title {
+      font-weight: 800;
+      color: #496d20;
+    }
+    .guide ol,
+    .guide ul {
+      margin: 0;
+      padding-left: 18px;
+    }
+    .guide li + li {
+      margin-top: 4px;
+    }
+    code {
+      padding: 1px 5px;
+      border-radius: 5px;
+      background: rgba(87, 112, 45, 0.1);
+      color: #31481d;
+      font-family: Consolas, "Cascadia Mono", monospace;
+      font-size: 0.95em;
+    }
+    .hidden {
+      display: none;
+    }
+    @media (max-width: 1100px) {
+      main {
+        grid-template-columns: 1fr;
+      }
+      .preview {
+        position: static;
+      }
+      #jsonPreview {
+        min-height: 420px;
+      }
+    }
+    @media (max-width: 720px) {
+      .header-row, .section-head, .block-head {
+        align-items: stretch;
+        flex-direction: column;
+      }
+      .grid-2, .grid-3, .block-title {
+        grid-template-columns: 1fr;
+      }
+      main {
+        padding: 12px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="header-row">
+      <div class="hero-copy">
+        <span class="hero-badge">Logcat Tracking QA</span>
+        <h1>埋点配置生成器</h1>
+        <div class="subtle">用表单生成 <code>field_mapping.json</code>。先选日志模板，再定义候选记录，最后配置字段映射并下载。</div>
+        <div class="hero-steps">
+          <span>1. 日志模板</span>
+          <span>2. 候选记录</span>
+          <span>3. 字段映射</span>
+          <span>4. 过滤与别名</span>
+          <span>5. 下载配置</span>
+        </div>
+      </div>
+      <div class="toolbar">
+        <input id="importFile" class="hidden" type="file" accept="application/json,.json">
+        <button id="importBtn" type="button">导入配置</button>
+        <button id="sampleBtn" type="button">载入样例</button>
+        <button id="copyBtn" type="button">复制 JSON</button>
+        <button id="downloadBtn" class="primary" type="button">下载 field_mapping.json</button>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <div class="stack">
+      <section>
+        <div class="section-head">
+          <div>
+            <h2>日志模板</h2>
+            <div class="subtle">不同模块日志格式不一样时，先选一个模板，再微调正则。</div>
+          </div>
+          <select id="parserPreset">
+            <option value="eventData">Event: id ... data</option>
+            <option value="trackUpload">TrackUpload eventId ... payload</option>
+            <option value="trackReport">TrackReport id ... name ... params</option>
+            <option value="custom">自定义</option>
+          </select>
+        </div>
+        <div class="body">
+          <div class="guide">
+            <div class="guide-title">怎么做</div>
+            <ol>
+              <li>先在右上角选择最接近你们日志的模板。当前默认支持 <code>Event: id ... data</code>。</li>
+              <li>如果模板不完全一样，只改 <code>lineRegex</code>。正则里必须有 <code>?P&lt;event_id&gt;</code> 分组。</li>
+              <li>如果日志是 <code>ClassName(a=1,b=2)</code>，通常只要抓到 <code>data</code> 就够；脚本会自动解析括号里的参数。</li>
+              <li>如果日志直接打印 <code>params=a=1,b=2</code>，就把参数段抓到 <code>params</code> 分组。</li>
+            </ol>
+          </div>
+          <label>
+            整行匹配正则 lineRegex
+            <input id="lineRegex" spellcheck="false">
+          </label>
+          <div class="grid-3">
+            <label>
+              eventId 分组名
+              <input id="eventIdGroup" placeholder="event_id">
+            </label>
+            <label>
+              data 分组名
+              <input id="dataGroup" placeholder="data">
+            </label>
+            <label>
+              eventName 分组名
+              <input id="eventNameGroup" placeholder="event_name">
+            </label>
+          </div>
+          <div class="grid-2">
+            <label>
+              params 分组名
+              <input id="paramsGroup" placeholder="params">
+            </label>
+            <label>
+              Key/Value 分隔符
+              <input id="keyValueSeparator" placeholder="=">
+            </label>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <div class="section-head">
+          <div>
+            <h2>候选记录 caseGroups</h2>
+            <div class="subtle">保证同一条日志的字段来自同一组业务数据，比如 res + cards + items。</div>
+          </div>
+          <button id="addGroupBtn" type="button">添加分组</button>
+        </div>
+        <div class="body">
+          <div class="guide">
+            <div class="guide-title">怎么做</div>
+            <ol>
+              <li>把一条业务数据拆成几层 alias。当前例子是 <code>res -> cards -> items</code>。</li>
+              <li>第一层如果想在整份 JSON 里找数组名，就填 <code>findListKey</code>，例如 alias=<code>res</code>、findListKey=<code>res</code>。</li>
+              <li>后续层级从上一层往下找，填 <code>from</code> 和 <code>path</code>，例如 from=<code>res</code>、path=<code>body.cards</code>。</li>
+              <li><code>findListKey</code> 和 <code>from/path</code> 是二选一。面板会自动清掉冲突项。</li>
+            </ol>
+          </div>
+          <div id="caseGroups" class="stack"></div>
+        </div>
+      </section>
+
+      <section>
+        <div class="section-head">
+          <div>
+            <h2>默认字段 fields</h2>
+            <div class="subtle">左边填 Logcat 字段名，右边填 JSON 路径。</div>
+          </div>
+          <button id="addFieldBtn" type="button">添加字段</button>
+        </div>
+        <div class="body">
+          <div class="guide">
+            <div class="guide-title">怎么做</div>
+            <ol>
+              <li>左列填 Logcat 参数名，例如 <code>resID</code>、<code>operationCardId</code>。</li>
+              <li>右列填 JSON 路径，第一段必须引用 caseGroups 里的 alias，例如 <code>res.id</code>、<code>cards.cardId</code>。</li>
+              <li>如果所有事件都校验同一批字段，只填这里就可以。</li>
+              <li>如果某些事件字段不同，到下面的 <code>fieldsByEventId</code> 单独配置。</li>
+            </ol>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Logcat 字段</th>
+                  <th>JSON 路径</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="fieldsBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <div class="section-head">
+          <div>
+            <h2>按事件覆盖 fieldsByEventId</h2>
+            <div class="subtle">事件字段可以合并默认字段，也可以完全覆盖默认字段。</div>
+          </div>
+          <div class="toolbar">
+            <select id="fieldMergeMode">
+              <option value="merge">合并默认字段</option>
+              <option value="override">覆盖默认字段</option>
+            </select>
+            <button id="addEventBtn" type="button">添加事件配置</button>
+          </div>
+        </div>
+        <div class="body">
+          <div class="guide">
+            <div class="guide-title">怎么做</div>
+            <ol>
+              <li>点击“添加事件配置”，先把 <code>eventId_1</code> 改成真实事件 ID。</li>
+              <li>推荐使用“合并默认字段”：公共字段放在上面的 <code>fields</code>，每个事件这里只填差异字段。</li>
+              <li>如果选择“覆盖默认字段”，该事件不会继承公共字段，必须把要校验的字段全部写全。</li>
+              <li>再点该事件里的“添加字段”，逐行填写这个事件的差异字段或完整字段。</li>
+              <li>旁边的“0 个字段”只是统计，不需要填。它会随着字段行数量自动变化。</li>
+            </ol>
+          </div>
+          <div id="eventsArea" class="stack"></div>
+        </div>
+      </section>
+
+      <section>
+        <div class="section-head">
+          <div>
+            <h2>日志过滤 lineFilters</h2>
+            <div class="subtle">同一个 eventId 被其它日志打印时，用类名或关键词过滤。</div>
+          </div>
+        </div>
+        <div class="body">
+          <div class="guide">
+            <div class="guide-title">怎么做</div>
+            <ol>
+              <li>一般优先配置“按事件包含”，用类名锁住真正的上报日志，例如 <code>88860004086008: MinePageCardClickEvent\(</code>。</li>
+              <li>如果某些调试日志也打印同一个 eventId，把它写进“按事件排除”。</li>
+              <li>全局包含/排除会影响所有事件，只有确定整页都适用时再填。</li>
+              <li>被过滤掉的日志会计入报告里的 <code>skippedByFilter</code>，不会污染 PASS/FAIL。</li>
+            </ol>
+          </div>
+          <div class="grid-2">
+            <label>
+              全局包含正则，每行一个
+              <textarea id="includeRegex" spellcheck="false"></textarea>
+            </label>
+            <label>
+              全局排除正则，每行一个
+              <textarea id="excludeRegex" spellcheck="false"></textarea>
+            </label>
+          </div>
+          <div class="grid-2">
+            <label>
+              按事件包含 includeByEventId
+              <textarea id="includeByEventId" spellcheck="false" placeholder="88860004086008: MinePageCardClickEvent\\("></textarea>
+            </label>
+            <label>
+              按事件排除 excludeByEventId
+              <textarea id="excludeByEventId" spellcheck="false" placeholder="88860004086008: DebugEvent\\("></textarea>
+            </label>
+          </div>
+          <div class="hint">按事件过滤格式：每行写 <code>eventId: 正则</code>。同一个 eventId 可以写多行。正则里的左括号建议写成 <code>\(</code>。</div>
+        </div>
+      </section>
+
+      <section>
+        <div class="section-head">
+          <div>
+            <h2>值别名 valueAliases</h2>
+            <div class="subtle">例如日志 cardType=1，但 JSON 是 large_normal。</div>
+          </div>
+          <button id="addAliasBtn" type="button">添加别名</button>
+        </div>
+        <div class="body">
+          <div class="guide">
+            <div class="guide-title">怎么做</div>
+            <ol>
+              <li>只有日志值和 JSON 值业务等价但字面不同的时候才填。</li>
+              <li>例子：字段名 <code>cardType</code>，日志值 <code>1</code>，JSON 等价值 <code>large_normal</code>。</li>
+              <li>多个 JSON 等价值用英文逗号分隔，例如 <code>large_normal, large_big</code>。</li>
+              <li>如果要求严格相等，就不要添加别名。</li>
+            </ol>
+          </div>
+          <div id="aliasesArea" class="stack"></div>
+        </div>
+      </section>
+    </div>
+
+    <section class="preview">
+      <div class="section-head">
+        <div>
+          <h2>JSON 预览</h2>
+          <div id="status" class="status">等待输入。</div>
+        </div>
+        <button id="formatBtn" type="button">格式化</button>
+      </div>
+      <div class="body">
+        <div class="guide">
+          <div class="guide-title">怎么用预览</div>
+          <ol>
+            <li>左侧每次修改都会实时生成 JSON。</li>
+            <li>如果你手动改右侧 JSON，点“格式化”会同步回左侧表单。</li>
+            <li>确认无误后点顶部“下载 field_mapping.json”，放到对应模块目录里使用。</li>
+          </ol>
+        </div>
+        <textarea id="jsonPreview" spellcheck="false"></textarea>
+        <div class="hint">高级用法：可以直接改右侧 JSON，再点“格式化”。如果 JSON 有语法错误，页面会提示。</div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const parserPresets = {
+      eventData: {
+        lineRegex: "Event:\\\\s*id:\\\\s*(?P<event_id>[^\\\\s]+)\\\\s+data:\\\\s*(?P<data>.+)",
+        eventIdGroup: "event_id",
+        dataGroup: "data",
+        eventNameGroup: "event_name",
+        paramsGroup: "params",
+        keyValueSeparator: "="
+      },
+      trackUpload: {
+        lineRegex: "TrackUpload\\\\s+eventId=(?P<event_id>\\\\d+)\\\\s+payload=(?P<data>.+)",
+        eventIdGroup: "event_id",
+        dataGroup: "data",
+        eventNameGroup: "event_name",
+        paramsGroup: "params",
+        keyValueSeparator: "="
+      },
+      trackReport: {
+        lineRegex: "TrackReport\\\\s+id=(?P<event_id>\\\\d+)\\\\s+name=(?P<event_name>\\\\w+)\\\\s+params=(?P<params>.+)",
+        eventIdGroup: "event_id",
+        dataGroup: "data",
+        eventNameGroup: "event_name",
+        paramsGroup: "params",
+        keyValueSeparator: "="
+      }
+    };
+
+    const sampleConfig = {
+      fields: {
+        cardType: "cards.cardType",
+        onPlanID: "res.planId",
+        resID: "res.id",
+        operationCardId: "cards.cardId",
+        resName: "res.planName",
+        dismissLogic: "items.disappearType",
+        contentPoolId: "items.contentPool.contentPoolId",
+        channelId: "items.link.channelId",
+        subChannelId: "items.link.subChannelId"
+      },
+      fieldsByEventId: {},
+      fieldMergeMode: "merge",
+      caseGroups: [
+        {
+          name: "my-page-card-item",
+          roots: [
+            { alias: "res", findListKey: "res" },
+            { alias: "cards", from: "res", path: "body.cards" },
+            { alias: "items", from: "cards", path: "items" }
+          ]
+        }
+      ],
+      logParser: parserPresets.eventData,
+      lineFilters: {
+        includeRegex: [],
+        excludeRegex: [],
+        includeByEventId: {
+          "88860004086008": ["MinePageCardClickEvent\\("]
+        },
+        excludeByEventId: {}
+      },
+      valueAliases: {
+        cardType: {
+          "1": ["large_normal"]
+        }
+      }
+    };
+
+    let config = clone(sampleConfig);
+    let isRendering = false;
+
+    const $ = (id) => document.getElementById(id);
+
+    function clone(value) {
+      return JSON.parse(JSON.stringify(value));
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;");
+    }
+
+    function cleanObject(object) {
+      return Object.fromEntries(
+        Object.entries(object || {}).filter(([key, value]) => {
+          if (!key) return false;
+          if (Array.isArray(value)) return value.length > 0;
+          if (value && typeof value === "object") return Object.keys(value).length > 0;
+          return value !== "";
+        })
+      );
+    }
+
+    function sanitizeRoot(root) {
+      const next = { ...(root || {}) };
+      for (const key of ["alias", "from", "path", "findListKey"]) {
+        if (typeof next[key] === "string") next[key] = next[key].trim();
+        if (!next[key]) delete next[key];
+      }
+      if (next.findListKey) {
+        delete next.from;
+        delete next.path;
+      }
+      if (!next.optional) delete next.optional;
+      return next;
+    }
+
+    function sanitizeCaseGroups(caseGroups) {
+      return (caseGroups || []).map((group) => ({
+        ...group,
+        roots: (group.roots || []).map(sanitizeRoot)
+      }));
+    }
+
+    function parseLines(text) {
+      return text.split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean);
+    }
+
+    function linesFromList(list) {
+      return (list || []).join("\n");
+    }
+
+    function parseEventRegexMap(text) {
+      const result = {};
+      for (const line of parseLines(text)) {
+        const index = line.indexOf(":");
+        if (index === -1) continue;
+        const eventId = line.slice(0, index).trim();
+        const pattern = line.slice(index + 1).trim();
+        if (!eventId || !pattern) continue;
+        if (!result[eventId]) result[eventId] = [];
+        result[eventId].push(pattern);
+      }
+      return result;
+    }
+
+    function eventRegexMapToLines(map) {
+      const lines = [];
+      for (const [eventId, patterns] of Object.entries(map || {})) {
+        for (const pattern of patterns || []) {
+          lines.push(`${eventId}: ${pattern}`);
+        }
+      }
+      return lines.join("\n");
+    }
+
+    function normalizeConfig(raw) {
+      const next = clone(sampleConfig);
+      next.fields = raw.fields && typeof raw.fields === "object" ? raw.fields : {};
+      next.fieldsByEventId = raw.fieldsByEventId && typeof raw.fieldsByEventId === "object" ? raw.fieldsByEventId : {};
+      next.fieldMergeMode = raw.fieldMergeMode === "merge" ? "merge" : "override";
+      next.caseGroups = Array.isArray(raw.caseGroups) ? sanitizeCaseGroups(raw.caseGroups) : [];
+      next.logParser = raw.logParser && typeof raw.logParser === "object" ? { ...parserPresets.eventData, ...raw.logParser } : clone(parserPresets.eventData);
+      next.lineFilters = raw.lineFilters && typeof raw.lineFilters === "object"
+        ? {
+            includeRegex: Array.isArray(raw.lineFilters.includeRegex) ? raw.lineFilters.includeRegex : [],
+            excludeRegex: Array.isArray(raw.lineFilters.excludeRegex) ? raw.lineFilters.excludeRegex : [],
+            includeByEventId: raw.lineFilters.includeByEventId || {},
+            excludeByEventId: raw.lineFilters.excludeByEventId || {}
+          }
+        : { includeRegex: [], excludeRegex: [], includeByEventId: {}, excludeByEventId: {} };
+      next.valueAliases = raw.valueAliases && typeof raw.valueAliases === "object" ? raw.valueAliases : {};
+      return next;
+    }
+
+    function setStatus(text, good = true) {
+      const status = $("status");
+      status.textContent = text;
+      status.className = good ? "status ok" : "status bad";
+    }
+
+    function makeFieldRows(fields, scope) {
+      const entries = Object.entries(fields || {});
+      if (!entries.length) {
+        return `<tr><td colspan="3" class="subtle">还没有字段。</td></tr>`;
+      }
+      return entries.map(([key, path], index) => `
+        <tr>
+          <td><input data-scope="${scope}" data-index="${index}" data-kind="field-key" value="${escapeHtml(key)}"></td>
+          <td><input data-scope="${scope}" data-index="${index}" data-kind="field-value" value="${escapeHtml(path)}"></td>
+          <td class="actions"><button class="danger" data-scope="${scope}" data-index="${index}" data-action="remove-field" type="button">删除</button></td>
+        </tr>
+      `).join("");
+    }
+
+    function renderParser() {
+      $("lineRegex").value = config.logParser.lineRegex || "";
+      $("eventIdGroup").value = config.logParser.eventIdGroup || "event_id";
+      $("dataGroup").value = config.logParser.dataGroup || "data";
+      $("eventNameGroup").value = config.logParser.eventNameGroup || "event_name";
+      $("paramsGroup").value = config.logParser.paramsGroup || "params";
+      $("keyValueSeparator").value = config.logParser.keyValueSeparator || "=";
+    }
+
+    function renderCaseGroups() {
+      const area = $("caseGroups");
+      if (!config.caseGroups.length) {
+        area.innerHTML = `<div class="subtle">还没有 caseGroup。点击“添加分组”。</div>`;
+        return;
+      }
+      area.innerHTML = config.caseGroups.map((group, groupIndex) => `
+        <div class="group-block">
+          <div class="block-head">
+            <div class="block-title">
+              <input data-kind="group-name" data-group="${groupIndex}" value="${escapeHtml(group.name || "")}" placeholder="分组名">
+              <span class="count-badge">${escapeHtml((group.roots || []).map((root) => root.alias).filter(Boolean).join(" -> ") || "还没有层级")}</span>
+            </div>
+            <div class="toolbar">
+              <button data-action="add-root" data-group="${groupIndex}" type="button">添加层级</button>
+              <button class="danger" data-action="remove-group" data-group="${groupIndex}" type="button">删除分组</button>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>alias</th>
+                  <th>from</th>
+                  <th>path</th>
+                  <th>findListKey</th>
+                  <th>optional</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${(group.roots || []).map((root, rootIndex) => `
+                  <tr>
+                    <td><input data-kind="root-alias" data-group="${groupIndex}" data-root="${rootIndex}" value="${escapeHtml(root.alias || "")}" placeholder="res"></td>
+                    <td><input data-kind="root-from" data-group="${groupIndex}" data-root="${rootIndex}" value="${escapeHtml(root.from || "")}" placeholder="上一层 alias"></td>
+                    <td><input data-kind="root-path" data-group="${groupIndex}" data-root="${rootIndex}" value="${escapeHtml(root.path || "")}" placeholder="body.cards"></td>
+                    <td><input data-kind="root-find" data-group="${groupIndex}" data-root="${rootIndex}" value="${escapeHtml(root.findListKey || "")}" placeholder="res"></td>
+                    <td>
+                      <select data-kind="root-optional" data-group="${groupIndex}" data-root="${rootIndex}">
+                        <option value="false" ${root.optional ? "" : "selected"}>否</option>
+                        <option value="true" ${root.optional ? "selected" : ""}>是</option>
+                      </select>
+                    </td>
+                    <td class="actions"><button class="danger" data-action="remove-root" data-group="${groupIndex}" data-root="${rootIndex}" type="button">删除</button></td>
+                  </tr>
+                `).join("")}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      `).join("");
+    }
+
+    function renderFields() {
+      $("fieldsBody").innerHTML = makeFieldRows(config.fields, "global");
+    }
+
+    function renderEvents() {
+      const area = $("eventsArea");
+      $("fieldMergeMode").value = config.fieldMergeMode || "override";
+      const entries = Object.entries(config.fieldsByEventId || {});
+      if (!entries.length) {
+        area.innerHTML = `<div class="subtle">还没有事件覆盖配置。只有字段完全相同的页面可以不填这里。</div>`;
+        return;
+      }
+      area.innerHTML = entries.map(([eventId, fields], eventIndex) => `
+        <div class="event-block">
+          <div class="block-head">
+            <div class="block-title">
+              <input data-kind="event-id" data-event="${eventIndex}" value="${escapeHtml(eventId)}" placeholder="eventId">
+              <span class="count-badge">${Object.keys(fields || {}).length} 个字段</span>
+            </div>
+            <div class="toolbar">
+              <button data-action="add-event-field" data-event="${eventIndex}" type="button">添加字段</button>
+              <button class="danger" data-action="remove-event" data-event="${eventIndex}" type="button">删除事件</button>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Logcat 字段</th>
+                  <th>JSON 路径</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${makeFieldRows(fields, `event:${eventIndex}`)}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      `).join("");
+    }
+
+    function renderFilters() {
+      const filters = config.lineFilters || {};
+      $("includeRegex").value = linesFromList(filters.includeRegex);
+      $("excludeRegex").value = linesFromList(filters.excludeRegex);
+      $("includeByEventId").value = eventRegexMapToLines(filters.includeByEventId);
+      $("excludeByEventId").value = eventRegexMapToLines(filters.excludeByEventId);
+    }
+
+    function renderAliases() {
+      const area = $("aliasesArea");
+      const entries = [];
+      for (const [field, aliases] of Object.entries(config.valueAliases || {})) {
+        for (const [logValue, expectedValues] of Object.entries(aliases || {})) {
+          entries.push({ field, logValue, expectedValues: expectedValues || [] });
+        }
+      }
+      if (!entries.length) {
+        area.innerHTML = `<div class="subtle">还没有值别名。</div>`;
+        return;
+      }
+      area.innerHTML = entries.map((entry, index) => `
+        <div class="alias-block">
+          <div class="body">
+            <div class="grid-3">
+              <label>
+                字段名
+                <input data-kind="alias-field" data-alias="${index}" value="${escapeHtml(entry.field)}" placeholder="cardType">
+              </label>
+              <label>
+                日志值
+                <input data-kind="alias-log" data-alias="${index}" value="${escapeHtml(entry.logValue)}" placeholder="1">
+              </label>
+              <label>
+                JSON 等价值，英文逗号分隔
+                <input data-kind="alias-values" data-alias="${index}" value="${escapeHtml(entry.expectedValues.join(", "))}" placeholder="large_normal">
+              </label>
+            </div>
+            <button class="danger" data-action="remove-alias" data-alias="${index}" type="button">删除别名</button>
+          </div>
+        </div>
+      `).join("");
+    }
+
+    function configToAliasEntries() {
+      const entries = [];
+      for (const [field, aliases] of Object.entries(config.valueAliases || {})) {
+        for (const [logValue, expectedValues] of Object.entries(aliases || {})) {
+          entries.push({ field, logValue, expectedValues: expectedValues || [] });
+        }
+      }
+      return entries;
+    }
+
+    function aliasEntriesToConfig(entries) {
+      const next = {};
+      for (const entry of entries) {
+        if (!entry.field || !entry.logValue || !entry.expectedValues.length) continue;
+        if (!next[entry.field]) next[entry.field] = {};
+        next[entry.field][entry.logValue] = entry.expectedValues;
+      }
+      config.valueAliases = next;
+    }
+
+    function renderPreview() {
+      const output = clone(config);
+      output.fields = cleanObject(output.fields);
+      output.fieldsByEventId = cleanObject(output.fieldsByEventId);
+      output.fieldMergeMode = config.fieldMergeMode || "override";
+      output.caseGroups = sanitizeCaseGroups(output.caseGroups);
+      output.valueAliases = cleanObject(output.valueAliases);
+      $("jsonPreview").value = JSON.stringify(output, null, 2);
+      setStatus("JSON 已生成。", true);
+    }
+
+    function renderAll() {
+      isRendering = true;
+      renderParser();
+      renderCaseGroups();
+      renderFields();
+      renderEvents();
+      renderFilters();
+      renderAliases();
+      renderPreview();
+      isRendering = false;
+    }
+
+    function objectEntriesForScope(scope) {
+      if (scope === "global") return Object.entries(config.fields || {});
+      if (scope.startsWith("event:")) {
+        const eventIndex = Number(scope.split(":")[1]);
+        const eventId = Object.keys(config.fieldsByEventId || {})[eventIndex];
+        return Object.entries((config.fieldsByEventId || {})[eventId] || {});
+      }
+      return [];
+    }
+
+    function setFieldsForScope(scope, entries) {
+      const nextFields = Object.fromEntries(entries.filter(([key]) => key));
+      if (scope === "global") {
+        config.fields = nextFields;
+        return;
+      }
+      if (scope.startsWith("event:")) {
+        const eventIndex = Number(scope.split(":")[1]);
+        const eventIds = Object.keys(config.fieldsByEventId || {});
+        const eventId = eventIds[eventIndex];
+        if (eventId) config.fieldsByEventId[eventId] = nextFields;
+      }
+    }
+
+    function handleInput(target) {
+      const kind = target.dataset.kind;
+
+      if (["lineRegex", "eventIdGroup", "dataGroup", "eventNameGroup", "paramsGroup", "keyValueSeparator"].includes(target.id)) {
+        config.logParser[target.id] = target.value;
+        renderPreview();
+        return;
+      }
+
+      if (target.id === "fieldMergeMode") {
+        config.fieldMergeMode = target.value === "merge" ? "merge" : "override";
+        renderPreview();
+        return;
+      }
+
+      if (!kind && !["includeRegex", "excludeRegex", "includeByEventId", "excludeByEventId", "fieldMergeMode"].includes(target.id)) return;
+
+      if (kind === "field-key" || kind === "field-value") {
+        const entries = objectEntriesForScope(target.dataset.scope);
+        const index = Number(target.dataset.index);
+        if (!entries[index]) return;
+        if (kind === "field-key") entries[index][0] = target.value.trim();
+        if (kind === "field-value") entries[index][1] = target.value.trim();
+        setFieldsForScope(target.dataset.scope, entries);
+        renderPreview();
+        return;
+      }
+
+      if (kind === "event-id") {
+        const eventIndex = Number(target.dataset.event);
+        const eventIds = Object.keys(config.fieldsByEventId || {});
+        const oldId = eventIds[eventIndex];
+        const newId = target.value.trim();
+        if (!oldId || !newId || oldId === newId) return;
+        const value = config.fieldsByEventId[oldId];
+        delete config.fieldsByEventId[oldId];
+        config.fieldsByEventId[newId] = value;
+        renderPreview();
+        return;
+      }
+
+      if (kind === "group-name") {
+        const group = config.caseGroups[Number(target.dataset.group)];
+        if (group) group.name = target.value.trim();
+        renderPreview();
+        return;
+      }
+
+      if (kind && kind.startsWith("root-")) {
+        const group = config.caseGroups[Number(target.dataset.group)];
+        const root = group && group.roots[Number(target.dataset.root)];
+        if (!root) return;
+        if (kind === "root-alias") root.alias = target.value.trim();
+        if (kind === "root-from") {
+          root.from = target.value.trim();
+          if (root.from) delete root.findListKey;
+        }
+        if (kind === "root-path") {
+          root.path = target.value.trim();
+          if (root.path) delete root.findListKey;
+        }
+        if (kind === "root-find") {
+          root.findListKey = target.value.trim();
+          if (root.findListKey) {
+            delete root.from;
+            delete root.path;
+            const row = target.closest("tr");
+            if (row) {
+              const fromInput = row.querySelector('[data-kind="root-from"]');
+              const pathInput = row.querySelector('[data-kind="root-path"]');
+              if (fromInput) fromInput.value = "";
+              if (pathInput) pathInput.value = "";
+            }
+          }
+        }
+        if (kind === "root-optional") root.optional = target.value === "true";
+        if ((kind === "root-from" || kind === "root-path") && (root.from || root.path)) {
+          const row = target.closest("tr");
+          if (row) {
+            const findInput = row.querySelector('[data-kind="root-find"]');
+            if (findInput) findInput.value = "";
+          }
+        }
+        for (const key of ["from", "path", "findListKey"]) {
+          if (!root[key]) delete root[key];
+        }
+        if (!root.optional) delete root.optional;
+        renderPreview();
+        return;
+      }
+
+      if (["includeRegex", "excludeRegex", "includeByEventId", "excludeByEventId"].includes(target.id)) {
+        config.lineFilters = config.lineFilters || {};
+        if (target.id === "includeRegex") config.lineFilters.includeRegex = parseLines(target.value);
+        if (target.id === "excludeRegex") config.lineFilters.excludeRegex = parseLines(target.value);
+        if (target.id === "includeByEventId") config.lineFilters.includeByEventId = parseEventRegexMap(target.value);
+        if (target.id === "excludeByEventId") config.lineFilters.excludeByEventId = parseEventRegexMap(target.value);
+        renderPreview();
+        return;
+      }
+
+      if (kind && kind.startsWith("alias-")) {
+        const entries = configToAliasEntries();
+        const entry = entries[Number(target.dataset.alias)];
+        if (!entry) return;
+        if (kind === "alias-field") entry.field = target.value.trim();
+        if (kind === "alias-log") entry.logValue = target.value.trim();
+        if (kind === "alias-values") entry.expectedValues = target.value.split(",").map((item) => item.trim()).filter(Boolean);
+        aliasEntriesToConfig(entries);
+        renderPreview();
+      }
+    }
+
+    function handleClick(target) {
+      const action = target.dataset.action;
+      if (!action) return;
+
+      if (action === "remove-field") {
+        const entries = objectEntriesForScope(target.dataset.scope);
+        entries.splice(Number(target.dataset.index), 1);
+        setFieldsForScope(target.dataset.scope, entries);
+      }
+      if (action === "add-event-field") {
+        const eventIndex = Number(target.dataset.event);
+        const eventId = Object.keys(config.fieldsByEventId || {})[eventIndex];
+        config.fieldsByEventId[eventId][`field${Object.keys(config.fieldsByEventId[eventId]).length + 1}`] = "";
+      }
+      if (action === "remove-event") {
+        const eventIndex = Number(target.dataset.event);
+        const eventId = Object.keys(config.fieldsByEventId || {})[eventIndex];
+        delete config.fieldsByEventId[eventId];
+      }
+      if (action === "add-root") {
+        const group = config.caseGroups[Number(target.dataset.group)];
+        group.roots.push({ alias: "", path: "" });
+      }
+      if (action === "remove-root") {
+        const group = config.caseGroups[Number(target.dataset.group)];
+        group.roots.splice(Number(target.dataset.root), 1);
+      }
+      if (action === "remove-group") {
+        config.caseGroups.splice(Number(target.dataset.group), 1);
+      }
+      if (action === "remove-alias") {
+        const entries = configToAliasEntries();
+        entries.splice(Number(target.dataset.alias), 1);
+        aliasEntriesToConfig(entries);
+      }
+      renderAll();
+    }
+
+    function addGlobalField() {
+      const key = `field${Object.keys(config.fields || {}).length + 1}`;
+      config.fields[key] = "";
+      renderAll();
+    }
+
+    function addEventConfig() {
+      let index = Object.keys(config.fieldsByEventId || {}).length + 1;
+      let eventId = `eventId_${index}`;
+      while (config.fieldsByEventId[eventId]) {
+        index += 1;
+        eventId = `eventId_${index}`;
+      }
+      config.fieldsByEventId[eventId] = {};
+      renderAll();
+    }
+
+    function addCaseGroup() {
+      config.caseGroups.push({ name: `case-group-${config.caseGroups.length + 1}`, roots: [{ alias: "", path: "" }] });
+      renderAll();
+    }
+
+    function addAlias() {
+      const entries = configToAliasEntries();
+      entries.push({ field: "fieldName", logValue: "logValue", expectedValues: ["jsonValue"] });
+      aliasEntriesToConfig(entries);
+      renderAll();
+    }
+
+    function downloadJson() {
+      const blob = new Blob([$("jsonPreview").value], { type: "application/json;charset=utf-8" });
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = "field_mapping.json";
+      link.click();
+      URL.revokeObjectURL(link.href);
+      setStatus("已生成 field_mapping.json 下载。", true);
+    }
+
+    async function copyJson() {
+      try {
+        await navigator.clipboard.writeText($("jsonPreview").value);
+        setStatus("JSON 已复制。", true);
+      } catch {
+        $("jsonPreview").select();
+        document.execCommand("copy");
+        setStatus("JSON 已复制。", true);
+      }
+    }
+
+    function formatPreview() {
+      try {
+        config = normalizeConfig(JSON.parse($("jsonPreview").value));
+        renderAll();
+        setStatus("JSON 格式正确，已同步到表单。", true);
+      } catch (error) {
+        setStatus(`JSON 语法错误：${error.message}`, false);
+      }
+    }
+
+    function importConfig(file) {
+      const reader = new FileReader();
+      reader.onload = () => {
+        try {
+          config = normalizeConfig(JSON.parse(String(reader.result || "{}")));
+          renderAll();
+          setStatus(`已导入 ${file.name}。`, true);
+        } catch (error) {
+          setStatus(`导入失败：${error.message}`, false);
+        }
+      };
+      reader.readAsText(file, "utf-8");
+    }
+
+    function bindEvents() {
+      document.body.addEventListener("input", (event) => {
+        if (isRendering) return;
+        handleInput(event.target);
+      });
+      document.body.addEventListener("change", (event) => {
+        if (isRendering) return;
+        if (event.target.id === "parserPreset") {
+          const preset = parserPresets[event.target.value];
+          if (preset) {
+            config.logParser = clone(preset);
+            renderAll();
+          }
+          return;
+        }
+        handleInput(event.target);
+      });
+      document.body.addEventListener("click", (event) => {
+        handleClick(event.target);
+      });
+      $("addFieldBtn").addEventListener("click", addGlobalField);
+      $("addEventBtn").addEventListener("click", addEventConfig);
+      $("addGroupBtn").addEventListener("click", addCaseGroup);
+      $("addAliasBtn").addEventListener("click", addAlias);
+      $("downloadBtn").addEventListener("click", downloadJson);
+      $("copyBtn").addEventListener("click", copyJson);
+      $("formatBtn").addEventListener("click", formatPreview);
+      $("sampleBtn").addEventListener("click", () => {
+        config = clone(sampleConfig);
+        renderAll();
+      });
+      $("importBtn").addEventListener("click", () => $("importFile").click());
+      $("importFile").addEventListener("change", (event) => {
+        const file = event.target.files && event.target.files[0];
+        if (file) importConfig(file);
+        event.target.value = "";
+      });
+    }
+
+    bindEvents();
+    renderAll();
+  </script>
+</body>
+</html>

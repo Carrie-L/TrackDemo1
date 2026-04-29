@@ -1,0 +1,61 @@
+{
+  "fields": {
+    "cardType": "cards.cardType",
+    "onPlanID": "res.planId",
+    "resID": "res.id",
+    "operationCardId": "cards.cardId",
+    "resName": "res.planName",
+    "dismissLogic": "items.disappearType",
+    "contentPoolId": "items.contentPool.contentPoolId",
+    "channelId": "items.link.channelId",
+    "subChannelId": "items.link.subChannelId"
+  },
+  "fieldsByEventId": {},
+  "fieldMergeMode": "merge",
+  "caseGroups": [
+    {
+      "name": "my-page-card-item",
+      "roots": [
+        {
+          "alias": "res",
+          "findListKey": "res"
+        },
+        {
+          "alias": "cards",
+          "from": "res",
+          "path": "body.cards"
+        },
+        {
+          "alias": "items",
+          "from": "cards",
+          "path": "items"
+        }
+      ]
+    }
+  ],
+  "logParser": {
+    "lineRegex": "Event:\\s*id:\\s*(?P<event_id>[^\\s]+)\\s+data:\\s*(?P<data>.+)",
+    "eventIdGroup": "event_id",
+    "dataGroup": "data",
+    "eventNameGroup": "event_name",
+    "paramsGroup": "params",
+    "keyValueSeparator": "="
+  },
+  "lineFilters": {
+    "includeRegex": [],
+    "excludeRegex": [],
+    "includeByEventId": {
+      "88860004086008": [
+        "MinePageCardClickEvent\\("
+      ]
+    },
+    "excludeByEventId": {}
+  },
+  "valueAliases": {
+    "cardType": {
+      "1": [
+        "large_normal"
+      ]
+    }
+  }
+}

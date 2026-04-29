@@ -1,0 +1,40 @@
+{
+  "data": {
+    "myPage": [
+      {
+        "key": "login",
+        "res": [
+          {
+            "id": "829731",
+            "planId": "112729",
+            "planName": "20260408-我的顶部氛围投放",
+            "code": "login",
+            "body": {
+              "cards": [
+                {
+                  "cardId": "a_47jc0",
+                  "cardType": "large_normal",
+                  "items": [
+                    {
+                      "cardId": "a_4forv",
+                      "itemId": "829731_a_47jc0",
+                      "disappearType": "0",
+                      "contentPool": {
+                        "contentPoolId": "123"
+                      },
+                      "link": {
+                        "linkUrl": "baidu.com",
+                        "channelId": "",
+                        "subChannelId": ""
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

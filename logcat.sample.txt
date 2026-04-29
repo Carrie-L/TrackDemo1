@@ -1,0 +1,1 @@
+Event: id: 88860004086008 data: MinePageCardClickEvent(cardName=大单卡, rank=4, cardType=1, onPlanID=4754, type=open, notificationNum=,resID=6065, operationCardId=a_tuni, operationCardType=1, resName=20260408-我的顶部氛围投放, cardState=1, dismissLogic=0, contentPoolId=,channelId=,subChannelId)
