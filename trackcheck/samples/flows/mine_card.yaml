@@ -1,0 +1,17 @@
+# Maestro 自动化示例：进入"我的"页 → 曝光卡片 → 点击卡片
+# 运行：python trackcheck.py run --spec samples/trackcheck.yaml --case 我的页卡片 --pull -- maestro test samples/flows/mine_card.yaml
+appId: com.example.app
+---
+- launchApp:
+    clearState: false
+- tapOn: "我的"
+- waitForAnimationToEnd
+- scrollUntilVisible:
+    element: "大单卡"
+    direction: DOWN
+- tapOn: "大单卡"
+- back
+- tapOn:
+    id: "com.example.app:id/search_box"
+- inputText: "露营"
+- pressKey: Enter

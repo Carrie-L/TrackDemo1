@@ -1,0 +1,61 @@
+# trackcheck infer 自动生成的规则草稿 —— 请逐条确认，尤其是 TODO 和注释提示
+# 日志: C:\Users\windows\.gemini\antigravity\scratch\trackcheck\samples\session.log   生成时间: 2026-11-20 01:37:27
+
+sources:
+  mine_page: {type: json_file, path: "C:\\Users\\windows\\.gemini\\antigravity\\scratch\\trackcheck\\samples\\api_dump\\mine_page.json"}
+  app_db: {type: sqlite, path: "C:\\Users\\windows\\.gemini\\antigravity\\scratch\\trackcheck\\samples\\app.db"}
+
+events:
+  "88860004086007":
+    name: "MinePageCardExposeEvent"   # TODO 改成文档里的点位名称
+    # 本次日志出现 5 次；主数据源 mine_page
+    context:
+      res: {from: "mine_page", path: "data.myPage[*].res[*]", where: {id: "{resID}"}}
+      card: {from: "res", path: "body.cards[*]", where: {cardId: "{operationCardId}"}}
+    fields:
+      cardName: {enum: ["大单卡"]}   # TODO 接口/DB 里没找到，多半是文档定义值：按文档补全枚举，或引用文档字典
+      cardType: {from: "card.cardType", map: {large_normal: "1"}}   # 请确认: 接口值与上报值不同（如 'large_normal' → '1'），已按本次观测生成本点位专用映射表，请对照文档补全；3/4 次一致，其余出现的值对不上，可能是埋点 bug，请看报告
+      onPlanID: {from: "res.planId"}   # 请确认: 3/4 次一致，其余出现的值对不上，可能是埋点 bug，请看报告
+      resID: {from: "res.id"}   # 定位键
+      operationCardId: {from: "card.cardId"}   # 定位键
+      resName: {from: "res.planName"}
+      dismissLogic: {from: "card.items[0].disappearType"}   # 请确认: 短值 '0' 按值匹配到，字段名不同，请确认
+      contentPoolId: {from: "card.items[0].contentPool.contentPoolId"}
+      channelId: {from: "card.items[0].link.channelId"}
+      subChannelId: {from: "card.items[0].link.subChannelId"}
+  "88860004086008":
+    name: "MinePageCardClickEvent"   # TODO 改成文档里的点位名称
+    # 本次日志出现 2 次；主数据源 mine_page
+    context:
+      res: {from: "mine_page", path: "data.myPage[*].res[*]", where: {id: "{resID}"}}
+      card: {from: "res", path: "body.cards[*]", where: {cardId: "{operationCardId}"}}
+    fields:
+      cardName: {enum: ["大单卡"]}   # TODO 接口/DB 里没找到，多半是文档定义值：按文档补全枚举，或引用文档字典
+      rank: {enum: ["4", "0"]}   # TODO 接口/DB 里没找到，多半是文档定义值：按文档补全枚举，或引用文档字典
+      cardType: {from: "card.cardType", map: {large_normal: "1"}}   # 请确认: 接口值与上报值不同（如 'large_normal' → '1'），已按本次观测生成本点位专用映射表，请对照文档补全
+      onPlanID: {from: "res.planId"}
+      type: {enum: ["open", "opne"]}   # TODO 接口/DB 里没找到，多半是文档定义值：按文档补全枚举，或引用文档字典
+      notificationNum: {enum: ["3"]}   # TODO 接口/DB 里没找到，多半是文档定义值：按文档补全枚举，或引用文档字典
+      resID: {from: "res.id"}   # 定位键
+      operationCardId: {from: "card.cardId"}   # 定位键
+      operationCardType: {enum: ["1"]}   # TODO 接口/DB 里没找到，多半是文档定义值：按文档补全枚举，或引用文档字典
+      resName: {from: "res.planName"}   # 请确认: 1/2 次一致，其余出现的值对不上，可能是埋点 bug，请看报告
+      cardState: {enum: ["1"]}   # TODO 接口/DB 里没找到，多半是文档定义值：按文档补全枚举，或引用文档字典
+      dismissLogic: {from: "card.items[0].disappearType"}   # 请确认: 短值 '0' 按值匹配到，字段名不同，请确认
+      contentPoolId: {from: "card.items[0].contentPool.contentPoolId"}
+      channelId: {from: "card.items[0].link.channelId"}
+      subChannelId: {from: "card.items[0].link.subChannelId"}
+  "88860001000001":
+    name: "SearchBoxClickEvent"   # TODO 改成文档里的点位名称
+    # 本次日志出现 2 次；未在接口 JSON 中定位到
+    fields:
+      source: {enum: ["1", "5"]}   # TODO 接口/DB 里没找到，多半是文档定义值：按文档补全枚举，或引用文档字典
+      page: {enum: ["mine", "home"]}   # TODO 接口/DB 里没找到，多半是文档定义值：按文档补全枚举，或引用文档字典
+      keyword: {enum: ["露营"]}   # TODO 接口/DB 里没找到，多半是文档定义值：按文档补全枚举，或引用文档字典
+  "88860009999999":
+    name: "88860009999999"   # TODO 改成文档里的点位名称
+    # 本次日志出现 1 次；未在接口 JSON 中定位到
+    fields:
+      page: {enum: ["mine"]}   # TODO 接口/DB 里没找到，多半是文档定义值：按文档补全枚举，或引用文档字典
+      action: {enum: ["pull_refresh"]}   # TODO 接口/DB 里没找到，多半是文档定义值：按文档补全枚举，或引用文档字典
+      duration: {enum: ["320"]}   # TODO 接口/DB 里没找到，多半是文档定义值：按文档补全枚举，或引用文档字典

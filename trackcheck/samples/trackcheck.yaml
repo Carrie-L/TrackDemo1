@@ -1,0 +1,113 @@
+# =====================================================================
+# trackcheck 规则文件（示例）
+# 一个点位 = context（去接口 JSON 里定位数据） + fields（每个字段怎么校验）
+# 点位多了可以拆文件：include: ["events/*.yaml"]
+# =====================================================================
+
+options:
+  null_equals_empty: true     # 上报 null 和 "" 视为相等
+  strict_fields: false        # true 时：上报了规则里没定义的字段算失败
+
+log:
+  # 从 logcat 里识别埋点行的正则，必须包含 id、data 两个命名分组
+  # data 支持：Kotlin data class toString、JSON、HashMap.toString
+  pattern: 'Event:\s*id:\s*(?P<id>\d+)\s*data:\s*(?P<data>.*?)\s*$'
+  logcat_args: []             # 例如 ["-s", "Tracker:D"] 只抓某个 TAG
+
+device:                       # trackcheck.py pull 用
+  package: com.example.app
+  pull:
+    - remote: databases/app.db                 # 相对路径 = 应用私有目录，用 run-as 读取（debug 包可用），自动带上 -wal/-shm
+      local: app.db
+    - remote: /sdcard/Android/data/com.example.app/files/api_dump/.   # ApiDumpInterceptor 写出的接口 JSON
+      local: api_dump/
+
+sources:
+  mine_api:                   # 接口返回的 JSON 文件（path 支持通配符，取最新的一个）
+    type: json_file
+    path: api_dump/mine_page.json
+  app_db:                     # 从手机拉下来的 SQLite
+    type: sqlite
+    path: app.db
+  mine_api_cache:             # 接口 JSON 被 App 缓存在 DB 某张表里
+    type: sqlite_json
+    db: app_db
+    sql: SELECT content FROM api_cache WHERE cache_key = 'mine_page' ORDER BY updated_at DESC LIMIT 1
+
+# ---------------- 字典：像标签一样挂在点位上（events = 哪些点位用它）----------------
+# 只有一个点位用的枚举，直接写在字段里：cardState: {enum: {0: 未领取, 1: 已领取}}
+dicts:
+  source:
+    desc: 搜索框点击来源
+    events: [88860001000001]
+    items: {1: 首页, 2: 搜索框, 3: 我的页, 4: 桌面}
+  page:
+    events: [88860001000001]
+    items: {home: 首页, mine: 我的页, search: 搜索页}
+  card_type:                  # 接口 cardType  ->  埋点 cardType
+    desc: 我的页卡片类型映射
+    events: [88860004086007, 88860004086008]
+    items: {large_normal: 1, small_normal: 2, double_column: 3}
+  card_type_name:             # 埋点 cardType  ->  埋点 cardName
+    events: [88860004086007, 88860004086008]
+    items: {1: 大单卡, 2: 小单卡, 3: 双列卡}
+
+# ---------------- 可复用模板：曝光/点击共用一套字段 ----------------
+templates:
+  mine_card:
+    context:
+      # 用上报的 resID 在接口里找到对应资源位节点，再用 operationCardId 找到卡片
+      res:  {from: mine_api, path: "data.myPage[*].res[*]", where: {id: "{resID}"}}
+      card: {from: res, path: "body.cards[*]", where: {cardId: "{operationCardId}"}}
+      item: {from: card, path: "items[0]"}
+    fields:
+      resID:           {from: res.id, desc: 资源位ID}
+      onPlanID:        {from: res.planId, desc: 投放计划ID}
+      resName:         {from: res.planName, desc: 投放计划名称}
+      operationCardId: {from: card.cardId, desc: 运营卡片ID}
+      cardType:        {from: card.cardType, map: card_type, desc: 卡片类型}
+      cardName:        {from: card.cardType, map: [card_type, card_type_name], desc: 卡片名称}
+      dismissLogic:    {from: item.disappearType, desc: 消失逻辑}
+      contentPoolId:   {from: item.contentPool.contentPoolId, desc: 内容池ID}
+      channelId:       {from: item.link.channelId, desc: 渠道ID}
+      subChannelId:    {from: item.link.subChannelId, desc: 子渠道ID}
+
+# ---------------- 点位 ----------------
+events:
+  88860004086007:
+    name: 我的页-卡片曝光
+    extends: mine_card
+    dedupe: [resID, operationCardId]   # 同一张卡 2 秒内重复曝光给警告
+    dedupe_window: 2
+
+  88860004086008:
+    name: 我的页-卡片点击
+    extends: mine_card
+    context:
+      # 演示：点击事件改用 DB 里缓存的接口 JSON 来定位（其余 context 继承模板）
+      res: {from: mine_api_cache, path: "data.myPage[*].res[*]", where: {id: "{resID}"}}
+    fields:
+      rank:              {type: int, range: [1, 20], desc: 卡片位置（从1开始）}
+      type:              {enum: [open, close], desc: 点击类型}
+      notificationNum:   {type: int, desc: 角标数（可为空）}
+      operationCardType: {enum: [1, 2], desc: 运营卡类型}
+      cardState:         {enum: {0: 未领取, 1: 已领取}, desc: 卡片状态}
+      resName:           {db: app_db, sql: "SELECT plan_name FROM res_plan WHERE res_id = :resID", desc: 投放计划名（查DB）}
+
+  88860001000001:
+    name: 搜索框点击
+    fields:
+      source:  {enum: source, desc: 来源}
+      page:    {enum: page, desc: 页面}
+      keyword: {not_empty: true, desc: 搜索词}
+    asserts:
+      - {expr: "not (source == '1' and page != 'home')", msg: "source=1(首页) 时 page 必须是 home"}
+
+# ---------------- 测试用例：本轮必须触发哪些点位 ----------------
+cases:
+  我的页卡片:
+    expect:
+      - 88860004086007
+      - {id: 88860004086008, where: {type: open}}
+      - {id: 88860001000001, min: 1}
+      - {id: 88860004086009, min: 1}    # 演示：没触发的点位会被标红

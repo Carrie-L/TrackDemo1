@@ -1,0 +1,76 @@
+{
+  "code": 0,
+  "data": {
+    "myPage": [
+      {
+        "key": "login",
+        "res": [
+          {
+            "id": "829731",
+            "planId": "112729",
+            "planName": "20260408-我的顶部氛围投放",
+            "code": "login",
+            "body": {
+              "cards": [
+                {
+                  "cardId": "a_47jc0",
+                  "cardType": "large_normal",
+                  "items": [
+                    {
+                      "cardId": "a_4forv",
+                      "itemId": "829731_a_47jc0",
+                      "disappearType": "0",
+                      "contentPool": { "contentPoolId": "123" },
+                      "link": { "linkUrl": "baidu.com", "channelId": "", "subChannelId": "" }
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "key": "operation",
+        "res": [
+          {
+            "id": "6065",
+            "planId": "4754",
+            "planName": "20260408-我的页运营位",
+            "code": "operation",
+            "body": {
+              "cards": [
+                {
+                  "cardId": "a_tuni",
+                  "cardType": "large_normal",
+                  "items": [
+                    {
+                      "cardId": "a_tuni_1",
+                      "itemId": "6065_a_tuni",
+                      "disappearType": "0",
+                      "contentPool": { "contentPoolId": "88" },
+                      "link": { "linkUrl": "app://vip", "channelId": "", "subChannelId": "" }
+                    }
+                  ]
+                },
+                {
+                  "cardId": "a_x9k2",
+                  "cardType": "mini_banner",
+                  "items": [
+                    {
+                      "cardId": "a_x9k2_1",
+                      "itemId": "6065_a_x9k2",
+                      "disappearType": "1",
+                      "contentPool": { "contentPoolId": "" },
+                      "link": { "linkUrl": "app://coupon", "channelId": "ch01", "subChannelId": "sub07" }
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

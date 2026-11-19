@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+*.bak
+reports/
+node_modules/
+web/node_modules/
+samples/catalog.json

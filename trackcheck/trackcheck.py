@@ -1,0 +1,1726 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+trackcheck —— Android 埋点调试 / 自动校验工具
+
+  check  离线校验一份 logcat 日志
+  live   实时抓 adb logcat 校验，Ctrl+C 结束后输出报告
+  run    执行自动化脚本（Maestro / adb / UIAutomator ...）的同时抓日志，结束后校验 + 覆盖率
+  infer  根据 日志 + 接口JSON + DB 反推每个字段的数据来源，生成规则草稿
+  pull   按规则文件 device 配置，从手机拉取 db / 接口 dump
+
+依赖：Python 3.8+，PyYAML（pip install pyyaml）
+"""
+import argparse
+import datetime as dt
+import glob
+import html
+import json
+import os
+import re
+import sqlite3
+import subprocess
+import sys
+import threading
+import time
+from collections import Counter, OrderedDict, defaultdict
+
+try:
+    import yaml
+except ImportError:  # pragma: no cover
+    sys.exit("缺少 PyYAML，请先执行: pip install pyyaml")
+
+if os.name == "nt":
+    os.system("")  # 打开 Windows 终端 ANSI 颜色
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
+_C = dict(red="\033[31m", green="\033[32m", yellow="\033[33m", cyan="\033[36m",
+          gray="\033[90m", bold="\033[1m", reset="\033[0m")
+
+
+def color(s, c):
+    return f"{_C[c]}{s}{_C['reset']}"
+
+
+DEFAULT_PATTERN = r"Event:\s*id:\s*(?P<id>\d+)\s*data:\s*(?P<data>.*?)\s*$"
+TS_RE = re.compile(r"^(?P<ts>\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d{3})")
+NULL_EQUALS_EMPTY = True
+
+
+class SourceError(Exception):
+    pass
+
+
+class LocateError(Exception):
+    pass
+
+
+class RuleError(Exception):
+    pass
+
+
+# ----------------------------------------------------------------------------
+# 值的归一化 / 比较
+# ----------------------------------------------------------------------------
+def norm(v):
+    if v is None:
+        return "" if NULL_EQUALS_EMPTY else "null"
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, float) and v.is_integer():
+        return str(int(v))
+    if isinstance(v, (dict, list)):
+        return json.dumps(v, ensure_ascii=False, sort_keys=True)
+    return str(v).strip()
+
+
+_NUM_RE = re.compile(r"-?\d+(\.\d+)?")
+
+
+def eq_val(a, b):
+    na, nb = norm(a), norm(b)
+    if na == nb:
+        return True
+    if ("." in na or "." in nb) and _NUM_RE.fullmatch(na) and _NUM_RE.fullmatch(nb):
+        return float(na) == float(nb)
+    return False
+
+
+def disp(v, limit=120):
+    if v is None:
+        return "null"
+    if isinstance(v, (dict, list)):
+        s = json.dumps(v, ensure_ascii=False)
+    else:
+        s = norm(v)
+    return s if len(s) <= limit else s[:limit] + "…"
+
+
+def uniq(seq):
+    seen, out = set(), []
+    for x in seq:
+        k = norm(x)
+        if k not in seen:
+            seen.add(k)
+            out.append(x)
+    return out
+
+
+# ----------------------------------------------------------------------------
+# 日志解析
+# ----------------------------------------------------------------------------
+class Event:
+    __slots__ = ("seq", "id", "cls", "fields", "raw", "ts", "tsv", "line_no")
+
+    def __init__(self, **kw):
+        for k in self.__slots__:
+            setattr(self, k, kw.get(k))
+
+
+def split_top_level(body):
+    parts, depth, buf = [], 0, []
+    for ch in body:
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth = max(0, depth - 1)
+        elif ch == "," and depth == 0:
+            parts.append("".join(buf))
+            buf = []
+            continue
+        buf.append(ch)
+    parts.append("".join(buf))
+    return parts
+
+
+_KV_RE = re.compile(r"^\s*([A-Za-z_][\w.\-]*)\s*=(.*)$", re.S)
+_BARE_RE = re.compile(r"^\s*([A-Za-z_]\w*)\s*$")
+
+
+def _kv_value(s):
+    s = s.strip()
+    return None if s == "null" else s
+
+
+def parse_kv_body(body):
+    """解析 Kotlin data class toString / Java Map toString 的 k=v, k=v 内容"""
+    fields = OrderedDict()
+    parts = split_top_level(body)
+    last = None
+    for i, p in enumerate(parts):
+        if not p.strip():
+            continue
+        m = _KV_RE.match(p)
+        if m:
+            last = m.group(1)
+            fields[last] = _kv_value(m.group(2))
+            continue
+        b = _BARE_RE.match(p)
+        if b and (i == len(parts) - 1 or last is None):
+            last = b.group(1)
+            fields[last] = ""  # 形如 "subChannelId" 没有 "="，视为空值
+            continue
+        if last is not None:  # 值里本身带逗号
+            fields[last] = (fields[last] or "") + "," + p
+    return fields
+
+
+def flatten(obj, prefix=""):
+    out = OrderedDict()
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            key = f"{prefix}.{k}" if prefix else str(k)
+            if isinstance(v, (dict, list)) and v:
+                out.update(flatten(v, key))
+            else:
+                out[key] = v
+    elif isinstance(obj, list):
+        for i, v in enumerate(obj):
+            key = f"{prefix}[{i}]"
+            if isinstance(v, (dict, list)) and v:
+                out.update(flatten(v, key))
+            else:
+                out[key] = v
+    else:
+        out[prefix or "value"] = obj
+    return out
+
+
+def _to_field_str(v):
+    if v is None:
+        return None
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, (dict, list)):
+        return json.dumps(v, ensure_ascii=False)
+    return norm(v)
+
+
+def parse_data(s):
+    s = s.strip()
+    if s[:1] in "{[":
+        try:
+            obj = json.loads(s)
+            return None, OrderedDict((k, _to_field_str(v)) for k, v in flatten(obj).items())
+        except Exception:
+            if s.startswith("{") and s.endswith("}"):
+                return None, parse_kv_body(s[1:-1])  # HashMap.toString()
+    m = re.match(r"^([\w.$]+)\s*\((.*)\)\s*$", s, re.S)
+    if m:
+        return m.group(1), parse_kv_body(m.group(2))
+    return None, parse_kv_body(s)
+
+
+def parse_ts(ts):
+    if not ts:
+        return None
+    try:
+        return dt.datetime.strptime(f"2000-{ts}", "%Y-%m-%d %H:%M:%S.%f").timestamp()
+    except ValueError:
+        return None
+
+
+class LogParser:
+    def __init__(self, pattern=None):
+        self.re = re.compile(pattern or DEFAULT_PATTERN)
+        self.seq = 0
+
+    def feed(self, line, line_no=None):
+        line = line.rstrip("\r\n")
+        m = self.re.search(line)
+        if not m:
+            return None
+        self.seq += 1
+        tm = TS_RE.match(line)
+        ts = tm.group("ts") if tm else ""
+        cls, fields = parse_data(m.group("data"))
+        return Event(seq=self.seq, id=m.group("id").strip(), cls=cls, fields=fields, raw=line,
+                     ts=ts, tsv=parse_ts(ts), line_no=line_no)
+
+
+def read_log(path, pattern=None):
+    p = LogParser(pattern)
+    events = []
+    with open(path, encoding="utf-8", errors="replace") as f:
+        for i, line in enumerate(f, 1):
+            ev = p.feed(line, i)
+            if ev:
+                events.append(ev)
+    return events
+
+
+# ----------------------------------------------------------------------------
+# JSON 路径
+# ----------------------------------------------------------------------------
+_TOK_RE = re.compile(r"\[(\*|-?\d+)\]|([^.\[\]]+)")
+
+
+def tokenize(path):
+    toks = []
+    for m in _TOK_RE.finditer(path or ""):
+        if m.group(1) is not None:
+            toks.append("*" if m.group(1) == "*" else int(m.group(1)))
+        else:
+            toks.append(m.group(2))
+    return toks
+
+
+def maybe_json(v):
+    """接口里经常把 JSON 再塞成字符串，遇到就自动解开"""
+    if isinstance(v, str):
+        s = v.strip()
+        if (s.startswith("{") and s.endswith("}")) or (s.startswith("[") and s.endswith("]")):
+            try:
+                return json.loads(s)
+            except Exception:
+                pass
+    return v
+
+
+def _join(p, t):
+    if isinstance(t, int):
+        return f"{p}[{t}]"
+    if not p or p.endswith(":"):
+        return f"{p}{t}"
+    return f"{p}.{t}"
+
+
+def resolve(obj, path, base=""):
+    cur = [(obj, base)]
+    for t in tokenize(path) if isinstance(path, str) else path:
+        nxt = []
+        for v, p in cur:
+            v = maybe_json(v)
+            if t == "*":
+                if isinstance(v, list):
+                    nxt += [(x, _join(p, i)) for i, x in enumerate(v)]
+                elif isinstance(v, dict):
+                    nxt += [(x, _join(p, k)) for k, x in v.items()]
+            elif isinstance(t, int):
+                if isinstance(v, list) and -len(v) <= t < len(v):
+                    nxt.append((v[t], _join(p, t)))
+            elif isinstance(v, dict) and t in v:
+                nxt.append((v[t], _join(p, t)))
+        cur = nxt
+    return cur
+
+
+_SUB_RE = re.compile(r"\{([A-Za-z_]\w*)\}")
+
+
+def subst(s, fields):
+    if not isinstance(s, str):
+        return s
+    return _SUB_RE.sub(lambda m: norm(fields[m.group(1)]) if m.group(1) in fields else m.group(0), s)
+
+
+_SAFE = {k: __builtins__[k] if isinstance(__builtins__, dict) else getattr(__builtins__, k)
+         for k in ("len", "int", "float", "str", "bool", "min", "max", "abs", "any", "all", "sorted",
+                   "round", "list", "dict", "set", "tuple", "isinstance", "enumerate", "range", "sum", "zip")}
+_SAFE.update({"True": True, "False": False, "None": None, "re": re, "json": json})
+
+
+def eval_expr(expr, env):
+    return eval(expr, {"__builtins__": {}}, env)  # noqa: S307  本地调试工具，规则文件由自己维护
+
+
+# ----------------------------------------------------------------------------
+# 规则文件
+# ----------------------------------------------------------------------------
+def split_dict(v):
+    """字典两种写法：{1: 首页, ...} 或 {desc, events: [关联点位], items: {1: 首页}} -> (items, meta)"""
+    if isinstance(v, dict) and "items" in v and set(v) <= {"items", "events", "desc"}:
+        return dict(v.get("items") or {}), {"events": [str(x) for x in (v.get("events") or [])], "desc": str(v.get("desc") or "")}
+    return dict(v or {}), {"events": [], "desc": ""}
+
+
+_ID_KEYS = {"eventid", "event_id", "id", "code", "eventcode", "event_code", "点位", "点位id", "点位编号", "事件id", "埋点id"}
+_NAME_KEYS = {"eventname", "event_name", "name", "title", "label", "desc", "点位名称", "名称", "事件名称", "埋点名称"}
+
+
+def parse_catalog(obj):
+    """点位清单 JSON -> OrderedDict(id -> 名称)。支持 [{eventId, eventName}]、{id: 名称}、{events: [...]} 等常见格式"""
+    out = OrderedDict()
+    if isinstance(obj, dict):
+        for k in ("events", "data", "list", "items", "catalog"):
+            if isinstance(obj.get(k), (list, dict)) and len(obj) <= 3:
+                return parse_catalog(obj[k])
+        for k, v in obj.items():
+            if isinstance(v, dict):
+                out[str(k).strip()] = str(next((v[x] for x in v if str(x).lower() in _NAME_KEYS), ""))
+            elif not isinstance(v, list):
+                out[str(k).strip()] = "" if v is None else str(v)
+        return out
+    for it in obj if isinstance(obj, list) else []:
+        if isinstance(it, dict):
+            idk = next((k for k in it if str(k).lower() in _ID_KEYS), None) or \
+                next((k for k, v in it.items() if re.fullmatch(r"\d{4,}", str(v).strip())), None)
+            if idk is None:
+                continue
+            nk = next((k for k in it if str(k).lower() in _NAME_KEYS and k != idk), None) or \
+                next((k for k, v in it.items() if k != idk and isinstance(v, str)), None)
+            out[str(it[idk]).strip()] = str(it.get(nk) or "") if nk else ""
+        elif isinstance(it, (list, tuple)) and len(it) >= 2:
+            out[str(it[0]).strip()] = str(it[1])
+    return out
+
+
+def merge_spec(a, b):
+    out = dict(a)
+    for k, v in b.items():
+        if k in ("context", "fields", "dicts") and isinstance(v, dict):
+            m = OrderedDict(out.get(k) or {})
+            m.update(v)
+            out[k] = m
+        elif k == "asserts":
+            out[k] = list(out.get(k) or []) + list(v or [])
+        else:
+            out[k] = v
+    return out
+
+
+class Spec:
+    SECTIONS = ("dicts", "sources", "templates", "events", "cases")
+
+    def __init__(self, path):
+        global NULL_EQUALS_EMPTY
+        self.path = os.path.abspath(path)
+        self.base = os.path.dirname(self.path)
+        d = self._load(self.path)
+        for inc in d.get("include") or []:
+            files = sorted(glob.glob(os.path.join(self.base, inc)))
+            if not files:
+                print(color(f"[warn] include 没匹配到文件: {inc}", "yellow"))
+            for f in files:
+                sub = self._load(f)
+                for key in self.SECTIONS:
+                    d[key] = dict(d.get(key) or {})
+                    d[key].update(sub.get(key) or {})
+        self.raw = d
+        self.options = {"null_equals_empty": True, "strict_fields": False, **(d.get("options") or {})}
+        NULL_EQUALS_EMPTY = bool(self.options["null_equals_empty"])
+        self.dicts, self.dict_meta = {}, {}
+        for k, v in (d.get("dicts") or {}).items():
+            items, meta = split_dict(v)
+            self.dicts[str(k)] = OrderedDict((norm(kk), vv) for kk, vv in items.items())
+            self.dict_meta[str(k)] = meta
+        self.catalog = OrderedDict()   # 点位清单：id -> 名称（只有名字、还没配字段的点位）
+        if d.get("catalog_file"):
+            cp = self.abspath(str(d["catalog_file"]))
+            if os.path.exists(cp):
+                with open(cp, encoding="utf-8-sig") as f:
+                    self.catalog.update(parse_catalog(json.load(f)))
+        self.catalog.update(parse_catalog(d.get("catalog") or {}))
+        self.sources = d.get("sources") or {}
+        self.templates = {str(k): v for k, v in (d.get("templates") or {}).items()}
+        self._raw_events = {str(k): (v or {}) for k, v in (d.get("events") or {}).items()}
+        self.events = {k: self._resolve(v, {k}) for k, v in self._raw_events.items()}
+        self.cases = {str(k): v for k, v in (d.get("cases") or {}).items()}
+        self.device = d.get("device") or {}
+        log = d.get("log") or {}
+        self.pattern = log.get("pattern") or DEFAULT_PATTERN
+        self.logcat_args = [str(x) for x in (log.get("logcat_args") or [])]
+
+    @staticmethod
+    def _load(path):
+        with open(path, encoding="utf-8") as f:
+            return yaml.safe_load(f) or {}
+
+    def _resolve(self, ev, seen):
+        parents = ev.get("extends")
+        if not parents:
+            return ev
+        if isinstance(parents, (str, int)):
+            parents = [parents]
+        merged = {}
+        for p in map(str, parents):
+            if p in seen:
+                raise RuleError(f"extends 循环引用: {p}")
+            src = self.templates.get(p) or self._raw_events.get(p)
+            if src is None:
+                raise RuleError(f"extends 找不到模板/事件: {p}")
+            merged = merge_spec(merged, self._resolve(src, seen | {p}))
+        return merge_spec(merged, {k: v for k, v in ev.items() if k != "extends"})
+
+    def abspath(self, p):
+        return p if os.path.isabs(p) else os.path.join(self.base, p)
+
+
+# ----------------------------------------------------------------------------
+# 数据源：接口 JSON 文件 / SQLite / SQLite 里缓存的 JSON
+# ----------------------------------------------------------------------------
+class Sources:
+    def __init__(self, spec):
+        self.spec = spec
+        self._json = {}
+        self._db = {}
+
+    def has(self, name):
+        return name in self.spec.sources
+
+    def _file(self, pattern):
+        p = self.spec.abspath(pattern)
+        if any(c in p for c in "*?["):
+            files = glob.glob(p)
+            if not files:
+                raise SourceError(f"没有匹配的文件: {p}")
+            return max(files, key=os.path.getmtime)
+        if not os.path.exists(p):
+            raise SourceError(f"文件不存在: {p}")
+        return p
+
+    def json(self, name):
+        cfg = self.spec.sources[name]
+        t = cfg.get("type", "json_file")
+        if t == "json_file":
+            path = self._file(cfg["path"])
+            key = (path, os.path.getmtime(path))
+            c = self._json.get(name)
+            if c and c[0] == key:
+                return c[1]
+            try:
+                with open(path, encoding="utf-8-sig") as f:
+                    data = json.load(f)
+            except Exception as e:
+                raise SourceError(f"{name}: JSON 解析失败 {path}: {e}")
+        elif t == "sqlite_json":
+            conn, mt = self._conn(cfg["db"])
+            key = (cfg["sql"], mt)
+            c = self._json.get(name)
+            if c and c[0] == key:
+                return c[1]
+            row = conn.execute(cfg["sql"]).fetchone()
+            if not row or row[0] is None:
+                raise SourceError(f"{name}: SQL 没有查到 JSON: {cfg['sql']}")
+            try:
+                data = json.loads(row[0])
+            except Exception as e:
+                raise SourceError(f"{name}: DB 中的内容不是合法 JSON: {e}")
+        else:
+            raise SourceError(f"数据源 {name} 类型为 {t}，不能当 JSON 用（sqlite 源请在字段里写 sql）")
+        if cfg.get("root"):
+            hits = resolve(data, cfg["root"])
+            if not hits:
+                raise SourceError(f"{name}: root 路径不存在 {cfg['root']}")
+            data = hits[0][0]
+        self._json[name] = (key, data)
+        return data
+
+    def _conn(self, name):
+        cfg = self.spec.sources.get(name)
+        if not cfg:
+            raise SourceError(f"未定义的数据源: {name}")
+        path = self._file(cfg["path"])
+        mt = max(os.path.getmtime(p) for p in (path, path + "-wal") if os.path.exists(p))
+        c = self._db.get(name)
+        if c and c[1] == mt:
+            return c[0], mt
+        if c:
+            c[0].close()
+        conn = sqlite3.connect(path, check_same_thread=False)
+        self._db[name] = (conn, mt)
+        return conn, mt
+
+    def db(self, name=None):
+        if name is None:
+            name = next((k for k, v in self.spec.sources.items() if v.get("type") == "sqlite"), None)
+            if name is None:
+                raise SourceError("规则里用了 sql，但没有定义 type: sqlite 的数据源")
+        return self._conn(name)[0]
+
+
+# ----------------------------------------------------------------------------
+# 校验
+# ----------------------------------------------------------------------------
+_RANK = {"FAIL": 3, "WARN": 2, "PASS": 1}
+
+
+def worst(statuses, default="PASS"):
+    best = default
+    for s in statuses:
+        if _RANK.get(s, 0) > _RANK.get(best, 0):
+            best = s
+    return best
+
+
+def type_ok(v, t):
+    t = str(t).lower()
+    try:
+        if t == "int":
+            return re.fullmatch(r"-?\d+", v) is not None
+        if t in ("number", "float"):
+            float(v)
+            return True
+        if t == "bool":
+            return v.lower() in ("true", "false", "0", "1")
+        if t == "url":
+            return re.match(r"^[a-zA-Z][\w+.-]*://", v) is not None
+        if t == "json":
+            json.loads(v)
+            return True
+        if t in ("ts13", "timestamp_ms"):
+            return re.fullmatch(r"\d{13}", v) is not None
+        if t in ("ts10", "timestamp"):
+            return re.fullmatch(r"\d{10}", v) is not None
+    except Exception:
+        return False
+    return True
+
+
+def norm_rule(rule):
+    if rule is None:
+        return {}
+    if isinstance(rule, dict):
+        return rule
+    if isinstance(rule, list):
+        return {"enum": rule}
+    if isinstance(rule, str):
+        return {"from": rule}
+    return {"eq": rule}
+
+
+class Checker:
+    def __init__(self, spec, sources):
+        self.spec = spec
+        self.sources = sources
+        self.seen = {}
+        self.cur_dicts = spec.dicts
+
+    # ---- 上下文定位 ----
+    def build_context(self, es, ev):
+        ctx, meta, err = {}, {}, {}
+        for name, c in (es.get("context") or {}).items():
+            c = c or {}
+            frm = str(c.get("from", ""))
+            try:
+                if frm in ctx:
+                    base, base_path = ctx[frm], meta[frm]["path"]
+                elif frm in err:
+                    err[name] = f"依赖的上下文 {frm} 定位失败"
+                    continue
+                elif self.sources.has(frm):
+                    base, base_path = self.sources.json(frm), f"{frm}:"
+                else:
+                    err[name] = f"from 指向未知的数据源/上下文: {frm!r}"
+                    continue
+                path = subst(c.get("path", ""), ev.fields)
+                cands = resolve(base, path, base_path) if path else [(base, base_path)]
+                where = c.get("where") or {}
+                wdesc = ", ".join(f"{k}={subst(v, ev.fields)}" for k, v in where.items())
+                if where:
+                    def ok(node):
+                        for k, want in where.items():
+                            wants = want if isinstance(want, list) else [want]
+                            wants = [subst(w, ev.fields) for w in wants]
+                            if not any(eq_val(v, w) for v, _ in resolve(node, k) for w in wants):
+                                return False
+                        return True
+                    cands = [x for x in cands if ok(x[0])]
+                if not cands:
+                    err[name] = f"在 {frm} 的 {path or '<根>'} 中找不到" + (f" {wdesc}" if wdesc else "")
+                    continue
+                pick = c.get("pick", "first")
+                v, p = cands[-1] if pick == "last" else cands[0]
+                idx = re.findall(r"\[(\d+)\]", p)
+                ctx[name] = v
+                meta[name] = {"path": p, "index": int(idx[-1]) if idx else None, "count": len(cands)}
+            except SourceError as e:
+                err[name] = f"数据源错误: {e}"
+        return ctx, meta, err
+
+    def env(self, ev, ctx, meta):
+        e = dict(_SAFE)
+        for k, v in ev.fields.items():
+            if k.isidentifier():
+                e[k] = "" if v is None else v
+        e.update(ctx)
+        e.update(f=dict(ev.fields), ctx=ctx, idx={n: m["index"] for n, m in meta.items()},
+                 dicts=self.cur_dicts, event_id=ev.id,
+                 get=lambda o, p: (resolve(o, p) or [(None, "")])[0][0])
+        return e
+
+    def resolve_from(self, spec_from, ev, ctx, meta, cerr):
+        s = subst(str(spec_from), ev.fields)
+        m = re.match(r"^([A-Za-z_]\w*):(.*)$", s)
+        if m and self.sources.has(m.group(1)):
+            base, base_path, rest = self.sources.json(m.group(1)), f"{m.group(1)}:", m.group(2)
+        else:
+            hm = re.match(r"^([A-Za-z_]\w*)(.*)$", s)
+            if not hm:
+                raise RuleError(f"from 写法不对: {s}")
+            name, rest = hm.group(1), hm.group(2).lstrip(".")
+            if name in cerr:
+                raise LocateError(f"上下文 {name} 定位失败：{cerr[name]}")
+            if name not in ctx:
+                raise RuleError(f"from 引用了未定义的上下文: {name}")
+            base, base_path = ctx[name], meta[name]["path"]
+        hits = resolve(base, rest, base_path) if rest else [(base, base_path)]
+        if not hits:
+            raise LocateError(f"接口数据中没有路径 {s}")
+        return hits
+
+    def enum_values(self, e):
+        if isinstance(e, str):
+            d = self.cur_dicts.get(e)
+            if d is None:
+                raise RuleError(f"未定义的字典: {e}")
+            return list(d.keys()), d, e
+        if isinstance(e, dict):
+            d = OrderedDict((norm(k), v) for k, v in e.items())
+            return list(d.keys()), d, "inline"
+        return [norm(x) for x in e], None, None
+
+    def apply_map(self, vals, m):
+        chain = m if isinstance(m, list) else [m]
+        tables = []
+        for t in chain:
+            if isinstance(t, dict):
+                tables.append(("inline", {norm(k): v for k, v in t.items()}))
+            elif t in self.cur_dicts:
+                tables.append((t, self.cur_dicts[t]))
+            else:
+                raise RuleError(f"未定义的字典: {t}")
+        mapped, unmapped, notes = [], [], []
+        for v in vals:
+            cur, trail, ok = v, [disp(v)], True
+            for name, tb in tables:
+                k = norm(cur)
+                if k not in tb:
+                    unmapped.append(f'"{k}" 不在字典 {name} 中')
+                    ok = False
+                    break
+                cur = tb[k]
+                trail.append(f"{name}→{disp(cur)}")
+            if ok:
+                mapped.append(cur)
+                notes.append(" ⇒ ".join(trail))
+        return mapped, unmapped, notes
+
+    # ---- 单字段 ----
+    def check_field(self, fname, rule, ev, env, ctx, meta, cerr):
+        rule = norm_rule(rule)
+        present = fname in ev.fields
+        raw = ev.fields.get(fname)
+        r = {"field": fname, "desc": str(rule.get("desc", "") or ""),
+             "actual": disp(raw, 400) if present else "<缺失>",
+             "expected": "", "source": "", "status": "PASS", "reason": ""}
+        sev = "WARN" if rule.get("severity") == "warn" else "FAIL"
+
+        def done(status, reason=""):
+            r["status"], r["reason"] = status, reason
+            return r
+
+        if rule.get("ignore"):
+            return done("SKIP", "已忽略")
+        if "when" in rule:
+            try:
+                if not eval_expr(str(rule["when"]), env):
+                    return done("SKIP", f"条件不满足: {rule['when']}")
+            except Exception as e:
+                return done(sev, f"when 表达式错误: {e}")
+        if not present:
+            return done(sev, "事件中缺少该字段") if rule.get("required", True) else done("SKIP", "可选字段，未上报")
+
+        actual = norm(raw)
+        problems, label = [], ""
+        try:
+            if actual == "":
+                if rule.get("not_empty"):
+                    problems.append("值为空")
+            else:
+                t = rule.get("type")
+                if t and not type_ok(actual, t):
+                    problems.append(f"类型应为 {t}")
+                if rule.get("regex") and not re.fullmatch(subst(str(rule["regex"]), ev.fields), actual):
+                    problems.append(f"不匹配正则 {rule['regex']}")
+                for key, getter, what in (("range", lambda: float(actual), "数值"), ("len", lambda: len(actual), "长度")):
+                    if rule.get(key):
+                        lo, hi = rule[key]
+                        try:
+                            x = getter()
+                            if (lo is not None and x < lo) or (hi is not None and x > hi):
+                                problems.append(f"{what}应在 [{lo}, {hi}]")
+                        except ValueError:
+                            problems.append(f"{what}无法解析")
+
+            if "enum" in rule and not (actual == "" and rule.get("allow_empty")):
+                allowed, labels, dname = self.enum_values(rule["enum"])
+                if any(eq_val(actual, a) for a in allowed):
+                    if labels:
+                        label = f"{actual} = {labels.get(actual, '')}"
+                else:
+                    shown = ", ".join(f"{k}={v}" if labels else k for k, v in
+                                      (labels.items() if labels else [(a, None) for a in allowed]))
+                    problems.append(f"不在文档枚举内" + (f"（{dname}）" if dname and dname != "inline" else ""))
+                    r["expected"] = shown if len(shown) < 200 else shown[:200] + "…"
+                r["source"] = "文档枚举" + (f" {dname}" if dname and dname != "inline" else "")
+
+            exp = None
+            if "from" in rule:
+                hits = self.resolve_from(rule["from"], ev, ctx, meta, cerr)
+                exp = [v for v, _ in hits]
+                r["source"] = ", ".join(p for _, p in hits[:3]) + (f" 等{len(hits)}处" if len(hits) > 3 else "")
+            elif "sql" in rule:
+                conn = self.sources.db(rule.get("db"))
+                sql = subst(str(rule["sql"]), ev.fields)
+                params = {k: norm(v) for k, v in ev.fields.items()}
+                rows = conn.execute(sql, params).fetchall()
+                r["source"] = f"SQL: {sql}"
+                if not rows:
+                    problems.append("SQL 没有查到数据（数据不存在 / db 没重新拉取？）")
+                else:
+                    exp = [row[0] for row in rows]
+            elif "expr" in rule:
+                v = eval_expr(str(rule["expr"]), env)
+                exp = list(v) if isinstance(v, (list, tuple, set)) else [v]
+                r["source"] = f"expr: {rule['expr']}"
+            elif "eq" in rule:
+                exp = [subst(rule["eq"], ev.fields)]
+                r["source"] = "固定值"
+
+            if exp is not None and "map" in rule:
+                mapped, unmapped, notes = self.apply_map(exp, rule["map"])
+                if notes:
+                    r["source"] += f"（{notes[0]}）"
+                if not mapped:
+                    problems.append("接口值无法映射：" + "；".join(unmapped[:3]) + "（文档字典缺这个值？）")
+                exp = mapped if mapped else None
+
+            if exp:
+                ex = uniq(exp)
+                r["expected"] = " | ".join(disp(x) for x in ex[:5]) + (" …" if len(ex) > 5 else "")
+                if not any(eq_val(actual, x) for x in ex):
+                    problems.append("值不一致")
+
+            if "assert" in rule:
+                env2 = dict(env, value="" if raw is None else raw)
+                if not eval_expr(str(rule["assert"]), env2):
+                    problems.append(str(rule.get("msg") or f"断言失败: {rule['assert']}"))
+        except LocateError as e:
+            problems.append(f"无法取得期望值：{e}")
+        except (RuleError, SourceError) as e:
+            problems.append(f"规则/数据源错误：{e}")
+        except sqlite3.Error as e:
+            problems.append(f"SQL 错误：{e}")
+        except Exception as e:
+            problems.append(f"表达式错误：{type(e).__name__}: {e}")
+
+        if problems:
+            return done(sev, "；".join(problems))
+        return done("PASS", label)
+
+    # ---- 单事件 ----
+    def check(self, ev):
+        es = self.spec.events.get(ev.id)
+        res = {"seq": ev.seq, "ts": ev.ts, "id": ev.id, "cls": ev.cls or "", "raw": ev.raw,
+               "line_no": ev.line_no, "fields": [], "errors": [], "ctx": {}, "data": dict(ev.fields)}
+        if es is None:
+            res.update(name=self.spec.catalog.get(ev.id) or ev.cls or "", status="UNKNOWN")
+            return res
+        res["name"] = str(es.get("name") or self.spec.catalog.get(ev.id) or ev.cls or "")
+        # 点位自己的字典（events.<id>.dicts）优先于全局共享字典
+        self.cur_dicts = dict(self.spec.dicts)
+        for dn, dv in (es.get("dicts") or {}).items():
+            self.cur_dicts[str(dn)] = OrderedDict((norm(kk), vv) for kk, vv in split_dict(dv)[0].items())
+        ctx, meta, cerr = self.build_context(es, ev)
+        for n, m in meta.items():
+            res["ctx"][n] = {"ok": True, "info": m["path"] + (f"（共 {m['count']} 个匹配，取第1个）" if m["count"] > 1 else "")}
+        for n, msg in cerr.items():
+            res["ctx"][n] = {"ok": False, "info": msg}
+        env = self.env(ev, ctx, meta)
+        fspec = es.get("fields") or {}
+        for fname, rule in fspec.items():
+            res["fields"].append(self.check_field(str(fname), rule, ev, env, ctx, meta, cerr))
+        strict = bool(es.get("strict_fields", self.spec.options.get("strict_fields")))
+        for k, v in ev.fields.items():
+            if k not in fspec:
+                res["fields"].append({"field": k, "desc": "", "actual": disp(v, 400), "expected": "", "source": "",
+                                      "status": "FAIL" if strict else "INFO", "reason": "规则中未定义该字段"})
+        for a in es.get("asserts") or []:
+            a = {"expr": a} if isinstance(a, str) else a
+            try:
+                ok, msg = bool(eval_expr(str(a["expr"]), env)), a.get("msg") or f"断言失败: {a['expr']}"
+            except Exception as e:
+                ok, msg = False, f"断言表达式错误: {a['expr']} -> {e}"
+            if not ok:
+                res["errors"].append({"status": "WARN" if a.get("severity") == "warn" else "FAIL", "msg": msg})
+        dd = es.get("dedupe")
+        if dd:
+            keys = dd if isinstance(dd, list) else [dd]
+            k = (ev.id,) + tuple(norm(ev.fields.get(x)) for x in keys)
+            win = es.get("dedupe_window")
+            prev = self.seen.get(k)
+            if prev is not None:
+                gap = ev.tsv - prev.tsv if (ev.tsv is not None and prev.tsv is not None) else None
+                if win is None or (gap is not None and gap <= float(win)):
+                    res["errors"].append({"status": "WARN", "msg": f"疑似重复上报：与 #{prev.seq} 的 {'/'.join(keys)} 相同"
+                                          + (f"，间隔 {gap:.2f}s" if gap is not None else "")})
+            self.seen[k] = ev
+        res["status"] = worst([f["status"] for f in res["fields"]] + [e["status"] for e in res["errors"]])
+        return res
+
+
+# ----------------------------------------------------------------------------
+# 覆盖率 & 报告
+# ----------------------------------------------------------------------------
+def coverage(spec, results, case_name=None):
+    rows = []
+    if case_name:
+        case = spec.cases.get(case_name)
+        if case is None:
+            raise SystemExit(f"规则文件中没有用例: {case_name}（可选: {', '.join(spec.cases) or '无'}）")
+        for exp in case.get("expect") or []:
+            exp = {"id": exp} if not isinstance(exp, dict) else exp
+            eid = str(exp["id"])
+            where = exp.get("where") or {}
+            n = sum(1 for r in results if r["id"] == eid and
+                    all(eq_val(r["data"].get(k), v) for k, v in where.items()))
+            lo, hi = int(exp.get("min", 1)), exp.get("max")
+            ok = n >= lo and (hi is None or n <= int(hi))
+            name = (spec.events.get(eid) or {}).get("name", "")
+            cond = f"次数 ≥ {lo}" + (f" 且 ≤ {hi}" if hi is not None else "") + \
+                   (f"，条件 {', '.join(f'{k}={v}' for k, v in where.items())}" if where else "")
+            rows.append({"id": eid, "name": name, "count": n, "expect": cond, "status": "PASS" if ok else "FAIL"})
+    else:
+        cnt = Counter(r["id"] for r in results)
+        for eid, es in spec.events.items():
+            rows.append({"id": eid, "name": es.get("name", ""), "count": cnt.get(eid, 0), "expect": "",
+                         "status": "PASS" if cnt.get(eid) else "MISS"})
+    return rows
+
+
+def build_report(spec, results, case_name=None, meta=None):
+    cov = coverage(spec, results, case_name)
+    st = Counter(r["status"] for r in results)
+    hot = defaultdict(lambda: {"count": 0, "reason": "", "name": ""})
+    for r in results:
+        for f in r["fields"]:
+            if f["status"] in ("FAIL", "WARN"):
+                h = hot[(r["id"], f["field"])]
+                h["count"] += 1
+                h["reason"] = h["reason"] or f["reason"]
+                h["name"] = r.get("name", "")
+    hot_rows = sorted(({"id": k[0], "field": k[1], **v} for k, v in hot.items()), key=lambda x: -x["count"])
+    cov_fail = sum(1 for c in cov if c["status"] == "FAIL")
+    return {
+        "meta": {"generated_at": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "spec": spec.path,
+                 "case": case_name, **(meta or {})},
+        "summary": {"total": len(results), "pass": st.get("PASS", 0), "warn": st.get("WARN", 0),
+                    "fail": st.get("FAIL", 0), "unknown": st.get("UNKNOWN", 0), "coverage_fail": cov_fail,
+                    "ok": st.get("FAIL", 0) == 0 and cov_fail == 0},
+        "coverage": cov,
+        "hot_fields": hot_rows,
+        "results": results,
+    }
+
+
+_HTML_CSS = """
+*{box-sizing:border-box}body{font:14px/1.5 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;margin:0;background:#f5f6f8;color:#222}
+header{background:#1f2937;color:#fff;padding:16px 24px}header h1{margin:0;font-size:20px}header .m{color:#9ca3af;font-size:12px;margin-top:4px}
+main{padding:16px 24px;max-width:1500px;margin:auto}.cards{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px}
+.card{background:#fff;border-radius:8px;padding:12px 18px;min-width:120px;box-shadow:0 1px 2px #0001}.card b{font-size:24px;display:block}
+.PASS{color:#15803d}.FAIL{color:#b91c1c}.WARN{color:#b45309}.UNKNOWN,.MISS,.INFO,.SKIP{color:#6b7280}
+section{background:#fff;border-radius:8px;padding:12px 16px;margin-bottom:16px;box-shadow:0 1px 2px #0001}h2{font-size:16px;margin:4px 0 10px}
+table{border-collapse:collapse;width:100%}th,td{border-bottom:1px solid #eee;padding:5px 8px;text-align:left;vertical-align:top;word-break:break-all}
+th{background:#fafafa;font-weight:600;white-space:nowrap}tr.r-FAIL td{background:#fde8e8}tr.r-WARN td{background:#fff5d6}tr.r-SKIP td,tr.r-INFO td{color:#888}
+.badge{display:inline-block;border-radius:4px;padding:0 6px;font-size:12px;font-weight:600;color:#fff}.b-PASS{background:#16a34a}.b-FAIL{background:#dc2626}
+.b-WARN{background:#d97706}.b-UNKNOWN,.b-MISS,.b-INFO,.b-SKIP{background:#9ca3af}
+details.ev{border:1px solid #e5e7eb;border-radius:6px;margin:8px 0;background:#fff}details.ev>summary{cursor:pointer;padding:8px 12px;list-style:none}
+details.ev>summary::-webkit-details-marker{display:none}details.ev[open]>summary{border-bottom:1px solid #eee}.evb{padding:8px 12px}
+.ev-FAIL{border-left:4px solid #dc2626!important}.ev-WARN{border-left:4px solid #d97706!important}.ev-PASS{border-left:4px solid #16a34a!important}
+.mono{font-family:Consolas,Menlo,monospace;font-size:12px}pre{background:#f3f4f6;padding:8px;white-space:pre-wrap;word-break:break-all;margin:6px 0}
+.tool{position:sticky;top:0;background:#f5f6f8;padding:8px 0;z-index:2;display:flex;gap:16px;align-items:center}
+.tool input[type=text]{padding:6px 10px;width:320px;border:1px solid #ccc;border-radius:6px}.ctx{font-size:12px;color:#555}.ctx .bad{color:#b91c1c}
+.err{color:#b91c1c;margin:4px 0}.err.WARN{color:#b45309}
+"""
+
+_HTML_JS = """
+function apply(){const only=document.getElementById('only').checked,q=document.getElementById('q').value.trim().toLowerCase();
+document.querySelectorAll('details.ev').forEach(d=>{const bad=d.dataset.st==='FAIL'||d.dataset.st==='WARN';
+const hit=!q||d.textContent.toLowerCase().includes(q);d.style.display=((!only||bad)&&hit)?'':'none';
+d.querySelectorAll('tr.fr').forEach(tr=>{tr.style.display=(!only||tr.classList.contains('r-FAIL')||tr.classList.contains('r-WARN'))?'':'none'});});}
+"""
+
+
+def build_html(rep):
+    e = lambda x: html.escape("" if x is None else str(x))
+    s, m = rep["summary"], rep["meta"]
+    out = [f"<!doctype html><html lang=zh><meta charset=utf-8><title>埋点校验报告 {e(m['generated_at'])}</title>"
+           f"<style>{_HTML_CSS}</style><script>{_HTML_JS}</script><body>"]
+    verdict = '<span class="badge b-PASS">通过</span>' if s["ok"] else '<span class="badge b-FAIL">未通过</span>'
+    out.append(f"<header><h1>埋点校验报告 {verdict}</h1><div class=m>生成时间 {e(m['generated_at'])} · 规则 {e(m['spec'])}"
+               + (f" · 日志 {e(m.get('log'))}" if m.get("log") else "") + (f" · 用例 {e(m['case'])}" if m.get("case") else "")
+               + "</div></header><main>")
+    out.append("<div class=cards>" + "".join(
+        f"<div class=card><b class={c}>{n}</b>{t}</div>" for n, t, c in [
+            (s["total"], "上报事件", ""), (s["pass"], "通过", "PASS"), (s["fail"], "失败", "FAIL"),
+            (s["warn"], "警告", "WARN"), (s["unknown"], "规则外事件", "UNKNOWN"),
+            (s["coverage_fail"], "未触发(用例要求)", "FAIL" if s["coverage_fail"] else "")]) + "</div>")
+
+    title = f"用例覆盖：{e(m['case'])}" if m.get("case") else "点位覆盖（规则里定义的点位本次是否触发）"
+    out.append(f"<section><h2>{title}</h2><table><tr><th>点位ID</th><th>名称</th><th>触发次数</th><th>要求</th><th>结果</th></tr>")
+    for c in rep["coverage"]:
+        label = {"PASS": "已触发", "FAIL": "未满足", "MISS": "未触发"}[c["status"]]
+        out.append(f"<tr class='r-{'FAIL' if c['status'] == 'FAIL' else ''}'><td class=mono>{e(c['id'])}</td><td>{e(c['name'])}</td>"
+                   f"<td>{c['count']}</td><td>{e(c['expect'])}</td><td><span class='badge b-{c['status']}'>{label}</span></td></tr>")
+    out.append("</table></section>")
+
+    if rep["hot_fields"]:
+        out.append("<section><h2>问题字段汇总</h2><table><tr><th>点位ID</th><th>名称</th><th>字段</th><th>出错次数</th><th>示例原因</th></tr>")
+        for h in rep["hot_fields"]:
+            out.append(f"<tr><td class=mono>{e(h['id'])}</td><td>{e(h['name'])}</td><td class=mono><b>{e(h['field'])}</b></td>"
+                       f"<td>{h['count']}</td><td>{e(h['reason'])}</td></tr>")
+        out.append("</table></section>")
+
+    out.append("<section><h2>逐条明细</h2><div class=tool><label><input type=checkbox id=only onchange=apply()> 只看有问题的</label>"
+               "<input type=text id=q placeholder='搜索 点位ID / 字段 / 值' oninput=apply()></div>")
+    for r in rep["results"]:
+        nbad = sum(1 for f in r["fields"] if f["status"] in ("FAIL", "WARN")) + len(r["errors"])
+        is_open = " open" if r["status"] in ("FAIL", "WARN") else ""
+        out.append(f"<details class='ev ev-{r['status']}' data-st={r['status']}{is_open}><summary>"
+                   f"<span class='badge b-{r['status']}'>{r['status']}</span> <span class=mono>#{r['seq']} {e(r['ts'])}</span> "
+                   f"<b class=mono>{e(r['id'])}</b> {e(r.get('name'))} <span class=mono style='color:#888'>{e(r['cls'])}</span>"
+                   + (f" <span class=FAIL>· {nbad} 个问题</span>" if nbad else "") + "</summary><div class=evb>")
+        if r["status"] == "UNKNOWN":
+            out.append("<div class=ctx>规则文件中没有定义这个点位。</div>")
+        if r["ctx"]:
+            out.append("<div class=ctx>数据定位：" + "；".join(
+                f"<b>{e(n)}</b> → " + (e(c["info"]) if c["ok"] else f"<span class=bad>{e(c['info'])}</span>")
+                for n, c in r["ctx"].items()) + "</div>")
+        for er in r["errors"]:
+            out.append(f"<div class='err {er['status']}'>⚠ {e(er['msg'])}</div>")
+        if r["fields"]:
+            out.append("<table><tr><th>字段</th><th>含义</th><th>上报值</th><th>期望值</th><th>期望值来源</th><th>结果</th><th>说明</th></tr>")
+            for f in r["fields"]:
+                out.append(f"<tr class='fr r-{f['status']}'><td class=mono><b>{e(f['field'])}</b></td><td>{e(f['desc'])}</td>"
+                           f"<td class=mono>{e(f['actual'])}</td><td class=mono>{e(f['expected'])}</td>"
+                           f"<td class=mono style='color:#666'>{e(f['source'])}</td>"
+                           f"<td><span class='badge b-{f['status']}'>{f['status']}</span></td><td>{e(f['reason'])}</td></tr>")
+            out.append("</table>")
+        elif r["data"]:
+            out.append("<table><tr><th>字段</th><th>上报值</th></tr>" + "".join(
+                f"<tr><td class=mono>{e(k)}</td><td class=mono>{e(v)}</td></tr>" for k, v in r["data"].items()) + "</table>")
+        out.append(f"<pre class=mono>{e(r['raw'])}</pre></div></details>")
+    out.append("</section></main></body></html>")
+    return "".join(out)
+
+
+def write_report(rep, out_dir, stem=None):
+    os.makedirs(out_dir, exist_ok=True)
+    stem = stem or "trackcheck_" + dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+    hp, jp = os.path.join(out_dir, stem + ".html"), os.path.join(out_dir, stem + ".json")
+    with open(hp, "w", encoding="utf-8") as f:
+        f.write(build_html(rep))
+    with open(jp, "w", encoding="utf-8") as f:
+        json.dump(rep, f, ensure_ascii=False, indent=2)
+    return hp, jp
+
+
+def print_result(r):
+    tag = {"PASS": color("PASS", "green"), "WARN": color("WARN", "yellow"), "FAIL": color("FAIL", "red"),
+           "UNKNOWN": color("????", "gray")}[r["status"]]
+    print(f"{tag} #{r['seq']:<4} {r['ts']:<18} {color(r['id'], 'cyan')} {r.get('name', '')}"
+          + (color("  (规则外点位)", "gray") if r["status"] == "UNKNOWN" else ""))
+    for n, c in r["ctx"].items():
+        if not c["ok"]:
+            print(color(f"       定位失败 {n}: {c['info']}", "red"))
+    blocked = 0
+    for f in r["fields"]:
+        if f["status"] in ("FAIL", "WARN"):
+            if f["reason"].startswith("无法取得期望值：上下文"):
+                blocked += 1
+                continue
+            c = "red" if f["status"] == "FAIL" else "yellow"
+            print(color(f"       ✗ {f['field']:<18}", c) + f" 上报={f['actual']!s:<20} 期望={f['expected'] or '-'}  "
+                  + color(f["reason"], c))
+    if blocked:
+        print(color(f"       … 另有 {blocked} 个字段因数据定位失败无法比对（详见报告）", "red"))
+    for er in r["errors"]:
+        print(color(f"       ⚠ {er['msg']}", "red" if er["status"] == "FAIL" else "yellow"))
+
+
+def print_summary(rep, hp):
+    s = rep["summary"]
+    print()
+    print(color("=" * 60, "gray"))
+    print(f"事件 {s['total']}  " + color(f"通过 {s['pass']}", "green") + "  " + color(f"失败 {s['fail']}", "red") + "  "
+          + color(f"警告 {s['warn']}", "yellow") + f"  规则外 {s['unknown']}")
+    miss = [c for c in rep["coverage"] if c["status"] in ("FAIL", "MISS")]
+    if miss:
+        lab = "用例未满足" if rep["meta"].get("case") else "规则内未触发"
+        print(color(f"{lab}: ", "yellow") + ", ".join(f"{c['id']}({c['name']})" for c in miss))
+    print("报告: " + color(hp, "bold"))
+    print(color("结论: 通过", "green") if s["ok"] else color("结论: 未通过", "red"))
+
+
+# ----------------------------------------------------------------------------
+# adb 相关
+# ----------------------------------------------------------------------------
+def adb_base(spec, serial=None):
+    serial = serial or (spec.device.get("serial") if spec else None)
+    return ["adb"] + (["-s", serial] if serial else [])
+
+
+def do_pull(spec, serial=None):
+    dev = spec.device
+    pkg = dev.get("package")
+    adb = adb_base(spec, serial)
+    items = dev.get("pull") or []
+    if not items:
+        print(color("规则文件 device.pull 没有配置，跳过拉取", "yellow"))
+        return
+    for it in items:
+        remote, local = str(it["remote"]), spec.abspath(str(it["local"]))
+        os.makedirs(os.path.dirname(local.rstrip("/\\")) or ".", exist_ok=True)
+        if remote.startswith("/"):
+            if remote.endswith("/.") or local.endswith(("/", "\\")):
+                os.makedirs(local, exist_ok=True)
+            p = subprocess.run(adb + ["pull", remote, local], capture_output=True, text=True, errors="replace")
+            msg = (p.stdout + p.stderr).strip().splitlines()
+            print((color("  ✓ ", "green") if p.returncode == 0 else color("  ✗ ", "red"))
+                  + f"{remote} -> {local}  " + (msg[-1] if msg else ""))
+            continue
+        if not pkg:
+            print(color(f"  ✗ {remote}: 相对路径需要 device.package（通过 run-as 读私有目录）", "red"))
+            continue
+        files = [remote]
+        if it.get("with_wal", remote.endswith(".db")):
+            files += [remote + "-wal", remote + "-shm"]
+        for i, rf in enumerate(files):
+            lf = local + rf[len(remote):]
+            chk = subprocess.run(adb + ["shell", "run-as", pkg, "ls", rf], capture_output=True, text=True, errors="replace")
+            if chk.returncode != 0 or "No such file" in chk.stdout + chk.stderr:
+                if i == 0:
+                    print(color(f"  ✗ {rf}: {(chk.stdout + chk.stderr).strip()}", "red"))
+                    break
+                if os.path.exists(lf):
+                    os.remove(lf)  # 手机上没有 wal 了，删掉本地旧的，避免读到脏数据
+                continue
+            with open(lf, "wb") as f:
+                p = subprocess.run(adb + ["exec-out", "run-as", pkg, "cat", rf], stdout=f)
+            print((color("  ✓ ", "green") if p.returncode == 0 else color("  ✗ ", "red")) + f"{pkg}/{rf} -> {lf}")
+
+
+class Capture:
+    """后台线程跑 adb logcat，解析埋点行"""
+
+    def __init__(self, spec, serial, raw_path, on_event=None):
+        self.spec, self.serial, self.raw_path, self.on_event = spec, serial, raw_path, on_event
+        self.parser = LogParser(spec.pattern)
+        self.events, self.proc, self.thread = [], None, None
+
+    def start(self, clear=False):
+        adb = adb_base(self.spec, self.serial)
+        if clear:
+            subprocess.run(adb + ["logcat", "-c"])
+        os.makedirs(os.path.dirname(self.raw_path) or ".", exist_ok=True)
+        self.proc = subprocess.Popen(adb + ["logcat", "-v", "threadtime"] + self.spec.logcat_args,
+                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        self.thread = threading.Thread(target=self._loop, daemon=True)
+        self.thread.start()
+
+    def _loop(self):
+        with open(self.raw_path, "w", encoding="utf-8") as raw:
+            n = 0
+            for b in iter(self.proc.stdout.readline, b""):
+                n += 1
+                line = b.decode("utf-8", errors="replace")
+                ev = self.parser.feed(line, n)
+                if ev:
+                    raw.write(line.rstrip("\r\n") + "\n")
+                    raw.flush()
+                    self.events.append(ev)
+                    if self.on_event:
+                        try:
+                            self.on_event(ev)
+                        except Exception as e:  # 不让一条异常打断抓取
+                            print(color(f"[error] 校验 #{ev.seq} 出错: {e}", "red"))
+                elif "error:" in line and n < 5:
+                    print(color(line.strip(), "red"))
+
+    def stop(self, linger=1.0):
+        time.sleep(linger)
+        if self.proc and self.proc.poll() is None:
+            self.proc.terminate()
+        if self.thread:
+            self.thread.join(timeout=3)
+
+
+# ----------------------------------------------------------------------------
+# 命令
+# ----------------------------------------------------------------------------
+def _stamp():
+    return dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+
+
+def check_all(spec, events, verbose=True):
+    ck = Checker(spec, Sources(spec))
+    results = []
+    for ev in events:
+        r = ck.check(ev)
+        results.append(r)
+        if verbose:
+            print_result(r)
+    return results
+
+
+def cmd_check(a):
+    spec = Spec(a.spec)
+    events = read_log(a.log, spec.pattern)
+    if not events:
+        print(color(f"日志里没有匹配到埋点行，检查 log.pattern：{spec.pattern}", "yellow"))
+    if a.only:
+        events = [e for e in events if e.id in set(a.only)]
+    results = check_all(spec, events, verbose=not a.quiet)
+    rep = build_report(spec, results, a.case, {"log": os.path.abspath(a.log)})
+    hp, _ = write_report(rep, a.out)
+    print_summary(rep, hp)
+    return 0 if rep["summary"]["ok"] else 1
+
+
+def _live_common(a, runner=None):
+    spec = Spec(a.spec)
+    ck = Checker(spec, Sources(spec))
+    stamp = _stamp()
+    raw = os.path.join(a.out, f"session_{stamp}.log")
+    lock = threading.Lock()
+
+    def on_event(ev):
+        with lock:
+            print_result(ck.check(ev))
+
+    cap = Capture(spec, a.serial, raw, on_event)
+    cap.start(clear=a.clear)
+    print(color(f"正在抓取 logcat（原始埋点日志保存到 {raw}）", "cyan"))
+    rc_runner = 0
+    try:
+        if runner:
+            rc_runner = runner()
+        else:
+            print(color("去手机上操作吧，结束后按 Ctrl+C 生成报告 ...", "cyan"))
+            while True:
+                time.sleep(0.5)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        cap.stop(linger=a.linger if runner else 0.3)
+    if a.pull:
+        print(color("拉取手机最新 db / 接口 dump 后重新校验 ...", "cyan"))
+        do_pull(spec, a.serial)
+    results = check_all(spec, cap.events, verbose=False)
+    rep = build_report(spec, results, a.case, {"log": raw})
+    hp, _ = write_report(rep, a.out, f"trackcheck_{stamp}")
+    print_summary(rep, hp)
+    return 0 if rep["summary"]["ok"] and rc_runner == 0 else 1
+
+
+def cmd_live(a):
+    return _live_common(a)
+
+
+def cmd_run(a):
+    cmd = a.command[1:] if a.command and a.command[0] == "--" else a.command
+    if not cmd:
+        raise SystemExit("用法: trackcheck.py run --spec x.yaml --case 用例 -- maestro test flow.yaml")
+
+    def runner():
+        print(color("执行: " + " ".join(cmd), "cyan"))
+        rc = subprocess.run(cmd, shell=(os.name == "nt")).returncode
+        if rc != 0:
+            print(color(f"自动化脚本退出码 {rc}", "red"))
+        return rc
+
+    return _live_common(a, runner)
+
+
+def cmd_pull(a):
+    do_pull(Spec(a.spec), a.serial)
+    return 0
+
+
+# ----------------------------------------------------------------------------
+# infer：反推字段来源，生成规则草稿
+# ----------------------------------------------------------------------------
+def iter_leaves(obj, path=()):
+    obj = maybe_json(obj)
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            yield from iter_leaves(v, path + (k,))
+    elif isinstance(obj, list):
+        for i, v in enumerate(obj):
+            yield from iter_leaves(v, path + (i,))
+    else:
+        yield path, obj
+
+
+def path_str(tokens, generalize=False):
+    out = ""
+    for t in tokens:
+        if isinstance(t, int):
+            out += "[*]" if generalize else f"[{t}]"
+        else:
+            out += ("." if out else "") + str(t)
+    return out
+
+
+def key_sim(f, k):
+    if not isinstance(k, str):
+        return 0
+    a, b = re.sub(r"[_\-]", "", f.lower()), re.sub(r"[_\-]", "", k.lower())
+    if a == b:
+        return 3
+    if len(b) >= 3 and (a in b or b in a):
+        return 2
+    s = lambda x: re.sub(r"(id|name|type|num|no|code)$", "", x)
+    return 1 if s(a) and s(a) == s(b) else 0
+
+
+def _ctx_name(node, used, fields):
+    base = next((t for t in reversed(node) if isinstance(t, str)), "root")
+    base = re.sub(r"\W", "_", base)
+    if base.endswith("ies"):
+        base = base[:-3] + "y"
+    elif base.endswith("s") and len(base) > 3:
+        base = base[:-1]
+    if not base or base[0].isdigit():
+        base = "n_" + base
+    name, i = base, 2
+    while name in used or name in fields:
+        name, i = f"{base}{i}", i + 1
+    used.add(name)
+    return name
+
+
+def _key_rank(k):
+    k = str(k).lower()
+    return (0 if k == "id" else 1 if k.endswith("id") else 2, len(k))
+
+
+class JsonIndex:
+    def __init__(self, name, data):
+        self.name = name
+        self.leaves = [(p, v) for p, v in iter_leaves(data) if p and isinstance(p[-1], str)]
+        self.index = defaultdict(list)
+        for p, v in self.leaves:
+            self.index[norm(v)].append(p)
+
+
+def infer_occurrence(ev, ji):
+    fields = ev.fields
+    idlike = lambda f: re.search(r"(id|key|code)$", f, re.I) is not None
+
+    def find_anchors(strict):
+        out = []
+        for f, v in fields.items():
+            nv = norm(v)
+            if len(nv) < 3 or nv.lower() in ("true", "false", "null") or (strict and not idlike(f)):
+                continue
+            hits = ji.index.get(nv, [])
+            if len(hits) > 1:
+                sim = [p for p in hits if key_sim(f, p[-1]) >= 2]
+                hits = sim if len(sim) == 1 else hits
+            # 只把"数组里的一个元素"当作定位节点（资源位、卡片这类实体）
+            if len(hits) == 1 and len(hits[0]) >= 2 and isinstance(hits[0][-2], int):
+                out.append((f, hits[0]))
+        return out
+
+    anchors = find_anchors(True) or find_anchors(False)
+    nodes = OrderedDict()
+    for f, p in sorted(anchors, key=lambda x: (len(x[1]), _key_rank(x[1][-1]))):
+        if p[:-1] not in nodes:
+            nodes[p[:-1]] = (f, p[-1])
+    ctxs, used = [], set()
+    for node in sorted(nodes, key=len):
+        parent = None
+        for c in ctxs:
+            if len(c["node"]) < len(node) and node[:len(c["node"])] == c["node"]:
+                if parent is None or len(c["node"]) > len(parent["node"]):
+                    parent = c
+        ctxs.append({"name": _ctx_name(node, used, fields), "node": node, "parent": parent,
+                     "field": nodes[node][0], "key": nodes[node][1]})
+
+    def container(p):
+        best = None
+        for c in ctxs:
+            if len(c["node"]) < len(p) and p[:len(c["node"])] == c["node"]:
+                if best is None or len(c["node"]) > len(best["node"]):
+                    best = c
+        return best
+
+    def in_sibling(p):
+        """p 是否落在某个上下文的"兄弟元素"里（比如定位的是 cards[0]，命中却在 cards[1]）"""
+        for c in ctxs:
+            n = c["node"]
+            k = 0
+            while k < len(n) and k < len(p) and n[k] == p[k]:
+                k += 1
+            if k < len(n) and k < len(p) and isinstance(n[k], int) and isinstance(p[k], int):
+                return True
+        return False
+
+    sugg = {}
+    anchor_fields = {c["field"]: c for c in ctxs}
+    for f, v in fields.items():
+        nv = norm(v)
+        if f in anchor_fields:
+            c = anchor_fields[f]
+            sugg[f] = {"kind": "from", "expr": f"{c['name']}.{c['key']}", "note": "定位键"}
+            continue
+        cands = []
+        for p in ji.index.get(nv, []):
+            c = container(p)
+            ks = key_sim(f, p[-1])
+            if c is None or in_sibling(p):
+                continue
+            if (nv == "" and ks < 2) or (len(nv) < 3 and ks == 0 and len(p) - len(c["node"]) > 3):
+                continue  # 空值/短值只接受字段名相近或离上下文很近的命中
+            cands.append((ks * 10 + len(c["node"]) - 0.1 * (len(p) - len(c["node"])), c, p))
+        if cands:
+            cands.sort(key=lambda x: -x[0])
+            sc, c, p = cands[0]
+            note = ""
+            ties = [x for x in cands[1:] if x[0] == sc]
+            if ties:
+                note = "多个候选，请确认: " + ", ".join(f"{x[1]['name']}.{path_str(x[2][len(x[1]['node']):])}" for x in ties[:3])
+            elif key_sim(f, p[-1]) == 0 and len(nv) < 3:
+                note = f"短值 {nv!r} 按值匹配到，字段名不同，请确认"
+            sugg[f] = {"kind": "from", "expr": f"{c['name']}.{path_str(p[len(c['node']):])}", "note": note,
+                       "weak": key_sim(f, p[-1]) == 0 and len(nv) < 3}
+            continue
+        hits = ji.index.get(nv, [])
+        if len(nv) >= 3 and len(hits) == 1 and not in_sibling(hits[0]):
+            sugg[f] = {"kind": "from", "expr": f"{ji.name}:{path_str(hits[0])}",
+                       "note": "全局唯一匹配（绝对路径），建议改成上下文相对路径"}
+            continue
+        nm = []
+        for c in ctxs:
+            for p, lv in ji.leaves:
+                d = len(p) - len(c["node"])
+                if 0 < d <= 4 and p[:len(c["node"])] == c["node"] and key_sim(f, p[-1]) == 3:
+                    nm.append((len(c["node"]), -d, c, p, lv))
+        if nm:
+            nm.sort(key=lambda x: (-x[0], -x[1]))
+            _, _, c, p, lv = nm[0]
+            expr, api = f"{c['name']}.{path_str(p[len(c['node']):])}", norm(lv)
+            numeric = lambda x: re.fullmatch(r"-?\d+(\.\d+)?", x) is not None
+            if nv and not (numeric(nv) and numeric(api)):
+                sugg[f] = {"kind": "map", "expr": expr, "api": api, "reported": nv}
+            else:  # 上报为空 / 两边都是数字却不相等：更像是 bug，而不是需要映射
+                sugg[f] = {"kind": "from", "expr": expr, "weak": True,
+                           "note": f"按字段名匹配；本次接口值 {api!r} 与上报值 {nv!r} 不一致，请确认"}
+    score = sum(1 for s in sugg.values() if s["kind"] == "from")
+    return score, ctxs, sugg
+
+
+def infer_db(ev, conns, todo):
+    """在 DB 每张表里找"同一行同时包含 定位键的值 和 该字段的值"，反推 SQL"""
+    out = {}
+    if not todo:
+        return out
+    idlike = lambda s: re.search(r"(id|key|code)$", s, re.I) is not None
+    anchors = {f: norm(v) for f, v in ev.fields.items() if len(norm(v)) >= 3}
+    for dbname, conn in conns.items():
+        try:
+            tables = [r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'android_%'")]
+        except sqlite3.Error:
+            continue
+        for t in tables:
+            try:
+                cur = conn.execute(f'SELECT * FROM "{t}" LIMIT 50000')
+                cols = [d[0] for d in cur.description]
+            except sqlite3.Error:
+                continue
+            for row in cur:
+                vals = [norm(x) for x in row]
+                cand = [(af, cols[i]) for af, av in anchors.items() for i, cv in enumerate(vals) if cv == av]
+                if not cand:
+                    continue
+                cand.sort(key=lambda x: (-key_sim(x[0], x[1]), not idlike(x[0]), not idlike(x[1])))
+                af, ac = cand[0]
+                if af in todo and af not in out:
+                    out[af] = {"kind": "sql", "db": dbname, "note": "定位键（校验 DB 中存在）",
+                               "sql": f'SELECT "{ac}" FROM "{t}" WHERE "{ac}" = :{af}'}
+                for f in todo:
+                    if f in out or f == af:
+                        continue
+                    fv = norm(ev.fields.get(f))
+                    if not fv:
+                        continue
+                    hit = [cols[i] for i, cv in enumerate(vals) if cv == fv and cols[i] != ac]
+                    if hit:
+                        hit.sort(key=lambda c: -key_sim(f, c))
+                        out[f] = {"kind": "sql", "db": dbname,
+                                  "sql": f'SELECT "{hit[0]}" FROM "{t}" WHERE "{ac}" = :{af}'}
+            if len(out) == len(todo):
+                return out
+    return out
+
+
+def yq(v):
+    return json.dumps("" if v is None else str(v), ensure_ascii=False)
+
+
+def ykey(k):
+    k = str(k)
+    return k if re.fullmatch(r"[A-Za-z_][\w]*", k) else yq(k)
+
+
+def _ctx_sig(ctxs):
+    out = []
+    for c in ctxs:
+        rel = c["node"][len(c["parent"]["node"]):] if c["parent"] else c["node"]
+        out.append((c["name"], c["parent"]["name"] if c["parent"] else None, path_str(rel, True), c["key"], c["field"]))
+    return tuple(out)
+
+
+def _vote(runs, all_fields):
+    """多次出现的同一点位分别推断，按字段投票；不一致的给出提示（不一致本身常常就是埋点 bug）"""
+    sugg = {}
+    for f in all_fields:
+        votes, samples, present = Counter(), {}, 0
+        for r in runs:
+            ev, s = r["ev"], r["sugg"].get(f)
+            if f in ev.fields and norm(ev.fields[f]) != "":
+                present += 1
+            if s:
+                k = (s["kind"], s["expr"] if s["kind"] != "sql" else s["sql"])
+                votes[k] += 1
+                if k not in samples or (samples[k].get("weak") and not s.get("weak")):
+                    samples[k] = s
+        if votes:
+            k, n = votes.most_common(1)[0]
+            s = dict(samples[k])
+            if s.get("weak") and present and n < present:
+                continue  # 弱匹配（短值/仅字段名）且多次出现不一致 -> 大概率是巧合，不采纳
+            if present and n < present:
+                s["vote"] = f"{n}/{present} 次一致，其余出现的值对不上，可能是埋点 bug，请看报告"
+            sugg[f] = s
+    return sugg
+
+
+def cmd_infer(a):
+    spec = Spec(a.spec) if a.spec else None
+    pattern = spec.pattern if spec else (a.pattern or DEFAULT_PATTERN)
+    events = read_log(a.log, pattern)
+    if not events:
+        raise SystemExit("日志中没有匹配到埋点行")
+    jsons, conns, cli_sources = [], {}, []
+    if spec:
+        src = Sources(spec)
+        for name, cfg in spec.sources.items():
+            try:
+                if cfg.get("type", "json_file") in ("json_file", "sqlite_json"):
+                    jsons.append(JsonIndex(name, src.json(name)))
+                elif cfg.get("type") == "sqlite":
+                    conns[name] = src.db(name)
+            except SourceError as e:
+                print(color(f"[warn] 数据源 {name} 读取失败: {e}", "yellow"))
+    for p in a.json or []:
+        for fp in glob.glob(p) or [p]:
+            name = re.sub(r"\W", "_", os.path.splitext(os.path.basename(fp))[0])
+            with open(fp, encoding="utf-8-sig") as f:
+                jsons.append(JsonIndex(name, json.load(f)))
+            cli_sources.append((name, {"type": "json_file", "path": os.path.abspath(fp)}))
+    for p in a.db or []:
+        name = re.sub(r"\W", "_", os.path.splitext(os.path.basename(p))[0]) + "_db"
+        conns[name] = sqlite3.connect(p)
+        cli_sources.append((name, {"type": "sqlite", "path": os.path.abspath(p)}))
+
+    drafts, dict_drafts = infer_events(events, jsons, conns)
+    text = drafts_to_yaml(drafts, dict_drafts, cli_sources, a.log)
+    if a.output:
+        with open(a.output, "w", encoding="utf-8") as f:
+            f.write(text)
+        print(color(f"规则草稿已写入 {a.output}（{len(drafts)} 个点位）", "green"))
+    else:
+        print(text)
+    return 0
+
+
+def load_infer_sources(spec):
+    jsons, conns, warns = [], {}, []
+    src = Sources(spec)
+    for name, cfg in spec.sources.items():
+        try:
+            if cfg.get("type", "json_file") in ("json_file", "sqlite_json"):
+                jsons.append(JsonIndex(name, src.json(name)))
+            elif cfg.get("type") == "sqlite":
+                conns[name] = src.db(name)
+        except (SourceError, sqlite3.Error) as e:
+            warns.append(f"数据源 {name} 读取失败: {e}")
+    return jsons, conns, warns
+
+
+def infer_events(events, jsons, conns):
+    """返回结构化草稿: [{id, cls, count, source, contexts:[...], fields:[{field, kind, rule, status, note, observed}]}]"""
+    groups = OrderedDict()
+    for ev in events:
+        groups.setdefault(ev.id, []).append(ev)
+    dict_drafts = OrderedDict()
+    drafts = []
+    for eid, evs in groups.items():
+        all_fields = list(OrderedDict.fromkeys(k for ev in evs for k in ev.fields))
+        runs = []
+        for ev in evs[:50]:
+            for ji_ in jsons:
+                sc, ctxs_, sugg_ = infer_occurrence(ev, ji_)
+                if ctxs_:
+                    runs.append({"ji": ji_, "ctxs": ctxs_, "sugg": sugg_, "ev": ev, "score": sc,
+                                 "sig": (ji_.name, _ctx_sig(ctxs_))})
+        ji, ctxs, sugg, bev = None, [], {}, evs[0]
+        if runs:
+            cnt, tot = Counter(r["sig"] for r in runs), Counter()
+            for r in runs:
+                tot[r["sig"]] += r["score"]
+            best_sig = max(cnt, key=lambda k: (cnt[k], tot[k]))
+            chosen = [r for r in runs if r["sig"] == best_sig]
+            ji, ctxs, bev = chosen[0]["ji"], chosen[0]["ctxs"], chosen[0]["ev"]
+            sugg = _vote(chosen, all_fields)
+            for f, s in sugg.items():  # map 草稿：汇总所有出现的 接口值 -> 上报值
+                if s["kind"] == "map":
+                    dname = f"{f}_map"
+                    d = OrderedDict()  # 映射表跟着点位走（每个点位各自一份），直接内联在字段规则里
+                    for r in chosen:
+                        x = r["sugg"].get(f)
+                        if x and x["kind"] == "map" and x["expr"] == s["expr"]:
+                            d.setdefault(x["api"], x["reported"])
+                    s["dict"] = dname
+                    s["inline"] = dict(d)
+        todo = [f for f in all_fields if f not in sugg]
+        if todo and conns:
+            db_runs = [{"ev": ev, "sugg": infer_db(ev, conns, todo)} for ev in evs[:10]]
+            sugg.update(_vote(db_runs, todo))
+        observed = {f: list(OrderedDict.fromkeys(norm(ev.fields.get(f)) for ev in evs if f in ev.fields)) for f in all_fields}
+
+        contexts = []
+        for c in ctxs:
+            frm = c["parent"]["name"] if c["parent"] else ji.name
+            rel = c["node"][len(c["parent"]["node"]):] if c["parent"] else c["node"]
+            contexts.append({"name": c["name"], "from": frm, "path": path_str(rel, True),
+                             "where": {str(c["key"]): "{" + c["field"] + "}"}})
+        fields = []
+        for f in all_fields:
+            s = sugg.get(f)
+            obs = observed.get(f, [])
+            notes = [x for x in ((s or {}).get("note"), (s or {}).get("vote")) if x]
+            if s and s["kind"] == "from":
+                rule, status = {"from": s["expr"]}, "confirm" if notes and notes != ["定位键"] else "ok"
+            elif s and s["kind"] == "map":
+                rule, status = {"from": s["expr"], "map": s.get("inline") or {}}, "confirm"
+                notes.insert(0, f"接口值与上报值不同（如 {s['api']!r} → {s['reported']!r}），已按本次观测生成本点位专用映射表，请对照文档补全")
+            elif s and s["kind"] == "sql":
+                rule, status = {"db": s["db"], "sql": s["sql"]}, "confirm"
+                notes.insert(0, "从 DB 反推")
+            elif obs and any(obs):
+                rule, status = {"enum": [x for x in obs if x][:20]}, "todo"
+                notes = ["接口/DB 里没找到，多半是文档定义值：按文档补全枚举，或引用文档字典"]
+            else:
+                rule, status = {}, "todo"
+                notes = ["本次全为空，无法推断"]
+            fields.append({"field": f, "kind": (s or {}).get("kind", "enum" if rule else "empty"), "rule": rule,
+                           "status": status, "note": "；".join(notes), "observed": obs[:20]})
+        drafts.append({"id": eid, "cls": bev.cls or "", "count": len(evs), "source": ji.name if ji and ctxs else "",
+                       "contexts": contexts, "fields": fields, "sample": bev.raw})
+    return drafts, dict_drafts
+
+
+def drafts_to_yaml(drafts, dict_drafts, cli_sources=None, log_path=""):
+    def flow(d):
+        parts = []
+        for k, v in d.items():
+            if isinstance(v, list):
+                parts.append(f"{k}: [{', '.join(yq(x) for x in v)}]")
+            elif isinstance(v, dict):
+                parts.append(f"{k}: {flow({ykey(kk): vv for kk, vv in v.items()})}")
+            else:
+                plain = k not in ("from", "sql", "path") and re.fullmatch(r"[A-Za-z_]\w*", str(v))
+                parts.append(f"{k}: {v if plain else yq(v)}")
+        return "{" + ", ".join(parts) + "}"
+
+    out = ["# trackcheck infer 自动生成的规则草稿 —— 请逐条确认，尤其是 TODO 和注释提示",
+           f"# 日志: {os.path.abspath(log_path) if log_path else '-'}   生成时间: {dt.datetime.now():%Y-%m-%d %H:%M:%S}", ""]
+    if cli_sources:
+        out.append("sources:")
+        for n, cfg in cli_sources:
+            out.append(f"  {n}: {{type: {cfg['type']}, path: {yq(cfg['path'])}}}")
+        out.append("")
+    if dict_drafts:
+        out.append("dicts:   # 根据观测到的 接口值 -> 上报值 生成，只包含本次见到的值，请按文档补全")
+        for n, d in dict_drafts.items():
+            out.append(f"  {n}:")
+            for k, v in d.items():
+                out.append(f"    {yq(k)}: {yq(v)}")
+        out.append("")
+    out.append("events:")
+    for d in drafts:
+        out += [f"  {yq(d['id'])}:", f"    name: {yq(d['cls'] or d['id'])}   # TODO 改成文档里的点位名称",
+                f"    # 本次日志出现 {d['count']} 次" + (f"；主数据源 {d['source']}" if d["source"] else "；未在接口 JSON 中定位到")]
+        if d["contexts"]:
+            out.append("    context:")
+            for c in d["contexts"]:
+                out.append(f"      {c['name']}: {flow({'from': c['from'], 'path': c['path'], 'where': {ykey(k): v for k, v in c['where'].items()}})}")
+        out.append("    fields:")
+        for f in d["fields"]:
+            mark = {"ok": "", "confirm": "请确认: ", "todo": "TODO "}[f["status"]]
+            note = f["note"] if f["note"] != "定位键" or not mark else f["note"]
+            out.append(f"      {ykey(f['field'])}: {flow(f['rule'])}" + (f"   # {mark}{note}" if note else ""))
+    return "\n".join(out) + "\n"
+
+
+# ----------------------------------------------------------------------------
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="trackcheck", description="Android 埋点调试 / 自动校验工具")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    def common(p, need_spec=True):
+        p.add_argument("--spec", default="trackcheck.yaml" if need_spec else None, help="规则文件，默认 ./trackcheck.yaml")
+        p.add_argument("--serial", help="adb 设备序列号（多台设备时）")
+
+    p = sub.add_parser("check", help="离线校验日志文件")
+    common(p)
+    p.add_argument("--log", required=True, help="logcat 日志文件")
+    p.add_argument("--case", help="按 cases 中的用例检查覆盖率")
+    p.add_argument("--only", nargs="*", help="只校验这些点位ID")
+    p.add_argument("--out", default="reports", help="报告输出目录")
+    p.add_argument("-q", "--quiet", action="store_true", help="不逐条打印")
+    p.set_defaults(fn=cmd_check)
+
+    for name, fn, hlp in (("live", cmd_live, "实时抓 logcat 校验，Ctrl+C 结束"),
+                          ("run", cmd_run, "执行自动化脚本并校验，例: run --case X -- maestro test flow.yaml")):
+        p = sub.add_parser(name, help=hlp)
+        common(p)
+        p.add_argument("--case", help="按 cases 中的用例检查覆盖率")
+        p.add_argument("--out", default="reports", help="报告/会话日志输出目录")
+        p.add_argument("--clear", action="store_true", default=(name == "run"), help="开始前清空 logcat 缓冲")
+        p.add_argument("--pull", action="store_true", help="结束后按 device.pull 拉取最新 db/接口 dump 再出最终报告")
+        p.add_argument("--linger", type=float, default=2.0, help="脚本结束后继续抓取的秒数（等最后的埋点打出来）")
+        if name == "run":
+            p.add_argument("command", nargs=argparse.REMAINDER, help="-- 之后为要执行的自动化命令")
+        p.set_defaults(fn=fn)
+
+    p = sub.add_parser("infer", help="根据日志+接口JSON+DB反推字段来源，生成规则草稿")
+    common(p, need_spec=False)
+    p.add_argument("--log", required=True)
+    p.add_argument("--json", nargs="*", help="接口返回 JSON 文件（可多个/通配符）")
+    p.add_argument("--db", nargs="*", help="SQLite 文件")
+    p.add_argument("--pattern", help="日志正则（不用 --spec 时）")
+    p.add_argument("-o", "--output", help="草稿输出文件，默认打印到屏幕")
+    p.set_defaults(fn=cmd_infer)
+
+    p = sub.add_parser("pull", help="按 device.pull 从手机拉取 db / 接口 dump")
+    common(p)
+    p.set_defaults(fn=cmd_pull)
+
+    a = ap.parse_args(argv)
+    if getattr(a, "spec", None) and not os.path.exists(a.spec):
+        raise SystemExit(f"找不到规则文件 {a.spec}（用 --spec 指定，或先用 infer 生成草稿）")
+    return a.fn(a)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

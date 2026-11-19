@@ -1,0 +1,11 @@
+[
+  { "eventId": "88860004086007", "eventName": "我的页-卡片曝光" },
+  { "eventId": "88860004086008", "eventName": "我的页-卡片点击" },
+  { "eventId": "88860004086009", "eventName": "我的页-卡片关闭" },
+  { "eventId": "88860001000001", "eventName": "搜索框点击" },
+  { "eventId": "88860001000002", "eventName": "搜索结果曝光" },
+  { "eventId": "88860001000003", "eventName": "搜索结果点击" },
+  { "eventId": "88860002000001", "eventName": "首页 Banner 曝光" },
+  { "eventId": "88860002000002", "eventName": "首页 Banner 点击" },
+  { "eventId": "88860009999999", "eventName": "我的页下拉刷新" }
+]
