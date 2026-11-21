@@ -1,128 +1,125 @@
-# 由 埋点小岛 保存（原注释不保留，上一个版本备份在同名 .bak）
-options: {null_equals_empty: true, strict_fields: false, datasource_dir: datasources}
+# =====================================================================
+# trackcheck 规则文件（示例）
+# 一个点位 = context（去接口 JSON 里定位数据） + fields（每个字段怎么校验）
+# 点位多了可以拆文件：include: ["events/*.yaml"]
+# =====================================================================
+
+options:
+  null_equals_empty: true     # 上报 null 和 "" 视为相等
+  strict_fields: false        # true 时：上报了规则里没定义的字段算失败
+  datasource_dir: datasources # 数据源目录：放进去的 .json / .db 自动成为数据源，名字 = 文件名
+
 log:
-  pattern: Event:\s*id:\s*(?P<id>\d+)\s*data:\s*(?P<data>.*?)\s*$
-  logcat_args: []
+  # 从 logcat 里识别埋点行的正则，必须包含 id、data 两个命名分组
+  # data 支持：Kotlin data class toString、JSON、HashMap.toString
+  pattern: 'Event:\s*id:\s*(?P<id>\d+)\s*data:\s*(?P<data>.*?)\s*$'
+  logcat_args: []             # 例如 ["-s", "Tracker:D"] 只抓某个 TAG
+
 device:
-  package: com.example.app
-  dbs: [app.db]
+  package: com.example.app    # 只要 包名 + db 名，root 测试机 / debug 包都能拉 /data/data/<包名>/databases/<db>
+  dbs: [app.db]               # 拉到 datasources/ 下；实时调试时还会在每个事件前后自动拍 DB 快照
+
+# 数据源：datasources/ 目录里的 mine_page.json、app.db 自动可用（名字 mine_page、app），
+# 只有特殊类型才需要在这里写，比如「接口 JSON 被缓存在 DB 某张表里」：
 sources:
-  mine_api_cache: {type: sqlite_json, db: app, sql: SELECT content FROM api_cache WHERE cache_key = 'mine_page' ORDER BY updated_at DESC LIMIT 1}
+  mine_api_cache:
+    type: sqlite_json
+    db: app
+    sql: SELECT content FROM api_cache WHERE cache_key = 'mine_page' ORDER BY updated_at DESC LIMIT 1
+
+# 多个点位共用的枚举 / 映射（events = 关联的点位）。只有一个点位用的，直接写在字段里。
 dicts:
-  card_type:
+  card_type:                  # 接口 cardType  ->  埋点 cardType
     desc: 我的页卡片类型映射
     events: [88860004086007, 88860004086008]
     items: {large_normal: 1, small_normal: 2, double_column: 3}
-  card_type_name:
+  card_type_name:             # 埋点 cardType  ->  埋点 cardName
     events: [88860004086007, 88860004086008]
     items: {1: 大单卡, 2: 小单卡, 3: 双列卡}
+
+# ---------------- 可复用模板：曝光/点击共用一套字段 ----------------
 templates:
   mine_card:
     context:
-      res:
-        from: mine_page
-        path: data.myPage[*].res[*]
-        where: {id: '{resID}'}
-      card:
-        from: res
-        path: body.cards[*]
-        where: {cardId: '{operationCardId}'}
-      item: {from: card, path: 'items[0]'}
+      # 用上报的 resID 在接口里找到对应资源位节点，再用 operationCardId 找到卡片
+      res:  {from: mine_page, path: "data.myPage[*].res[*]", where: {id: "{resID}"}}
+      card: {from: res, path: "body.cards[*]", where: {cardId: "{operationCardId}"}}
+      item: {from: card, path: "items[0]"}
     fields:
-      resID: {from: res.id, desc: 资源位ID}
-      onPlanID: {from: res.planId, desc: 投放计划ID}
-      resName: {from: res.planName, desc: 投放计划名称}
+      resID:           {from: res.id, desc: 资源位ID}
+      onPlanID:        {from: res.planId, desc: 投放计划ID}
+      resName:         {from: res.planName, desc: 投放计划名称}
       operationCardId: {from: card.cardId, desc: 运营卡片ID}
-      cardType: {from: card.cardType, map: card_type, desc: 卡片类型}
-      cardName:
-        from: card.cardType
-        map: [card_type, card_type_name]
-        desc: 卡片名称
-      dismissLogic: {from: item.disappearType, desc: 消失逻辑}
-      contentPoolId: {from: item.contentPool.contentPoolId, desc: 内容池ID}
-      channelId: {from: item.link.channelId, desc: 渠道ID}
-      subChannelId: {from: item.link.subChannelId, desc: 子渠道ID}
+      cardType:        {from: card.cardType, map: card_type, desc: 卡片类型}
+      cardName:        {from: card.cardType, map: [card_type, card_type_name], desc: 卡片名称}
+      dismissLogic:    {from: item.disappearType, desc: 消失逻辑}
+      contentPoolId:   {from: item.contentPool.contentPoolId, desc: 内容池ID}
+      channelId:       {from: item.link.channelId, desc: 渠道ID}
+      subChannelId:    {from: item.link.subChannelId, desc: 子渠道ID}
+
+# ---------------- 点位 ----------------
 events:
   88860004086007:
     name: 我的页-卡片曝光
     extends: mine_card
-    dedupe: [resID, operationCardId]
+    dedupe: [resID, operationCardId]   # 同一张卡 2 秒内重复曝光给警告
     dedupe_window: 2
+
   88860004086008:
     name: 我的页-卡片点击
     extends: mine_card
     context:
-      res:
-        from: mine_api_cache
-        path: data.myPage[*].res[*]
-        where: {id: '{resID}'}
+      # 演示：点击事件改用 DB 里缓存的接口 JSON 来定位（其余 context 继承模板）
+      res: {from: mine_api_cache, path: "data.myPage[*].res[*]", where: {id: "{resID}"}}
     fields:
-      rank:
-        type: int
-        range: [1, 20]
-        desc: 卡片位置（从1开始）
-      type:
-        enum: {open: 打开, close: 关闭}
-        desc: 点击类型
-      notificationNum: {type: int, desc: 角标数（可为空）}
-      operationCardType:
-        enum: {1: 普通运营卡, 2: 活动运营卡}
-        desc: 运营卡类型
-      cardState:
-        enum: {0: 未领取, 1: 已领取}
-        desc: 卡片状态
-      resName: {db: app, sql: 'SELECT plan_name FROM res_plan WHERE res_id = :resID', desc: 投放计划名（查DB）}
+      rank:              {type: int, range: [1, 20], desc: 卡片位置（从1开始）}
+      type:              {enum: {open: 打开, close: 关闭}, desc: 点击类型}
+      notificationNum:   {type: int, desc: 角标数（可为空）}
+      operationCardType: {enum: {1: 普通运营卡, 2: 活动运营卡}, desc: 运营卡类型}
+      cardState:         {enum: {0: 未领取, 1: 已领取}, desc: 卡片状态}
+      resName:           {db: app, sql: "SELECT plan_name FROM res_plan WHERE res_id = :resID", desc: 投放计划名（查DB）}
+
   88860001000001:
     name: 搜索框点击
     fields:
-      source:
-        enum: {1: 首页, 2: 搜索框, 3: 我的页, 4: 桌面}
-        desc: 来源
-      page:
-        enum: {home: 首页, mine: 我的页, search: 搜索页}
-        desc: 页面
+      source:  {enum: {1: 首页, 2: 搜索框, 3: 我的页, 4: 桌面}, desc: 来源}
+      page:    {enum: {home: 首页, mine: 我的页, search: 搜索页}, desc: 页面}
       keyword: {not_empty: true, desc: 搜索词}
     asserts:
-    - {expr: not (source == '1' and page != 'home'), msg: source=1(首页) 时 page 必须是 home}
+      - {expr: "not (source == '1' and page != 'home')", msg: "source=1(首页) 时 page 必须是 home"}
+
+  # 会随操作变化的计数 + 由用户操作决定的值，怎么校验见下面注释
   88860005000001:
     name: 历史记录页曝光
     fields:
-      allNums: {sql: SELECT count(*) FROM history, db: app, compare: lte, trend: up, desc: 全部历史数}
-      novelNums: {sql: SELECT count(*) FROM history WHERE type = 'novel', db: app, compare: lte, desc: 小说数}
-      webNums: {sql: SELECT count(*) FROM history WHERE type = 'web', db: app, compare: lte, desc: 网页数}
-      videoNums: {sql: SELECT count(*) FROM history WHERE type = 'video', db: app, compare: lte, desc: 视频数}
-      source:
-        enum: {0: 端内, 1: 桌面小组件}
-        ask: true
-        desc: 入口
-      tab:
-        enum: {history: 历史, bookmark: 书签}
-        ask: true
-        desc: 当前 Tab
+      # 计数：和 DB 对比。实时调试时自动在事件前后各拍一次 DB 快照，上报值落在 [前, 后] 区间就算对；
+      # 离线校验（DB 是测试结束才拉的）时数量只会增加，所以用 compare: lte（上报值 ≤ 结束时的 DB 值）
+      allNums:   {sql: "SELECT count(*) FROM history", db: app, compare: lte, trend: up, desc: 全部历史数}
+      novelNums: {sql: "SELECT count(*) FROM history WHERE type = 'novel'", db: app, compare: lte, desc: 小说数}
+      webNums:   {sql: "SELECT count(*) FROM history WHERE type = 'web'", db: app, compare: lte, desc: 网页数}
+      videoNums: {sql: "SELECT count(*) FROM history WHERE type = 'video'", db: app, compare: lte, desc: 视频数}
+      # 由用户操作决定：ask: true —— 先按文档枚举检查合法性，再按「本次操作场景」比对，没设场景就等你点「对 / 不对」
+      source:    {enum: {0: 端内, 1: 桌面小组件}, ask: true, desc: 入口}
+      tab:       {enum: {history: 历史, bookmark: 书签}, ask: true, desc: 当前 Tab}
     asserts:
-    - {expr: int(allNums) == int(novelNums) + int(webNums) + int(videoNums), msg: allNums 应等于 小说 + 网页 + 视频 之和}
+      # 自洽校验：不依赖 DB 时机，最稳
+      - {expr: "int(allNums) == int(novelNums) + int(webNums) + int(videoNums)", msg: "allNums 应等于 小说 + 网页 + 视频 之和"}
+
+# ---------------- 测试用例：本轮要测哪些点位 + 每个字段期望是什么 ----------------
+# values 里填的值会在校验时比对（可以写多个候选值，满足其一即可）；
+# 入口、Tab 这种只有测试的人知道的值，在用例里填好，实时调试时还能随手改。
 cases:
   我的页卡片:
     desc: 进入我的页，看到顶部氛围卡并点击打开
     expect:
-    - 88860004086007
-    - id: 88860004086008
-      values: {type: open, operationCardType: 1}
-    - {id: 88860001000001, min: 1}
-    - {id: 88860004086009, min: 1}
+      - 88860004086007
+      - id: 88860004086008
+        values: {type: open, operationCardType: 1}
+      - {id: 88860001000001, min: 1}
+      - {id: 88860004086009, min: 1}    # 演示：没触发的点位会被标红
   历史记录-桌面小组件进入:
     desc: 从桌面小组件进入历史记录页，再切到书签 Tab
     expect:
-    - id: 88860005000001
-      min: 2
-      values:
-        source: 1
-        tab: [history, bookmark]
-  我的页卡片 - 副本:
-    desc: 进入我的页，看到顶部氛围卡并点击打开
-    expect:
-    - '88860004086007'
-    - id: '88860004086008'
-      values: {type: open, operationCardType: 1}
-    - '88860001000001'
-    - '88860004086009'
+      - id: 88860005000001
+        min: 2
+        values: {source: 1, tab: [history, bookmark]}
