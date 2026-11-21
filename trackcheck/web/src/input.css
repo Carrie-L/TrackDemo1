@@ -3,8 +3,12 @@
 @tailwind utilities;
 
 @layer base {
-  html { font-size: 14px; }
-  body { @apply font-sans text-sm text-ink antialiased; }
+  html { font-size: 14px; caret-color: transparent; }
+  body { @apply font-sans text-sm text-ink antialiased select-none; caret-color: transparent; cursor: default; }
+  input, textarea, [contenteditable="true"] { -webkit-user-select: text; user-select: text; caret-color: #664A30; cursor: text; }
+  select { caret-color: transparent; cursor: pointer; }
+  pre, code { -webkit-user-select: text; user-select: text; caret-color: transparent; }
+  button:focus:not(:focus-visible), summary:focus { outline: none; }
   ::selection { background: #E2F1D4; }
   [x-cloak] { display: none !important; }
 }

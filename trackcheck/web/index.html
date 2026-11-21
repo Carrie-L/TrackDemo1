@@ -259,7 +259,7 @@
               <span class="subtle" x-show="!live.plan.length">选一个用例或添加点位；点击点位胶囊就能随时改期望值</span>
               <div class="ml-auto flex flex-wrap items-center gap-1.5">
                 <input x-show="live.plan.length > 6 && live.planOpen" class="input !w-36 !py-1 text-xs" placeholder="筛选清单…" x-model="live.planQ">
-                <input class="input !w-52 !py-1 text-xs" list="evlist" placeholder="＋ 添加点位：ID 或名称" x-model="live.addId" @change="addPlanRow()" @keydown.enter="addPlanRow()">
+                <input class="input !w-52 !py-1 text-xs" list="evlist" placeholder="＋ 添加点位：ID 或名称" x-model="live.addId" @input="onPickDatalist($event, 'live')" @change="addPlanRow()" @keydown.enter.prevent="addPlanRow(); $event.target.blur()">
                 <button class="btn-wood btn-xs" x-show="live.plan.length" @click="savePlanToCase()"><img class="pic h-4 w-4" src="/static/icons/cases.png" alt=""><span x-text="live.caseName ? '保存回用例' : '存为用例'"></span></button>
                 <button class="btn-ghost btn-xs" x-show="live.plan.length" @click="live.planOpen = !live.planOpen"><span x-text="live.planOpen ? '收起' : '展开'"></span><svg class="ico h-3.5 w-3.5 transition" :class="live.planOpen && 'rotate-90'"><use :href="icon('chevron-right')"></use></svg></button>
               </div>
@@ -888,7 +888,7 @@
                     </button>
                     <button class="px-2 py-1 text-sakura-600 hover:bg-sakura-200/80 hover:text-sakura-700" title="放弃复制" @click="clearCopiedRow()"><svg class="ico h-3 w-3"><use :href="icon('x')"></use></svg></button>
                   </div>
-                  <input class="input !w-60 !rounded-full !border-[1.5px] !border-pond-200 !bg-pond-50/90 !px-3.5 !py-1 text-xs font-bold text-wood-700 placeholder:text-wood-600 focus:!bg-white" list="evlist" placeholder="＋ 添加点位：输入 ID 或名称" x-model="caseEd.addId" @change="addCaseRow()" @keydown.enter="addCaseRow()">
+                  <input class="input !w-60 !rounded-full !border-[1.5px] !border-pond-200 !bg-pond-50/90 !px-3.5 !py-1 text-xs font-bold text-wood-700 placeholder:text-wood-600 focus:!bg-white" list="evlist" placeholder="＋ 添加点位：输入 ID 或名称" x-model="caseEd.addId" @input="onPickDatalist($event, 'case')" @change="addCaseRow()" @keydown.enter.prevent="addCaseRow(); $event.target.blur()">
                 </div>
               </div>
               <div class="space-y-3">
@@ -954,16 +954,23 @@
                    :class="rep.cur?.name === r.name ? 'border-pond-300 bg-white shadow-soft ring-2 ring-pond-100' : 'border-[#EAF4FB] bg-white/70 hover:border-pond-200 hover:bg-white'"
                    @click="openReport(r.name)">
                 <div class="flex items-center gap-1.5">
+                  <span class="grid h-5 w-5 shrink-0 place-items-center rounded-full border text-[10px] font-black"
+                        :class="!r.summary.ok ? 'border-[#F5B8CB] bg-[#FFE4EE] text-[#C84B6B]' : (r.summary.ask || r.summary.warn ? 'border-[#9FD8FA] bg-[#E1F4FE] text-wood-700' : 'border-[#B9E2AA] bg-[#E3F6DC] text-[#3F8430]')"
+                        :title="!r.summary.ok ? '存在不通过项' : (r.summary.ask ? '含待确认项' : '本轮通过')">
+                    <svg x-show="r.summary.ok && !r.summary.ask && !r.summary.warn" class="ico h-3 w-3"><use :href="icon('check')"></use></svg>
+                    <svg x-show="!r.summary.ok" class="ico h-3 w-3"><use :href="icon('x')"></use></svg>
+                    <span x-show="r.summary.ok && (r.summary.ask || r.summary.warn)">?</span>
+                  </span>
                   <span class="whitespace-nowrap text-[12.5px] font-extrabold text-wood-700 tabular-nums" :title="r.time" x-text="r.time"></span>
-                  <span class="ml-auto max-w-[78px] truncate rounded-full border border-pond-200 bg-pond-100/90 px-2 py-0.5 text-[10.5px] font-bold text-wood-700 shadow-[inset_0_1px_0_rgba(255,255,255,0.85)]" x-show="r.case" :title="r.case" x-text="r.case"></span>
+                  <span class="ml-auto max-w-[72px] truncate rounded-full border border-pond-200 bg-pond-100/90 px-2 py-0.5 text-[10.5px] font-bold text-wood-700 shadow-[inset_0_1px_0_rgba(255,255,255,0.85)]" x-show="r.case" :title="r.case" x-text="r.case"></span>
                   <button class="hidden shrink-0 rounded-lg p-1 text-ink-faint transition hover:bg-berry-50 hover:text-berry-600 group-hover:inline-flex" :class="!r.case && 'ml-auto'" title="删除这份报告" @click.stop="deleteReport(r.name)"><svg class="ico h-3.5 w-3.5"><use :href="icon('trash-2')"></use></svg></button>
                 </div>
-                <div class="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11.5px] font-bold text-wood-700">
-                  <span class="inline-flex items-center gap-1"><img class="pic h-[18px] w-[18px]" src="/static/icons/sprout.png" alt=""><span x-text="'通过 ' + r.summary.pass"></span></span>
+                <div class="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11.5px] font-medium text-ink-soft">
+                  <span class="inline-flex items-center gap-1"><img class="pic h-[17px] w-[17px]" src="/static/icons/sprout.png" alt=""><span x-text="'通过 ' + r.summary.pass"></span></span>
                   <span class="text-ink-faint" x-show="r.summary.fail">·</span>
-                  <span class="inline-flex items-center gap-1" x-show="r.summary.fail"><img class="pic h-[18px] w-[18px]" src="/static/icons/bug.png" alt=""><span x-text="'失败 ' + r.summary.fail"></span></span>
+                  <span class="inline-flex items-center gap-1" x-show="r.summary.fail"><img class="pic h-[17px] w-[17px]" src="/static/icons/bug.png" alt=""><span x-text="'失败 ' + r.summary.fail"></span></span>
                   <span class="text-ink-faint" x-show="r.summary.ask">·</span>
-                  <span class="inline-flex items-center gap-1" x-show="r.summary.ask"><img class="pic h-[18px] w-[18px]" src="/static/icons/bud.png" alt=""><span x-text="'待确认 ' + r.summary.ask"></span></span>
+                  <span class="inline-flex items-center gap-1" x-show="r.summary.ask"><img class="pic h-[17px] w-[17px]" src="/static/icons/bud.png" alt=""><span x-text="'待确认 ' + r.summary.ask"></span></span>
                 </div>
               </div>
             </template>
@@ -1086,15 +1093,31 @@
               </div>
               <div class="space-y-2.5">
                 <template x-for="r in repResults" :key="r.seq">
-                  <details class="rounded-2xl border border-wood-100 bg-white/90 shadow-sm" :class="'bar-' + r.status" :open="rep.expandAll || (r.status === 'FAIL' && rep.view === 'bad')">
+                  <details class="rounded-2xl border border-wood-100 bg-white/90 shadow-sm" :class="'bar-' + r.status" :open="rep.expandAll || (rep.view === 'bad' && r.status === 'FAIL') || (rep.view === 'ask' && r.status === 'ASK') || (rv && rv.seq === r.seq)">
                     <summary class="flex cursor-pointer list-none flex-wrap items-center gap-2 px-4 py-2.5 hover:bg-cream/60">
-                      <span class="chip" :class="'st-' + r.status" x-text="statusText(r.status)"></span>
+                      <button type="button" class="chip border border-transparent transition hover:ring-2 hover:ring-pond-200" :class="'st-' + r.status" :title="r.status !== 'UNKNOWN' ? '点击人工修改该条判定（通过 / 有问题 / 待确认）' : ''" @click.prevent.stop="r.status !== 'UNKNOWN' && openReview(r.seq, '', r.status, r.manual_note || '')">
+                        <img class="pic h-4 w-4" x-show="statusIcon(r.status)" :src="pic(statusIcon(r.status) || 'sprout')" alt="">
+                        <span x-text="statusText(r.status)"></span>
+                        <svg x-show="r.status !== 'UNKNOWN'" class="ico h-3 w-3 opacity-60"><use :href="icon('chevron-down')"></use></svg>
+                      </button>
                       <span class="font-mono text-xs text-ink-soft" x-text="'#' + r.seq + ' ' + (r.ts || '')"></span>
                       <span class="font-bold text-wood-700" x-text="r.name || r.cls"></span><span class="code" x-text="r.id"></span>
+                      <span class="text-xs text-ink-soft" x-show="r.manual_note" x-text="'· 备注：' + r.manual_note"></span>
                       <span class="ml-auto chip st-FAIL" x-show="badCount(r)" x-text="badCount(r) + ' 个问题'"></span>
                       <span class="ml-auto chip st-ASK" x-show="!badCount(r) && askCount(r)" x-text="askCount(r) + ' 待确认'"></span>
                     </summary>
                     <div class="border-t border-wood-100 px-4 pb-4 pt-3">
+                      <template x-if="isReviewOpen(r.seq, '')">
+                        <div class="pop mb-3 flex flex-wrap items-center gap-2 rounded-2xl border-[1.5px] border-pond-200 bg-pond-50/90 p-2.5">
+                          <span class="text-xs font-bold text-wood-700">整条判定：</span>
+                          <button type="button" class="chip border transition" :class="rv.status === 'PASS' ? 'border-[#84C96C] bg-[#DFF4D4] text-wood-700 shadow-sm' : 'border-pond-200 bg-white text-ink-soft hover:bg-leaf-50'" @click="rv.status = 'PASS'"><img class="pic h-4 w-4" src="/static/icons/sprout.png" alt="">通过</button>
+                          <button type="button" class="chip border transition" :class="rv.status === 'FAIL' ? 'border-[#EA8CBA] bg-[#F09BC6] text-white shadow-sm' : 'border-pond-200 bg-white text-ink-soft hover:bg-sakura-50'" @click="rv.status = 'FAIL'"><img class="pic h-4 w-4" src="/static/icons/bug.png" alt="">有问题</button>
+                          <button type="button" class="chip border transition" :class="rv.status === 'ASK' ? 'border-[#9FD8FA] bg-[#C7E9FB] text-wood-700 shadow-sm' : 'border-pond-200 bg-white text-ink-soft hover:bg-pond-50'" @click="rv.status = 'ASK'"><img class="pic h-4 w-4" src="/static/icons/bud.png" alt="">待确认</button>
+                          <input class="input !w-60 !rounded-full !py-1 !px-3 text-xs" placeholder="可选：输入判定理由…" x-model="rv.note" @keydown.enter="saveReview()" @keydown.escape="rv = null">
+                          <button type="button" class="btn-leaf btn-xs" :disabled="busy" @click="saveReview()">保存</button>
+                          <button type="button" class="btn-ghost btn-xs" @click="rv = null">取消</button>
+                        </div>
+                      </template>
                       <div class="mb-2 flex justify-end gap-2" x-show="r.status !== 'UNKNOWN'">
                         <button class="btn-wood btn-xs" @click="copyPrompt(r.id, r.raw)"><img class="pic h-4 w-4" src="/static/icons/ai.png" alt="">复制 AI 提示词</button>
                         <button class="btn-wood btn-xs" @click="openEventFromResult(r)"><img class="pic h-4 w-4" src="/static/icons/rules.png" alt="">编辑规则</button>
@@ -1113,13 +1136,34 @@
                           <template x-for="[k, v] in Object.entries(r.data || {})"><tr><td class="font-mono font-bold" x-text="k"></td><td class="break-all font-mono text-xs" x-text="v ?? 'null'"></td></tr></template>
                         </tbody></table></div>
                       </div>
-                      <div x-show="r.status !== 'UNKNOWN'" class="overflow-x-auto rounded-xl border border-wood-100"><table class="tbl"><thead><tr><th>字段</th><th>上报值</th><th>期望值</th><th>来源</th><th>结果</th></tr></thead><tbody>
+                      <div x-show="r.status !== 'UNKNOWN'" class="overflow-x-auto rounded-xl border border-wood-100"><table class="tbl"><thead><tr><th>字段</th><th>上报值</th><th>期望值</th><th>来源</th><th>结果（点击可改）</th></tr></thead><tbody>
                         <template x-for="f in r.fields.filter(x => rep.view === 'bad' ? ['FAIL', 'WARN', 'ASK'].includes(x.status) : rep.view === 'ask' ? x.status === 'ASK' : true)"><tr :class="'row-' + f.status">
                           <td><div class="font-mono font-bold text-wood-700" x-text="f.field"></div><div class="subtle" x-text="f.desc"></div></td>
                           <td class="max-w-[200px] break-all font-mono text-xs" :class="f.status === 'FAIL' && 'font-bold text-berry-700'" x-text="f.actual"></td>
                           <td class="max-w-[200px] break-all font-mono text-xs" :class="f.status === 'FAIL' && f.expected && 'font-bold text-leaf-700'" x-text="f.expected"></td>
                           <td class="max-w-[220px] break-all text-[11px] text-ink-soft" x-text="f.source"></td>
-                          <td><span class="chip" :class="'st-' + f.status" x-text="statusText(f.status)"></span><div class="mt-1 text-xs" x-text="f.reason"></div></td></tr></template>
+                          <td class="min-w-[220px]">
+                            <button type="button" class="chip border border-transparent transition hover:ring-2 hover:ring-pond-200" :class="'st-' + f.status" title="点击修改该字段判定（通过 / 有问题 / 待确认）并可填理由" @click="openReview(r.seq, f.field, f.status, f.note || '')">
+                              <img class="pic h-4 w-4" x-show="statusIcon(f.status)" :src="pic(statusIcon(f.status) || 'sprout')" alt="">
+                              <span x-text="statusText(f.status)"></span>
+                              <svg class="ico h-3 w-3 opacity-60"><use :href="icon('chevron-down')"></use></svg>
+                            </button>
+                            <div class="mt-1 text-xs text-ink-soft" x-show="f.reason" x-text="f.reason"></div>
+                            <template x-if="isReviewOpen(r.seq, f.field)">
+                              <div class="pop mt-2 space-y-2 rounded-2xl border-[1.5px] border-pond-200 bg-white p-2.5 shadow-soft">
+                                <div class="flex flex-wrap items-center gap-1.5">
+                                  <button type="button" class="chip border transition" :class="rv.status === 'PASS' ? 'border-[#84C96C] bg-[#DFF4D4] text-wood-700 shadow-sm' : 'border-pond-200 bg-white text-ink-soft hover:bg-leaf-50'" @click="rv.status = 'PASS'"><img class="pic h-4 w-4" src="/static/icons/sprout.png" alt="">通过</button>
+                                  <button type="button" class="chip border transition" :class="rv.status === 'FAIL' ? 'border-[#EA8CBA] bg-[#F09BC6] text-white shadow-sm' : 'border-pond-200 bg-white text-ink-soft hover:bg-sakura-50'" @click="rv.status = 'FAIL'"><img class="pic h-4 w-4" src="/static/icons/bug.png" alt="">有问题</button>
+                                  <button type="button" class="chip border transition" :class="rv.status === 'ASK' ? 'border-[#9FD8FA] bg-[#C7E9FB] text-wood-700 shadow-sm' : 'border-pond-200 bg-white text-ink-soft hover:bg-pond-50'" @click="rv.status = 'ASK'"><img class="pic h-4 w-4" src="/static/icons/bud.png" alt="">待确认</button>
+                                </div>
+                                <div class="flex items-center gap-1.5">
+                                  <input class="input !flex-1 !rounded-full !py-1 !px-3 text-xs" placeholder="可选：输入判定理由…" x-model="rv.note" @keydown.enter="saveReview()" @keydown.escape="rv = null">
+                                  <button type="button" class="btn-leaf btn-xs" :disabled="busy" @click="saveReview()">保存</button>
+                                  <button type="button" class="btn-ghost btn-xs !px-2" @click="rv = null">取消</button>
+                                </div>
+                              </div>
+                            </template>
+                          </td></tr></template>
                       </tbody></table></div>
                     </div>
                   </details>

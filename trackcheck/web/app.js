@@ -60,7 +60,7 @@ function app() {
     evd: { entries: [], docs: [], q: '', filter: 'all', open: null, loaded: false, overwrite: false, result: null, limit: 100 },
     ds: { files: [], dir: '', pkg: '', dbs: [], devDbs: null, pasteName: '', pasteText: '', showPaste: false, log: '', advanced: false, drag: false },
     srcEd: null, caseEd: null, copiedRow: null, settingsEd: null, pullLog: '',
-    rep: { list: [], cur: null, view: 'bad', showUnk: false, q: '', expandAll: false }, yv: null,
+    rep: { list: [], cur: null, view: 'bad', showUnk: false, q: '', expandAll: false }, rv: null, yv: null,
     checkForm: { path: '', content: '', fileName: '', caseName: '' },
 
     async init() {
@@ -354,7 +354,13 @@ function app() {
     },
     valText(v) { return this._vals(v).join(' | '); },
     setValText(row, f, t) { this._setVals(row, f, String(t || '').split('|').map(x => x.trim()).filter(Boolean)); },
-    addRowField(row, key) { key = String(key || '').trim(); if (!key || (row.values || {})[key] !== undefined) return; row.values = { ...(row.values || {}), [key]: '' }; },
+    addRowField(row, key) {
+      key = String(key || '').trim();
+      if (!key) return;
+      if ((row.values || {})[key] !== undefined) return this.toast(`字段「${key}」已在列表中`, 'warn');
+      row.values = { ...(row.values || {}), [key]: '' };
+      this.toast(`已添加字段「${key}」`, 'ok');
+    },
     caseRows(c) {
       return (c?.expect || []).map(x => { const o = typeof x === 'object' ? x : { id: x };
         return { key: Math.random(), id: String(o.id), min: o.min ?? 1, max: o.max ?? '', where: o.where || null, values: clone(o.values || {}), showAll: false }; });
@@ -401,11 +407,29 @@ function app() {
       this.live.planOpen = true; this.live.planSel = id;
       window.scrollTo({ top: 0, behavior: 'smooth' });
     },
+    onPickDatalist(ev, mode) {
+      const val = String(ev?.target?.value || '').trim();
+      if (!val) return;
+      const isPick = !ev.inputType || ev.inputType === 'insertReplacementText';
+      if (isPick && this.evPickList.some(x => x.id === val)) {
+        if (mode === 'case' && this.caseEd) { this.caseEd.addId = val; this.addCaseRow(); }
+        else if (mode === 'live') { this.live.addId = val; this.addPlanRow(); }
+        ev.target.blur();
+      }
+    },
     addPlanRow() {
-      const id = this.pickId(this.live.addId); if (!id) return;
-      if (!this.live.plan.some(r => r.id === id)) this.live.plan.push({ key: Math.random(), id, min: 1, max: '', values: {}, showAll: false });
+      const raw = String(this.live.addId || '').trim();
+      if (!raw) return;
+      const id = this.pickId(raw);
+      if (!id) return this.toast('没找到这个点位，请输入完整的点位 ID 或名称', 'err');
+      const name = this.eventName(id);
+      const label = name ? `${name}（${id}）` : id;
+      const exists = this.live.plan.some(r => r.id === id);
+      if (!exists) this.live.plan.push({ key: Math.random(), id, min: 1, max: '', values: {}, showAll: false });
       this.live.planOpen = true; this.live.planSel = id;
       this.live.addId = '';
+      this.pushPlan();
+      this.toast(exists ? `点位「${label}」已在待测清单中` : `已添加点位「${label}」`, exists ? 'warn' : 'ok');
     },
     removePlanRow(ri) {
       const removed = this.live.plan.splice(ri, 1)[0]; if (!removed) return;
@@ -970,9 +994,15 @@ function app() {
       if (this.page !== 'cases') this.go('cases');
     },
     addCaseRow() {
-      const c = this.caseEd, id = this.pickId(c.addId); if (!id) return this.toast('没找到这个点位，输入完整的点位 ID 试试', 'err');
-      if (c.rows.some(r => r.id === id)) { c.addId = ''; return this.toast('这个点位已经在用例里了，多个期望值可以直接多选', 'warn'); }
+      const c = this.caseEd, raw = String(c?.addId || '').trim();
+      if (!c || !raw) return;
+      const id = this.pickId(raw);
+      if (!id) return this.toast('没找到这个点位，输入完整的点位 ID 或名称试试', 'err');
+      const name = this.eventName(id);
+      const label = name ? `${name}（${id}）` : id;
+      if (c.rows.some(r => r.id === id)) { c.addId = ''; return this.toast(`点位「${label}」已在当前用例中`, 'warn'); }
       c.rows.push({ key: Math.random(), id, min: 1, max: '', values: {}, showAll: false }); c.addId = ''; c.dirty = true;
+      this.toast(`已添加点位「${label}」`, 'ok');
     },
     removeCaseRow(ri) {
       const c = this.caseEd, removed = c.rows.splice(ri, 1)[0]; if (!removed) return;
@@ -1027,9 +1057,28 @@ function app() {
     useCaseInLive(name) { this.live.caseName = name; this.loadPlanFromCase(); this.go('live'); },
 
     // ---------------- 报告 ----------------
+    statusIcon(s) { return { PASS: 'sprout', FAIL: 'bug', ASK: 'bud', WARN: 'warn' }[s] || ''; },
     async openReport(name) {
       this.rep.cur = await this.call(() => this.api('/api/report?name=' + encodeURIComponent(name)));
-      this.rep.cur.name = name; this.rep.expandAll = false; this.go('reports');
+      this.rep.cur.name = name; this.rep.expandAll = false; this.rv = null; this.go('reports');
+    },
+    isReviewOpen(seq, field = '') {
+      return !!(this.rv && this.rv.seq === seq && (this.rv.field || '') === (field || ''));
+    },
+    openReview(seq, field, curStatus, curNote) {
+      if (this.isReviewOpen(seq, field)) { this.rv = null; return; }
+      const st = ['PASS', 'FAIL', 'ASK'].includes(curStatus) ? curStatus : (curStatus === 'WARN' ? 'FAIL' : 'PASS');
+      this.rv = { seq, field: field || '', status: st, note: curNote || '' };
+    },
+    async saveReview() {
+      if (!this.rv || !this.rep.cur) return;
+      const { seq, field, status, note } = this.rv;
+      const updated = await this.call(() => this.api('/api/report/review', {
+        name: this.rep.cur.name, seq, field, status, note
+      }), '已更新判定结果并同步报告');
+      this.rep.cur = updated;
+      this.rv = null;
+      await this.refresh();
     },
     async deleteReport(name) {
       if (!confirm('删除这份校验报告？')) return;

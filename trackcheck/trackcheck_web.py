@@ -24,7 +24,7 @@ import threading
 import time
 import traceback
 import webbrowser
-from collections import Counter, OrderedDict
+from collections import Counter, OrderedDict, defaultdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
@@ -587,6 +587,99 @@ class App:
         if self.live:
             self.live.report = None
         return {"ok": True, "deleted": n}
+
+    def api_report_review(self, b):
+        name = os.path.basename(str(b.get("name", "")).strip())
+        if not name:
+            raise ApiError("缺少报告名称")
+        jp = os.path.join(self.out, name + ".json")
+        if not os.path.exists(jp):
+            raise ApiError("报告不存在")
+        status = str(b.get("status", "")).strip().upper()
+        if status not in ("PASS", "FAIL", "ASK"):
+            raise ApiError("状态无效，仅支持 PASS / FAIL / ASK")
+        seq = int(b.get("seq", 0))
+        field = str(b.get("field") or "").strip()
+        note = str(b.get("note") or "").strip()
+
+        old_stat = os.stat(jp)
+        with open(jp, encoding="utf-8") as f:
+            rep = json.load(f)
+
+        target = next((r for r in rep.get("results", []) if int(r.get("seq", -1)) == seq), None)
+        if not target:
+            raise ApiError(f"找不到事件 #{seq}")
+
+        st_label = {"PASS": "通过", "FAIL": "有问题", "ASK": "待确认"}[status]
+        if field:
+            fobj = next((x for x in target.get("fields", []) if x.get("field") == field), None)
+            if not fobj:
+                raise ApiError(f"找不到字段 {field}")
+            fobj.setdefault("orig_status", fobj.get("status"))
+            fobj.setdefault("orig_reason", fobj.get("reason", ""))
+            fobj["status"] = status
+            fobj["manual"] = True
+            fobj["note"] = note
+            if note:
+                fobj["reason"] = f"人工判定（{st_label}）：{note}"
+            elif status == fobj.get("orig_status"):
+                fobj["reason"] = fobj.get("orig_reason", "")
+                fobj.pop("manual", None)
+            else:
+                orig = fobj.get("orig_reason", "")
+                fobj["reason"] = f"人工判定为「{st_label}」" + (f"（原：{orig}）" if orig else "")
+            target.pop("manual_status", None)
+            target.pop("manual_note", None)
+            target["status"] = tc.worst([x["status"] for x in target.get("fields", [])] + [e["status"] for e in target.get("errors", [])])
+        else:
+            target.setdefault("orig_status", target.get("status"))
+            target["manual_status"] = status
+            target["manual_note"] = note
+            if status == "PASS":
+                for x in target.get("fields", []):
+                    if x.get("status") in ("FAIL", "WARN", "ASK"):
+                        x.setdefault("orig_status", x.get("status"))
+                        x.setdefault("orig_reason", x.get("reason", ""))
+                        x["status"] = "PASS"
+                        x["manual"] = True
+                        x["note"] = note
+                        x["reason"] = f"人工整条判定通过：{note}" if note else "人工整条判定为「通过」"
+                for er in target.get("errors", []):
+                    if er.get("status") in ("FAIL", "WARN", "ASK"):
+                        er.setdefault("orig_status", er.get("status"))
+                        er["status"] = "INFO"
+            target["status"] = status
+
+        cnt = Counter(r["status"] for r in rep.get("results", []))
+        hot = defaultdict(lambda: {"count": 0, "reason": "", "name": ""})
+        for r in rep.get("results", []):
+            for x in r.get("fields", []):
+                if x.get("status") in ("FAIL", "WARN"):
+                    h = hot[(r["id"], x["field"])]
+                    h["count"] += 1
+                    h["reason"] = h["reason"] or x.get("reason", "")
+                    h["name"] = r.get("name", "")
+        rep["hot_fields"] = sorted(({"id": k[0], "field": k[1], **v} for k, v in hot.items()), key=lambda x: -x["count"])
+        cov_fail = sum(1 for c in rep.get("coverage", []) if c.get("status") == "FAIL")
+        rep["summary"] = {
+            "total": len(rep.get("results", [])),
+            "pass": cnt.get("PASS", 0),
+            "warn": cnt.get("WARN", 0),
+            "fail": cnt.get("FAIL", 0),
+            "unknown": cnt.get("UNKNOWN", 0),
+            "ask": cnt.get("ASK", 0),
+            "coverage_fail": cov_fail,
+            "ok": cnt.get("FAIL", 0) == 0 and cov_fail == 0,
+        }
+
+        hp, jp_out = tc.write_report(rep, self.out, name)
+        try:
+            os.utime(jp_out, (old_stat.st_atime, old_stat.st_mtime))
+            os.utime(hp, (old_stat.st_atime, old_stat.st_mtime))
+        except OSError:
+            pass
+        rep["name"] = name
+        return rep
 
     def api_source_json(self, q):
         try:
@@ -1562,6 +1655,7 @@ ROUTES = {
     ("POST", "/api/import/preview"): "api_import_preview", ("POST", "/api/import/apply"): "api_import_apply",
     ("POST", "/api/open_path"): "api_open_path",
     ("POST", "/api/report/delete"): "api_report_delete", ("POST", "/api/reports/clear"): "api_reports_clear",
+    ("POST", "/api/report/review"): "api_report_review",
 }
 
 MIME = {".html": "text/html; charset=utf-8", ".js": "application/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
