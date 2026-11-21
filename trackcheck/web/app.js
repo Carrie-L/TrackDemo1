@@ -58,7 +58,9 @@ function app() {
     imp: { fileName: '', content: '', preview: null, choices: {}, mode: 'merge', overwriteNames: true, catalog: true },
     fm: null, ai: null,
     evd: { entries: [], docs: [], q: '', filter: 'all', open: null, loaded: false, overwrite: false, result: null, limit: 100 },
-    ds: { files: [], dir: '', pkg: '', dbs: [], devDbs: null, pasteName: '', pasteText: '', showPaste: false, log: '', advanced: false, drag: false },
+    ds: { files: [], dir: '', pkg: '', dbs: [], devDbs: null, pasteName: '', pasteText: '', showPaste: false, log: '', advanced: false, drag: false, presets: [], histOpen: {} },
+    apiCap: { running: false, endpoint: '', name: '', tag: '', clear: true, lines: 0, captured: [], error: '', showText: false, rawLog: '' },
+    dsPreview: null,
     srcEd: null, caseEd: null, copiedRow: null, settingsEd: null, pullLog: '',
     rep: { list: [], cur: null, view: 'bad', showUnk: false, q: '', expandAll: false }, rv: null, yv: null,
     checkForm: { path: '', content: '', fileName: '', caseName: '' },
@@ -69,6 +71,7 @@ function app() {
       await this.refresh();
       this.loadDevices(); this.loadEvdict();
       setInterval(() => this.pollLive(), 1000);
+      setInterval(() => this.pollApiCap(), 1000);
       setInterval(() => this.loadDevices(), 15000);
       setInterval(() => { this.tipIdx = (this.tipIdx + 1) % TIPS.length; }, 9000);
       try { const saved = localStorage.getItem('tc_copied_row'); if (saved) this.copiedRow = JSON.parse(saved); } catch (e) {}
@@ -91,7 +94,7 @@ function app() {
     go(p, quiet) {
       this.page = p; if (!quiet) location.hash = p; window.scrollTo({ top: 0 });
       if (p === 'evdict' && !this.evd.loaded) this.loadEvdict();
-      if (p === 'sources') { this.loadDs(); if (!this.settingsEd && this.st) this.openSettings(); }
+      if (p === 'sources') { this.loadDs(); this.pollApiCap(true); if (!this.settingsEd && this.st) this.openSettings(); }
     },
     get tip() { return TIPS[this.tipIdx % TIPS.length]; },
     icon(n) { return '/static/icons.svg#i-' + n; },
@@ -884,7 +887,102 @@ function app() {
     },
 
     // ---------------- 数据源 ----------------
-    async loadDs() { try { const d = await this.api('/api/ds/list'); this.ds.files = d.files; this.ds.dir = d.dir; } catch (e) { this.toast(e.message, 'err'); } },
+    async loadDs() {
+      try {
+        const d = await this.api('/api/ds/list');
+        this.ds.files = d.files || [];
+        this.ds.dir = d.dir || '';
+        this.ds.presets = d.api_presets || [];
+      } catch (e) { this.toast(e.message, 'err'); }
+    },
+    inferApiName(ep) {
+      let s = String(ep || '').trim();
+      if (!s) return 'myPageV3';
+      try { if (/^https?:\/\//i.test(s)) s = new URL(s).pathname || s; } catch (e) {}
+      s = s.split('?')[0].replace(/\/+$/, '');
+      const seg = s.includes('/') ? s.slice(s.lastIndexOf('/') + 1) : s;
+      return seg.replace(/[^\w\-]/g, '_').replace(/^_+|_+$/g, '') || 'api_data';
+    },
+    pickApiPreset(p) {
+      this.apiCap.endpoint = p.endpoint || '';
+      this.apiCap.name = p.name || '';
+      this.apiCap.tag = p.tag || '';
+    },
+    async startApiCapture() {
+      const a = this.apiCap;
+      if (!a.endpoint.trim()) return this.toast('先输入要抓取的接口地址，如 /config/app/myPageV3', 'err');
+      const r = await this.call(() => this.api('/api/ds/api_capture/start', {
+        endpoint: a.endpoint.trim(), name: a.name.trim(), tag: a.tag.trim(),
+        clear: a.clear, serial: this.live.serial,
+      }), `开始监听接口「${a.endpoint.trim()}」，请去手机上操作触发`);
+      Object.assign(this.apiCap, {
+        running: !!r.running, endpoint: r.endpoint || a.endpoint, name: r.name || a.name,
+        tag: r.tag ?? a.tag, lines: r.lines || 0, captured: r.captured || [], error: r.error || '',
+      });
+      await this.loadDs();
+    },
+    async stopApiCapture() {
+      const r = await this.call(() => this.api('/api/ds/api_capture/stop', {}), '已停止抓取接口');
+      this.apiCap.running = false;
+      if (r.captured) this.apiCap.captured = r.captured;
+      await this.loadDs(); this.refresh();
+    },
+    async pollApiCap(force) {
+      if (!force && !this.apiCap.running) return;
+      try {
+        const prev = (this.apiCap.captured || []).length;
+        const d = await this.api('/api/ds/api_capture/poll');
+        const wasRunning = this.apiCap.running;
+        this.apiCap.running = !!d.running;
+        if (d.running || d.captured?.length) {
+          if (d.endpoint && !this.apiCap.endpoint) this.apiCap.endpoint = d.endpoint;
+          if (d.name && !this.apiCap.name) this.apiCap.name = d.name;
+          this.apiCap.lines = d.lines || 0;
+          this.apiCap.captured = d.captured || [];
+          this.apiCap.error = d.error || '';
+        }
+        if ((d.captured || []).length > prev) {
+          const top = d.captured[0];
+          this.toast(`已捕获接口数据「${top.file}」（默认已设为最新）`, 'ok');
+          await this.loadDs(); this.refresh();
+        } else if (wasRunning && !d.running && d.error) {
+          this.toast('接口监听异常：' + d.error, 'err');
+        }
+      } catch (e) {}
+    },
+    async extractApiFromText() {
+      const a = this.apiCap;
+      if (!a.endpoint.trim()) return this.toast('先输入要提取的接口地址', 'err');
+      if (!a.rawLog.trim()) return this.toast('请先粘贴包含 OkHttp 响应的 logcat 文本', 'err');
+      const r = await this.call(() => this.api('/api/ds/api_capture/extract', {
+        endpoint: a.endpoint.trim(), name: a.name.trim(), tag: a.tag.trim(), text: a.rawLog,
+      }));
+      this.apiCap.captured = [...(r.saved || []).slice().reverse(), ...(this.apiCap.captured || [])].slice(0, 30);
+      this.apiCap.rawLog = '';
+      this.toast(`已提取 ${r.count} 条响应并保存为「${r.latest.file}」（默认使用最新）`, 'ok');
+      await this.loadDs(); this.refresh();
+    },
+    toggleDsHist(file) {
+      this.ds.histOpen = { ...this.ds.histOpen, [file]: !this.ds.histOpen[file] };
+    },
+    async useDsHistory(file, hist) {
+      const r = await this.call(() => this.api('/api/ds/history/use', { file, hist }));
+      this.toast(`「${file}」已加载 ${r?.time || hist} 的历史记录`, 'ok');
+      await this.loadDs(); this.refresh();
+    },
+    async delDsHistory(file, hist) {
+      if (!confirm(`删除历史记录 ${hist}？`)) return;
+      await this.call(() => this.api('/api/ds/history/delete', { file, hist }), '已删除历史记录');
+      await this.loadDs();
+    },
+    async previewDsJson(name, sub) {
+      const d = await this.call(() => this.api('/api/source_json?name=' + encodeURIComponent(name)));
+      this.dsPreview = { title: name, sub: sub || '当前生效数据', text: JSON.stringify(d.data, null, 2) };
+    },
+    async previewHistJson(hist, sub) {
+      const d = await this.call(() => this.api('/api/ds/history/json?hist=' + encodeURIComponent(hist)));
+      this.dsPreview = { title: hist, sub: sub || '历史快照', text: JSON.stringify(d.data, null, 2) };
+    },
     uploadDs(ev) {
       const files = [...(ev.target?.files || ev.dataTransfer?.files || [])]; if (ev.target?.value !== undefined) ev.target.value = '';
       this.ds.drag = false;

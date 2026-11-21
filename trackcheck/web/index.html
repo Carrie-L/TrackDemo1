@@ -737,6 +737,78 @@
 
       <!-- ========== 数据源 ========== -->
       <section x-show="page === 'sources'" x-cloak class="flex flex-col gap-5">
+        <!-- 实时拉取接口数据（从 OkHttp / logcat 提取指定接口返回 JSON） -->
+        <div class="panel-pad">
+          <div class="flex flex-wrap items-center gap-2">
+            <div class="title text-lg"><img class="pic h-7 w-7" src="/static/icons/live.png" alt="">实时拉取接口数据（OkHttp 日志）</div>
+            <span class="chip" :class="apiCap.running ? 'st-PASS' : 'bg-pond-50 text-wood-600'">
+              <span class="h-2 w-2 rounded-full" :class="apiCap.running ? 'live-dot bg-leaf-500' : 'bg-pond-300'"></span>
+              <span x-text="apiCap.running ? '正在监听 logcat…' : '未在监听'"></span>
+            </span>
+            <span class="subtle" x-show="apiCap.running" x-text="'已扫描 ' + apiCap.lines + ' 行 · 已捕获 ' + apiCap.captured.length + ' 条'"></span>
+            <button class="btn-wood btn-xs ml-auto" @click="apiCap.showText = !apiCap.showText"><svg class="ico h-3.5 w-3.5"><use :href="icon('file-text')"></use></svg><span x-text="apiCap.showText ? '收起日志文本提取' : '从日志文本提取'"></span></button>
+          </div>
+          <p class="subtle mt-1">填好接口路径（如 <span class="code">/config/app/myPageV3</span>），点「开始抓取接口」后去手机上操作，自动从 OkHttp logcat 中只提取该接口的返回 JSON 并保存为数据源；同接口多次抓取自动归档历史，默认使用最新。</p>
+
+          <div class="mt-2.5 flex flex-wrap items-center gap-1.5" x-show="ds.presets.length">
+            <span class="text-xs font-bold text-ink-soft">最近抓过：</span>
+            <template x-for="p in ds.presets" :key="p.endpoint">
+              <button class="chip border border-pond-200 bg-pond-50/90 text-wood-700 transition hover:bg-pond-100" :disabled="apiCap.running" @click="pickApiPreset(p)">
+                <span class="font-mono" x-text="p.endpoint"></span>
+                <span class="text-ink-soft" x-show="p.name" x-text="'→ ' + p.name"></span>
+              </button>
+            </template>
+          </div>
+
+          <div class="mt-3 grid grid-cols-1 gap-3 md:grid-cols-[1fr_210px_180px]">
+            <div>
+              <label class="label">接口地址（URL 关键词）</label>
+              <input class="input font-mono" placeholder="如 /config/app/myPageV3" x-model="apiCap.endpoint" :disabled="apiCap.running" @keydown.enter="!apiCap.running && startApiCapture()">
+            </div>
+            <div>
+              <label class="label">保存为数据源名（可选）</label>
+              <input class="input font-mono" :placeholder="'默认：' + inferApiName(apiCap.endpoint)" x-model="apiCap.name" :disabled="apiCap.running">
+            </div>
+            <div>
+              <label class="label">logcat Tag 过滤（可选）</label>
+              <input class="input font-mono" placeholder="留空抓全部，如 OkHttp" x-model="apiCap.tag" :disabled="apiCap.running">
+            </div>
+          </div>
+
+          <div class="mt-3 flex flex-wrap items-center gap-3">
+            <button class="btn-leaf" x-show="!apiCap.running" :disabled="busy || !apiCap.endpoint.trim()" @click="startApiCapture()"><svg class="ico h-4 w-4"><use :href="icon('play')"></use></svg>开始抓取接口</button>
+            <button class="btn-berry" x-show="apiCap.running" :disabled="busy" @click="stopApiCapture()"><svg class="ico h-4 w-4"><use :href="icon('square')"></use></svg>停止抓取</button>
+            <label class="flex items-center gap-1.5 text-xs font-bold text-ink-soft"><input type="checkbox" class="accent-leaf-500" x-model="apiCap.clear" :disabled="apiCap.running"> 开始前清空 logcat 缓冲</label>
+            <span class="text-xs font-bold text-leaf-700" x-show="apiCap.running">请去手机上打开对应页面触发接口，抓到后会自动保存到下方数据源目录</span>
+            <span class="text-xs font-bold text-berry-600" x-show="apiCap.error" x-text="apiCap.error"></span>
+          </div>
+
+          <div x-show="apiCap.showText" class="mt-3 rounded-2xl border-2 border-dashed border-pond-200 bg-pond-50/50 p-3 space-y-2">
+            <div class="text-xs font-bold text-wood-700">粘贴 OkHttp / HTTP logcat 日志，直接提取上方接口的返回 JSON（无需连接手机）</div>
+            <textarea class="input h-28 font-mono text-xs" placeholder="粘贴包含 <-- 200 https://.../config/app/myPageV3 和返回 JSON 的 logcat 文本…" x-model="apiCap.rawLog"></textarea>
+            <div class="flex items-center gap-2">
+              <button class="btn-leaf btn-xs" :disabled="busy || !apiCap.endpoint.trim() || !apiCap.rawLog.trim()" @click="extractApiFromText()"><svg class="ico h-3.5 w-3.5"><use :href="icon('sparkles')"></use></svg>提取并保存为数据源</button>
+              <span class="subtle">自动跳过 --> 请求体，仅提取目标接口的响应 JSON</span>
+            </div>
+          </div>
+
+          <div x-show="apiCap.captured.length" class="mt-3 space-y-1.5 rounded-2xl border border-leaf-200 bg-leaf-50/70 p-3">
+            <div class="text-xs font-extrabold text-wood-700">本次已捕获的接口返回（最新一条已自动生效）</div>
+            <div class="max-h-36 space-y-1.5 overflow-y-auto pr-1 scroll-soft">
+              <template x-for="(c, ci) in apiCap.captured" :key="c.hist_file">
+                <div class="flex flex-wrap items-center gap-2 rounded-xl bg-white/90 px-3 py-1.5 text-xs">
+                  <span class="chip st-PASS" x-show="ci === 0">最新生效</span>
+                  <span class="font-mono font-bold text-wood-700" x-text="c.file"></span>
+                  <span class="text-ink-soft" x-text="c.time"></span>
+                  <span class="text-ink-soft" x-text="fmtSize(c.size || 0)"></span>
+                  <span class="max-w-[320px] truncate font-mono text-[11px] text-ink-faint" :title="c.url" x-text="c.url"></span>
+                  <button class="btn-ghost btn-xs ml-auto !py-0.5" @click="previewHistJson(c.hist_file, c.file + ' · ' + c.time)"><svg class="ico h-3.5 w-3.5"><use :href="icon('eye')"></use></svg>预览</button>
+                </div>
+              </template>
+            </div>
+          </div>
+        </div>
+
         <div class="grid grid-cols-1 gap-5 xl:grid-cols-2">
           <div class="panel-pad">
             <div class="title text-lg"><img class="pic h-7 w-7" src="/static/icons/phone.png" alt="">从手机拉数据库</div>
@@ -785,35 +857,91 @@
           <div class="mb-3 flex flex-wrap items-center gap-2">
             <div class="title"><img class="pic h-6 w-6" src="/static/icons/data.png" alt="">数据源目录</div>
             <button class="path-link font-mono text-xs text-ink-soft" title="点击在文件管理器中打开数据源目录" @click="openPath(ds.dir)"><svg class="ico h-3.5 w-3.5 shrink-0 text-wood-500"><use :href="icon('folder-open')"></use></svg><span class="break-all" x-text="ds.dir"></span></button>
-            <button class="btn-ghost btn-xs ml-auto" @click="loadDs()"><img class="pic h-5 w-5" src="/static/icons/refresh.png" alt="">刷新</button>
+            <div class="ml-auto flex items-center gap-2">
+              <button class="btn-wood btn-xs" @click="openSrc()"><svg class="ico h-3.5 w-3.5"><use :href="icon('plus')"></use></svg>添加特殊数据源</button>
+              <button class="btn-ghost btn-xs" @click="loadDs(); refresh()"><img class="pic h-5 w-5" src="/static/icons/refresh.png" alt="">刷新</button>
+            </div>
           </div>
           <div class="grid grid-cols-1 gap-3 md:grid-cols-2 2xl:grid-cols-3">
             <template x-for="(f, i) in ds.files" :key="f.file">
-              <div class="rounded-2xl border-2 p-4" :class="tone(i + 1)">
+              <div class="flex flex-col rounded-2xl border-2 p-4" :class="tone(i + 1)">
                 <div class="flex items-center gap-2">
                   <img class="pic h-5 w-5" :src="pic(f.type === 'sqlite' ? 'db' : f.type === 'json_file' ? 'yaml' : 'none')" alt="">
                   <span class="font-mono font-bold text-wood-700" x-text="f.name || f.file"></span>
                   <span class="chip bg-white/80 text-wood-600" x-text="f.type === 'sqlite' ? '数据库' : f.type === 'json_file' ? '接口 JSON' : '不识别'"></span>
-                  <button class="btn-ghost btn-xs ml-auto" @click="delDs(f.file)"><svg class="ico h-3.5 w-3.5"><use :href="icon('trash-2')"></use></svg></button>
+                  <div class="ml-auto flex items-center gap-1">
+                    <button class="btn-ghost btn-xs !px-1.5" x-show="f.type === 'json_file' && !f.error" title="预览当前 JSON 内容" @click="previewDsJson(f.name, f.file + ' · 更新于 ' + f.mtime)"><svg class="ico h-3.5 w-3.5"><use :href="icon('eye')"></use></svg></button>
+                    <button class="btn-ghost btn-xs !px-1.5 hover:!bg-berry-50 hover:!text-berry-600" title="删除数据源文件" @click="delDs(f.file)"><svg class="ico h-3.5 w-3.5"><use :href="icon('trash-2')"></use></svg></button>
+                  </div>
                 </div>
                 <div class="mt-1 flex flex-wrap items-center gap-1 text-xs text-ink-soft"><button class="path-link -ml-1.5 font-mono" title="点击在文件管理器中定位该文件" @click="openPath({ds_file: f.file})"><svg class="ico h-3 w-3 text-wood-500"><use :href="icon('folder-open')"></use></svg><span x-text="f.file"></span></button><span>·</span><span x-text="fmtSize(f.size || 0)"></span><span>·</span><span x-text="'更新于 ' + f.mtime"></span></div>
+                <div class="mt-1 truncate font-mono text-[11px] text-ink-soft" x-show="f.url" :title="f.url" x-text="'接口：' + f.url"></div>
                 <div class="mt-2 flex flex-wrap gap-1" x-show="f.tables"><template x-for="t in f.tables || []"><span class="chip bg-white font-mono font-normal text-ink-soft" x-text="t"></span></template></div>
                 <div class="mt-2 flex flex-wrap gap-1" x-show="f.keys"><template x-for="k in f.keys || []"><span class="chip bg-white font-mono font-normal text-ink-soft" x-text="k"></span></template></div>
                 <div class="mt-2 text-xs text-berry-600" x-show="f.error" x-text="f.error"></div>
+
+                <!-- 历史版本折叠区（收纳在 .history，不污染数据源目录列表） -->
+                <div class="mt-3 border-t border-wood-200/60 pt-2.5" x-show="f.history && f.history.length">
+                  <div class="flex flex-wrap items-center gap-2">
+                    <button class="inline-flex items-center gap-1 rounded-full border border-pond-200 bg-white/90 px-2.5 py-0.5 text-[11px] font-bold text-wood-700 transition hover:bg-pond-50" @click="toggleDsHist(f.file)">
+                      <svg class="ico h-3 w-3 text-wood-500"><use :href="icon('history')"></use></svg>
+                      <span x-text="'历史记录 (' + f.history.length + ')'"></span>
+                      <svg class="ico h-3 w-3 transition" :class="ds.histOpen[f.file] && 'rotate-90'"><use :href="icon('chevron-right')"></use></svg>
+                    </button>
+                    <span class="chip !text-[10.5px]" :class="!f.active_hist || f.active_hist.is_latest ? 'st-PASS' : 'st-WARN'" x-text="!f.active_hist || f.active_hist.is_latest ? '当前：最新' : ('当前：历史 ' + f.active_hist.time)"></span>
+                  </div>
+                  <div x-show="ds.histOpen[f.file]" class="mt-2 max-h-48 space-y-1.5 overflow-y-auto pr-1 scroll-soft">
+                    <template x-for="h in f.history || []" :key="h.file">
+                      <div class="flex items-center gap-1.5 rounded-xl border px-2.5 py-1.5 text-[11.5px]" :class="h.active ? 'border-leaf-300 bg-white' : 'border-transparent bg-white/75 hover:bg-white'">
+                        <div class="min-w-0 flex-1">
+                          <div class="flex flex-wrap items-center gap-1">
+                            <span class="font-mono font-bold text-wood-700" x-text="h.time"></span>
+                            <span class="text-ink-faint" x-text="fmtSize(h.size || 0)"></span>
+                            <span class="rounded-full bg-pond-100 px-1.5 py-0.5 text-[10px] font-bold text-wood-700" x-show="h.is_latest">最新</span>
+                            <span class="rounded-full bg-leaf-100 px-1.5 py-0.5 text-[10px] font-bold text-leaf-700" x-show="h.active">当前使用</span>
+                          </div>
+                          <div class="truncate text-[10.5px] text-ink-soft" x-show="h.source || h.url" x-text="[h.source, h.url].filter(Boolean).join(' · ')"></div>
+                        </div>
+                        <button class="btn-wood btn-xs !px-2 !py-0.5 !text-[11px]" x-show="!h.active" @click="useDsHistory(f.file, h.file)">加载</button>
+                        <button class="btn-ghost btn-xs !p-1" x-show="f.type === 'json_file'" title="预览该历史版本" @click="previewHistJson(h.file, f.name + ' · 历史 ' + h.time)"><svg class="ico h-3.5 w-3.5"><use :href="icon('eye')"></use></svg></button>
+                        <button class="btn-ghost btn-xs !p-1 hover:!bg-berry-50 hover:!text-berry-600" title="删除该历史版本" @click="delDsHistory(f.file, h.file)"><svg class="ico h-3 w-3"><use :href="icon('trash-2')"></use></svg></button>
+                      </div>
+                    </template>
+                  </div>
+                </div>
+              </div>
+            </template>
+
+            <!-- 特殊数据源（如 mine_api_cache）直接以卡片框展示，不再隐藏在「高级」里 -->
+            <template x-for="([name, s], si) in Object.entries(st?.sources_explicit || {})" :key="'sp-' + name">
+              <div class="flex flex-col rounded-2xl border-2 p-4" :class="tone(ds.files.length + si + 1)">
+                <div class="flex items-center gap-2">
+                  <img class="pic h-5 w-5" :src="pic(s.type === 'sqlite_json' ? 'db' : 'yaml')" alt="">
+                  <span class="font-mono font-bold text-wood-700" x-text="name"></span>
+                  <span class="chip bg-white/80 text-wood-600" x-text="s.type === 'sqlite_json' ? '特殊数据源 · DB缓存' : (s.type === 'sqlite' ? '特殊数据源 · DB' : '特殊数据源 · JSON')"></span>
+                  <span class="chip" :class="st?.source_status?.[name]?.exists ? 'st-PASS' : 'st-FAIL'" x-text="st?.source_status?.[name]?.exists ? '可用' : '不可用'" :title="st?.source_status?.[name]?.error"></span>
+                  <div class="ml-auto flex items-center gap-1">
+                    <button class="btn-ghost btn-xs !px-1.5" x-show="st?.source_status?.[name]?.exists && s.type !== 'sqlite'" title="预览查询到的 JSON 数据" @click="previewDsJson(name, s.type === 'sqlite_json' ? ('DB: ' + s.db + ' · SQL') : s.path)"><svg class="ico h-3.5 w-3.5"><use :href="icon('eye')"></use></svg></button>
+                    <button class="btn-ghost btn-xs !px-1.5" title="编辑特殊数据源" @click="openSrc(name)"><svg class="ico h-3.5 w-3.5"><use :href="icon('pencil')"></use></svg></button>
+                  </div>
+                </div>
+                <div class="mt-1.5 rounded-xl bg-white/75 px-2.5 py-1.5 font-mono text-[11px] text-ink-soft break-all" x-text="s.type === 'sqlite_json' ? (s.db + ' · ' + s.sql) : s.path"></div>
+                <div class="mt-2 flex flex-wrap gap-1" x-show="st?.source_status?.[name]?.keys"><template x-for="k in st?.source_status?.[name]?.keys || []"><span class="chip bg-white font-mono font-normal text-ink-soft" x-text="k"></span></template></div>
+                <div class="mt-2 text-xs text-berry-600" x-show="st?.source_status?.[name]?.error" x-text="st?.source_status?.[name]?.error"></div>
               </div>
             </template>
           </div>
-          <p x-show="!ds.files.length" class="py-6 text-center text-sm text-ink-faint">目录是空的：从手机拉数据库，或放入接口 JSON</p>
+          <p x-show="!ds.files.length && !Object.keys(st?.sources_explicit || {}).length" class="py-6 text-center text-sm text-ink-faint">目录是空的：实时抓取接口数据、从手机拉数据库，或放入接口 JSON</p>
         </div>
 
         <div class="panel-pad">
           <button class="flex w-full items-center gap-2" @click="ds.advanced = !ds.advanced">
-            <div class="title"><img class="pic h-6 w-6" src="/static/icons/settings.png" alt="">高级</div><span class="subtle">特殊数据源（DB 里缓存的接口 JSON）、日志格式</span>
+            <div class="title"><img class="pic h-6 w-6" src="/static/icons/settings.png" alt="">高级</div><span class="subtle">日志识别正则、logcat 参数、全局校验选项</span>
             <svg class="ico ml-auto h-4 w-4 text-ink-faint transition" :class="ds.advanced && 'rotate-90'"><use :href="icon('chevron-right')"></use></svg>
           </button>
           <div x-show="ds.advanced" class="mt-4 grid grid-cols-1 gap-5 lg:grid-cols-2">
             <div>
-              <div class="mb-2 flex items-center justify-between"><span class="label !mb-0">特殊数据源</span><button class="btn-wood btn-xs" @click="openSrc()"><svg class="ico h-3.5 w-3.5"><use :href="icon('plus')"></use></svg>添加</button></div>
+              <div class="mb-2 flex items-center justify-between"><span class="label !mb-0">特殊数据源管理</span><button class="btn-wood btn-xs" @click="openSrc()"><svg class="ico h-3.5 w-3.5"><use :href="icon('plus')"></use></svg>添加</button></div>
               <template x-for="[name, s] in Object.entries(st?.sources_explicit || {})" :key="name">
                 <div class="mb-2 flex items-center gap-2 rounded-xl bg-white/70 px-3 py-2 text-sm">
                   <span class="font-mono font-bold" x-text="name"></span><span class="truncate text-xs text-ink-soft" x-text="s.type === 'sqlite_json' ? (s.db + ' · ' + s.sql) : s.path"></span>
@@ -821,7 +949,7 @@
                   <button class="btn-ghost btn-xs" @click="openSrc(name)"><svg class="ico h-3.5 w-3.5"><use :href="icon('pencil')"></use></svg></button>
                 </div>
               </template>
-              <p class="text-xs text-ink-faint" x-show="!Object.keys(st?.sources_explicit || {}).length">一般不需要</p>
+              <p class="text-xs text-ink-faint" x-show="!Object.keys(st?.sources_explicit || {}).length">可在上方点「添加特殊数据源」配置 DB 缓存 JSON</p>
             </div>
             <template x-if="settingsEd">
               <div>
@@ -1479,6 +1607,26 @@
         <div><label class="label">SQL（返回一格 JSON 文本）</label><textarea class="input h-20 font-mono text-xs" x-model="srcEd.sql" placeholder="SELECT content FROM api_cache WHERE cache_key = 'mine_page'"></textarea></div>
       </div>
       <div class="mt-5 flex justify-between"><button class="btn-ghost" x-show="srcEd.old" @click="delItem('sources', srcEd.old)"><svg class="ico h-4 w-4"><use :href="icon('trash-2')"></use></svg>删除</button><div class="ml-auto flex gap-2"><button class="btn-wood" @click="srcEd = null">取消</button><button class="btn-leaf" @click="saveSrc()">保存</button></div></div>
+    </div>
+  </template>
+</div>
+
+<!-- ================= 数据源 JSON 预览弹窗 ================= -->
+<div x-show="dsPreview" x-cloak class="fixed inset-0 z-40 flex items-start justify-center overflow-y-auto bg-wood-700/30 p-6" @keydown.escape.window="dsPreview = null">
+  <template x-if="dsPreview">
+    <div class="pop panel flex max-h-[calc(100vh-3rem)] w-full max-w-4xl flex-col !bg-cream p-0" @click.outside="dsPreview = null">
+      <div class="flex shrink-0 items-center gap-2 border-b-2 border-wood-100 px-6 py-4">
+        <img class="pic h-7 w-7" src="/static/icons/yaml.png" alt="">
+        <div class="min-w-0">
+          <div class="title font-mono" x-text="dsPreview.title"></div>
+          <div class="subtle truncate" x-text="dsPreview.sub"></div>
+        </div>
+        <div class="ml-auto flex items-center gap-2">
+          <button class="btn-wood btn-xs" @click="copyText(dsPreview.text)"><svg class="ico h-3.5 w-3.5"><use :href="icon('copy')"></use></svg>复制 JSON</button>
+          <button class="btn-ghost" @click="dsPreview = null"><svg class="ico h-4 w-4"><use :href="icon('x')"></use></svg></button>
+        </div>
+      </div>
+      <pre class="min-h-0 flex-1 overflow-auto bg-white/80 p-5 font-mono text-xs leading-relaxed text-wood-700 scroll-soft" style="min-height:45vh" x-text="dsPreview.text"></pre>
     </div>
   </template>
 </div>

@@ -12,6 +12,7 @@ import argparse
 import contextlib
 import copy
 import glob
+import hashlib
 import io
 import json
 import os
@@ -372,6 +373,273 @@ class LiveSession:
 
 
 # ----------------------------------------------------------------------------
+# OkHttp logcat 接口响应抓取（只提取指定接口的返回 JSON）
+# ----------------------------------------------------------------------------
+_LOGCAT_LINE_RE = re.compile(
+    r"^(?:\d{2}-\d{2}\s+)?(?P<ts>\d{2}:\d{2}:\d{2}\.\d{3})\s+(?P<pid>\d+)\s+(?P<tid>\d+)\s+[VDIWEFA]\s+(?P<tag>[^:]+?)\s*:\s?(?P<msg>.*)$"
+)
+_OKHTTP_REQ_RE = re.compile(r"^-->\s+(?:GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\b", re.I)
+_OKHTTP_RESP_RE = re.compile(r"^<--\s+(\d{3})\b")
+_URL_RE = re.compile(r"(https?://[^\s'\"<>]+|/[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]+)")
+_BOX_PREFIX_RE = re.compile(r"^[│║┃|]\s?")
+_HEADER_LINE_RE = re.compile(r"^[A-Za-z0-9\-_]+:\s+")
+_REQ_HINT_RE = re.compile(r"(?:^|\b)(?:request|req|requrl|requestbody|发送请求)(?:\b|[:=])", re.I)
+_RESP_HINT_RE = re.compile(r"(?:^|\b)(?:response|resp|respbody|返回|响应|<--|\b200\b)(?:\b|[:=])", re.I)
+
+
+def infer_api_ds_name(endpoint):
+    ep = str(endpoint or "").strip()
+    if re.match(r"^https?://", ep, re.I):
+        ep = urlparse(ep).path or ep
+    ep = ep.split("?")[0].strip().rstrip("/")
+    seg = ep.rsplit("/", 1)[-1] if "/" in ep else ep
+    name = re.sub(r"[^\w\-]", "_", seg).strip("_")
+    return name or "api_data"
+
+
+def _extract_balanced_json(text):
+    """从单行/多行文本中尝试提取第一个完整 JSON 对象或数组"""
+    if not text:
+        return None
+    dec = json.JSONDecoder()
+    for i, ch in enumerate(text):
+        if ch in "{[":
+            try:
+                obj, _ = dec.raw_decode(text[i:])
+                if isinstance(obj, (dict, list)):
+                    return obj
+            except Exception:
+                continue
+    return None
+
+
+class OkHttpApiExtractor:
+    """按 (pid, tid, tag) 分流解析 OkHttp / 自定义 HTTP 日志，仅提取匹配 endpoint 的响应 JSON"""
+
+    def __init__(self, endpoint, tag_filter=""):
+        ep = str(endpoint or "").strip()
+        if re.match(r"^https?://", ep, re.I):
+            ep = urlparse(ep).path or ep
+        self.endpoint = ep.split("?")[0].strip()
+        self.ep_low = self.endpoint.lower()
+        self.tag_low = str(tag_filter or "").strip().lower()
+        self.streams = {}
+
+    def _matches(self, text):
+        return bool(self.ep_low) and self.ep_low in text.lower()
+
+    @staticmethod
+    def _extract_url(text):
+        m = _URL_RE.search(text)
+        return m.group(1) if m else text[:120]
+
+    @staticmethod
+    def _try_parse_buf(buf):
+        if not buf:
+            return None
+        for joined in ("".join(buf), "\n".join(buf)):
+            s = joined.strip()
+            if not s:
+                continue
+            try:
+                obj = json.loads(s)
+                if isinstance(obj, (dict, list)):
+                    return obj
+            except Exception:
+                pass
+            obj = _extract_balanced_json(s)
+            if obj is not None:
+                return obj
+        return None
+
+    def _emit_and_reset(self, st):
+        obj = self._try_parse_buf(st["buf"])
+        url = st["url"] or self.endpoint
+        st.update(mode="idle", url="", buf=[], collecting=False, t=0.0)
+        return (url, obj) if obj is not None else None
+
+    def feed(self, raw_line, now=None):
+        now = time.time() if now is None else now
+        line = raw_line.rstrip("\r\n")
+        m = _LOGCAT_LINE_RE.match(line)
+        if m:
+            tag = m.group("tag").strip()
+            if self.tag_low and self.tag_low not in tag.lower():
+                return None
+            key = (m.group("pid"), m.group("tid"), tag)
+            msg = m.group("msg")
+        else:
+            key = ("0", "0", "")
+            msg = line
+
+        clean = _BOX_PREFIX_RE.sub("", msg).strip()
+        st = self.streams.setdefault(key, {"mode": "idle", "url": "", "buf": [], "collecting": False, "t": 0.0})
+        if st["mode"] != "idle" and st["t"] and (now - st["t"] > 10.0):
+            flushed = self._emit_and_reset(st)
+            if flushed:
+                return flushed
+
+        # 1. 标准 OkHttp 请求开始 / 结束（忽略请求体）
+        if _OKHTTP_REQ_RE.match(clean):
+            st.update(mode="req", url="", buf=[], collecting=False, t=now)
+            return None
+        if clean.startswith("--> END"):
+            st.update(mode="idle", url="", buf=[], collecting=False, t=0.0)
+            return None
+
+        # 2. 标准 OkHttp 响应开始
+        if _OKHTTP_RESP_RE.match(clean):
+            prev = self._emit_and_reset(st) if st["mode"] == "resp" and st["buf"] else None
+            if self._matches(clean):
+                st.update(mode="resp", url=self._extract_url(clean), buf=[], collecting=False, t=now)
+            else:
+                st.update(mode="idle", url="", buf=[], collecting=False, t=0.0)
+            return prev
+
+        # 3. 标准 OkHttp 响应结束或盒式日志底边
+        if clean.startswith("<-- END") or clean.startswith(("└", "╚", "╰")):
+            if st["mode"] == "resp":
+                return self._emit_and_reset(st)
+            st.update(mode="idle", url="", buf=[], collecting=False, t=0.0)
+            return None
+
+        if st["mode"] == "req":
+            return None
+
+        # 4. 正在收集目标接口的响应体
+        if st["mode"] == "resp":
+            st["t"] = now
+            if not st["collecting"]:
+                if not clean:
+                    return None
+                raw_no_box = _BOX_PREFIX_RE.sub("", msg)
+                if clean[0] in "{[":
+                    st["collecting"] = True
+                    st["buf"].append(raw_no_box.lstrip())
+                else:
+                    # 处理同前缀如 "body: {...}" 或 "Response Body: {...}"，跳过普通 HTTP Header
+                    if _HEADER_LINE_RE.match(clean) and "{" not in clean and "[" not in clean:
+                        return None
+                    idx = min((i for i in (raw_no_box.find("{"), raw_no_box.find("[")) if i >= 0), default=-1)
+                    if idx >= 0:
+                        st["collecting"] = True
+                        st["buf"].append(raw_no_box[idx:])
+                    else:
+                        return None
+            else:
+                # 保留原始有效内容，防止 4KB 分片断在空格处丢空格
+                payload = _BOX_PREFIX_RE.sub("", msg)
+                st["buf"].append(payload)
+            obj = self._try_parse_buf(st["buf"])
+            if obj is not None:
+                url = st["url"] or self.endpoint
+                st.update(mode="idle", url="", buf=[], collecting=False, t=0.0)
+                return (url, obj)
+            return None
+
+        # 5. 非标准格式（自定义日志器）：一行里同时出现接口路径和 JSON，或先打响应 URL 下行打 JSON
+        if self._matches(clean):
+            if _REQ_HINT_RE.search(clean) and not _RESP_HINT_RE.search(clean):
+                return None
+            url = self._extract_url(clean)
+            pos = clean.lower().find(self.ep_low)
+            tail = clean[pos + len(self.ep_low):]
+            obj = _extract_balanced_json(tail)
+            if obj is not None:
+                return (url, obj)
+            # 若没在同一行带 JSON，且包含响应特征或未标明请求，挂起等后续行的 JSON
+            if _RESP_HINT_RE.search(clean) or not re.search(r"\b(?:GET|POST|PUT|DELETE|PATCH)\b", clean):
+                st.update(mode="resp", url=url, buf=[], collecting=False, t=now)
+        return None
+
+    def flush(self):
+        out = []
+        for st in self.streams.values():
+            if st["mode"] == "resp" and st["buf"]:
+                r = self._emit_and_reset(st)
+                if r:
+                    out.append(r)
+        return out
+
+
+class ApiCaptureSession:
+    """后台跑 adb logcat -v threadtime，实时提取目标接口的返回 JSON 并写入数据源目录与历史"""
+
+    def __init__(self, app, endpoint, name, serial=None, clear=True, tag=""):
+        self.app = app
+        self.endpoint = str(endpoint or "").strip()
+        self.name = re.sub(r"[^\w\-]", "_", str(name or "").strip()) or infer_api_ds_name(self.endpoint)
+        self.serial = serial or None
+        self.tag = str(tag or "").strip()
+        self.lock = threading.Lock()
+        self.running = True
+        self.lines = 0
+        self.captured = []
+        self.error = ""
+        self.proc = None
+        self.extractor = OkHttpApiExtractor(self.endpoint, self.tag)
+        self._start(clear=bool(clear))
+
+    def _start(self, clear=True):
+        adb = tc.adb_base(self.app.spec, self.serial)
+        if clear:
+            subprocess.run(adb + ["logcat", "-c"], capture_output=True, timeout=10)
+        cmd = adb + ["logcat", "-v", "threadtime"]
+        self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                     text=True, encoding="utf-8", errors="replace", bufsize=1)
+        threading.Thread(target=self._reader, daemon=True).start()
+
+    def _reader(self):
+        try:
+            for line in self.proc.stdout:
+                if not self.running:
+                    break
+                with self.lock:
+                    self.lines += 1
+                hit = self.extractor.feed(line)
+                if hit:
+                    url, obj = hit
+                    rec = self.app._save_json_ds(self.name, obj, url=url, source="logcat")
+                    with self.lock:
+                        self.captured.insert(0, rec)
+                        del self.captured[30:]
+        except Exception as e:
+            with self.lock:
+                self.error = str(e)
+        finally:
+            with self.lock:
+                self.running = False
+
+    def stop(self):
+        self.running = False
+        if self.proc:
+            try:
+                self.proc.terminate()
+                self.proc.wait(timeout=2)
+            except Exception:
+                try:
+                    self.proc.kill()
+                except Exception:
+                    pass
+        for url, obj in self.extractor.flush():
+            rec = self.app._save_json_ds(self.name, obj, url=url, source="logcat")
+            with self.lock:
+                self.captured.insert(0, rec)
+
+    def snapshot(self):
+        with self.lock:
+            return {
+                "running": self.running,
+                "endpoint": self.endpoint,
+                "name": self.name,
+                "tag": self.tag,
+                "lines": self.lines,
+                "captured": list(self.captured),
+                "error": self.error,
+            }
+
+
+# ----------------------------------------------------------------------------
 # API
 # ----------------------------------------------------------------------------
 class App:
@@ -380,6 +648,8 @@ class App:
         self.out = os.path.abspath(out_dir or os.path.join(os.path.dirname(self.store.path), "reports"))
         os.makedirs(self.out, exist_ok=True)
         self.live = None
+        self.api_cap = None
+        self._ds_lock = threading.RLock()
         self.spec_error = None
         self.reload()
 
@@ -444,8 +714,9 @@ class App:
                 if t in ("json_file", "sqlite"):
                     info.update(file_info(self.sources._file(cfg["path"])))
                 else:
-                    self.sources.json(name)
-                    info.update(exists=True, path=f"{cfg.get('db')} · SQL")
+                    obj = self.sources.json(name)
+                    keys = list(obj.keys())[:8] if isinstance(obj, dict) else [f"[{len(obj)}]"]
+                    info.update(exists=True, path=f"{cfg.get('db')} · SQL", keys=keys)
             except Exception as e:
                 info.update(exists=False, error=str(e))
             out[name] = info
@@ -1189,20 +1460,178 @@ class App:
         self.live.decide(b["seq"], b["field"], b.get("value"))
         return {"ok": True}
 
-    # ---- 数据源目录 ----
+    # ---- 数据源目录 & 历史版本 & OkHttp 接口抓取 ----
     def _ds_dir(self):
         d = self.spec.datasource_dir
         os.makedirs(d, exist_ok=True)
         return d
 
+    def _hist_dir(self):
+        hd = os.path.join(self._ds_dir(), ".history")
+        os.makedirs(hd, exist_ok=True)
+        return hd
+
+    def _hist_meta_path(self):
+        return os.path.join(self._hist_dir(), "_meta.json")
+
+    def _hist_meta_load(self):
+        p = self._hist_meta_path()
+        if os.path.exists(p):
+            try:
+                with open(p, encoding="utf-8") as f:
+                    d = json.load(f)
+                if isinstance(d, dict):
+                    d.setdefault("active", {})
+                    d.setdefault("records", {})
+                    return d
+            except Exception:
+                pass
+        return {"active": {}, "records": {}}
+
+    def _hist_meta_save(self, meta):
+        with open(self._hist_meta_path(), "w", encoding="utf-8") as f:
+            json.dump(meta, f, ensure_ascii=False, indent=2)
+
+    @staticmethod
+    def _file_sha1(p):
+        try:
+            with open(p, "rb") as f:
+                return hashlib.sha1(f.read()).hexdigest()
+        except OSError:
+            return ""
+
+    def _list_ds_history(self, fname, meta=None):
+        hd = self._hist_dir()
+        stem, ext = os.path.splitext(fname)
+        pat = re.compile(r"^" + re.escape(stem) + r"_(\d{8}_\d{6}(?:_\d+)?)" + re.escape(ext) + r"$")
+        meta = meta if meta is not None else self._hist_meta_load()
+        cur_path = os.path.join(self._ds_dir(), fname)
+        cur_sha = self._file_sha1(cur_path)
+        active_name = meta.get("active", {}).get(fname)
+        items = []
+        for hf in os.listdir(hd):
+            m = pat.match(hf)
+            if not m:
+                continue
+            hp = os.path.join(hd, hf)
+            if not os.path.isfile(hp):
+                continue
+            rec = meta.get("records", {}).get(hf) or {}
+            st = os.stat(hp)
+            stamp = m.group(1)
+            t_str = rec.get("time") or f"{stamp[4:6]}-{stamp[6:8]} {stamp[9:11]}:{stamp[11:13]}:{stamp[13:15]}"
+            items.append({
+                "file": hf,
+                "time": t_str,
+                "size": st.st_size,
+                "mtime": st.st_mtime,
+                "url": rec.get("url") or "",
+                "source": rec.get("source") or "",
+                "sha": self._file_sha1(hp),
+            })
+        items.sort(key=lambda x: (x["mtime"], x["file"]), reverse=True)
+        matched_active = False
+        for i, it in enumerate(items):
+            it["is_latest"] = (i == 0)
+            is_act = (it["file"] == active_name and it["sha"] == cur_sha)
+            it["active"] = is_act
+            if is_act:
+                matched_active = True
+        if not matched_active and cur_sha:
+            for it in items:
+                if it["sha"] == cur_sha:
+                    it["active"] = True
+                    break
+        for it in items:
+            it.pop("sha", None)
+            it.pop("mtime", None)
+        return items
+
+    def _save_json_ds(self, name, obj, url="", source="manual", keep=20):
+        name = re.sub(r"[^\w\-]", "_", str(name or "").strip()) or "api_data"
+        fname = name + ".json"
+        with self._ds_lock:
+            d = self._ds_dir()
+            hd = self._hist_dir()
+            cur_path = os.path.join(d, fname)
+            meta = self._hist_meta_load()
+
+            # 若当前已有该数据源文件且尚未存入历史，先归档旧版本避免覆盖丢失
+            if os.path.isfile(cur_path):
+                cur_sha = self._file_sha1(cur_path)
+                stem, ext = os.path.splitext(fname)
+                pat = re.compile(r"^" + re.escape(stem) + r"_\d{8}_\d{6}(?:_\d+)?" + re.escape(ext) + r"$")
+                known_shas = {self._file_sha1(os.path.join(hd, hf)) for hf in os.listdir(hd) if pat.match(hf)}
+                if cur_sha and cur_sha not in known_shas:
+                    old_st = os.stat(cur_path)
+                    old_stamp = time.strftime("%Y%m%d_%H%M%S", time.localtime(old_st.st_mtime))
+                    old_hf = f"{stem}_{old_stamp}{ext}"
+                    idx = 1
+                    while os.path.exists(os.path.join(hd, old_hf)):
+                        old_hf = f"{stem}_{old_stamp}_{idx}{ext}"
+                        idx += 1
+                    shutil.copy2(cur_path, os.path.join(hd, old_hf))
+                    meta["records"][old_hf] = {
+                        "url": "", "source": "原有文件",
+                        "time": time.strftime("%m-%d %H:%M:%S", time.localtime(old_st.st_mtime)),
+                    }
+
+            payload = json.dumps(obj, ensure_ascii=False, indent=2)
+            stamp = time.strftime("%Y%m%d_%H%M%S")
+            now_str = time.strftime("%m-%d %H:%M:%S")
+            hf = f"{name}_{stamp}.json"
+            idx = 1
+            while os.path.exists(os.path.join(hd, hf)):
+                hf = f"{name}_{stamp}_{idx}.json"
+                idx += 1
+            hp = os.path.join(hd, hf)
+            with open(hp, "w", encoding="utf-8") as f:
+                f.write(payload)
+            with open(cur_path, "w", encoding="utf-8") as f:
+                f.write(payload)
+
+            meta["active"][fname] = hf
+            meta["records"][hf] = {"url": url, "source": source, "time": now_str}
+
+            # 清理超过 keep 条的旧历史
+            pat = re.compile(r"^" + re.escape(name) + r"_\d{8}_\d{6}(?:_\d+)?\.json$")
+            all_h = sorted([os.path.join(hd, x) for x in os.listdir(hd) if pat.match(x)], key=os.path.getmtime)
+            for oldp in all_h[:-keep]:
+                bn = os.path.basename(oldp)
+                if bn == hf:
+                    continue
+                try:
+                    os.remove(oldp)
+                except OSError:
+                    pass
+                meta["records"].pop(bn, None)
+
+            self._hist_meta_save(meta)
+            self.reload()
+            keys = list(obj.keys())[:8] if isinstance(obj, dict) else [f"[{len(obj)}]"]
+            return {
+                "name": name, "file": fname, "hist_file": hf, "time": now_str,
+                "size": os.path.getsize(cur_path), "url": url, "keys": keys,
+            }
+
+    def _remember_api_preset(self, endpoint, name, tag=""):
+        dev = dict(self.store.main.get("device") or {})
+        presets = [p for p in (dev.get("api_presets") or []) if isinstance(p, dict) and p.get("endpoint")]
+        ep = str(endpoint or "").strip()
+        presets = [p for p in presets if p.get("endpoint") != ep]
+        presets.insert(0, {"endpoint": ep, "name": name, **({"tag": tag} if tag else {})})
+        dev["api_presets"] = presets[:12]
+        self.store.put_top("device", dev)
+
     def api_ds_list(self, q):
         d = self._ds_dir()
         auto = tc.scan_datasources(d)
         by_file = {os.path.basename(v["path"]): k for k, v in auto.items()}
+        meta = self._hist_meta_load()
         files = []
         for f in sorted(os.listdir(d)):
             p = os.path.join(d, f)
-            if not os.path.isfile(p) or re.search(r"-(wal|shm|journal)$", f):
+            if not os.path.isfile(p) or f.startswith(".") or re.search(r"-(wal|shm|journal)$", f):
                 continue
             name = by_file.get(f)
             info = {"file": f, "name": name, "type": auto.get(name, {}).get("type") if name else None, **file_info(p)}
@@ -1220,8 +1649,14 @@ class App:
                     info["keys"] = list(obj.keys())[:8] if isinstance(obj, dict) else [f"[{len(obj)}]"]
                 except Exception as e:
                     info["error"] = f"JSON 解析失败: {e}"
+            hist = self._list_ds_history(f, meta)
+            info["history"] = hist
+            act = next((h for h in hist if h.get("active")), None)
+            info["active_hist"] = act
+            info["url"] = (act.get("url") if act else "") or (hist[0].get("url") if hist else "")
             files.append(info)
-        return {"dir": d, "files": files}
+        dev = self.store.main.get("device") or {}
+        return {"dir": d, "files": files, "api_presets": dev.get("api_presets") or []}
 
     def api_ds_upload(self, b):
         import base64
@@ -1231,9 +1666,12 @@ class App:
         data = base64.b64decode(b.get("b64") or "")
         if fn.lower().endswith(".json"):
             try:
-                json.loads(data.decode("utf-8-sig"))
+                obj = json.loads(data.decode("utf-8-sig"))
             except Exception as e:
                 raise ApiError(f"{fn} 不是合法的 JSON：{e}")
+            stem = os.path.splitext(fn)[0]
+            rec = self._save_json_ds(stem, obj, source="上传文件")
+            return {"ok": True, "file": rec["file"]}
         p = os.path.join(self._ds_dir(), fn)
         with open(p, "wb") as f:
             f.write(data)
@@ -1248,10 +1686,105 @@ class App:
             obj = json.loads(b.get("text") or "")
         except Exception as e:
             raise ApiError(f"不是合法的 JSON：{e}")
-        with open(os.path.join(self._ds_dir(), name + ".json"), "w", encoding="utf-8") as f:
-            json.dump(obj, f, ensure_ascii=False, indent=2)
-        self.reload()
+        self._save_json_ds(name, obj, source="手动粘贴")
         return {"ok": True, "name": name}
+
+    def api_ds_history_use(self, b):
+        fname = os.path.basename(str(b.get("file") or "").strip())
+        hname = os.path.basename(str(b.get("hist") or "").strip())
+        if not fname or not hname:
+            raise ApiError("缺少文件参数")
+        with self._ds_lock:
+            hp = os.path.join(self._hist_dir(), hname)
+            if not os.path.isfile(hp):
+                raise ApiError("该历史记录不存在")
+            dst = os.path.join(self._ds_dir(), fname)
+            shutil.copyfile(hp, dst)
+            meta = self._hist_meta_load()
+            meta["active"][fname] = hname
+            self._hist_meta_save(meta)
+            self.reload()
+            rec = meta.get("records", {}).get(hname) or {}
+            return {"ok": True, "file": fname, "hist": hname, "time": rec.get("time") or hname}
+
+    def api_ds_history_delete(self, b):
+        hname = os.path.basename(str(b.get("hist") or "").strip())
+        if not hname:
+            raise ApiError("缺少历史文件名")
+        with self._ds_lock:
+            hp = os.path.join(self._hist_dir(), hname)
+            if not os.path.isfile(hp):
+                raise ApiError("该历史记录不存在")
+            os.remove(hp)
+            meta = self._hist_meta_load()
+            meta["records"].pop(hname, None)
+            for k, v in list(meta.get("active", {}).items()):
+                if v == hname:
+                    meta["active"].pop(k, None)
+            self._hist_meta_save(meta)
+            return {"ok": True}
+
+    def api_ds_history_json(self, q):
+        hname = os.path.basename(str(q.get("hist") or "").strip())
+        hp = os.path.join(self._hist_dir(), hname)
+        if not hname or not os.path.isfile(hp):
+            raise ApiError("该历史记录不存在")
+        try:
+            with open(hp, encoding="utf-8-sig") as f:
+                return {"data": json.load(f), "file": hname}
+        except Exception as e:
+            raise ApiError(f"读取失败：{e}")
+
+    def api_ds_api_capture_start(self, b):
+        ep = str(b.get("endpoint") or "").strip()
+        if not ep:
+            raise ApiError("先输入要抓取的接口地址，如 /config/app/myPageV3")
+        if self.api_cap and self.api_cap.running:
+            self.api_cap.stop()
+        name = re.sub(r"[^\w\-]", "_", str(b.get("name") or "").strip()) or infer_api_ds_name(ep)
+        tag = str(b.get("tag") or "").strip()
+        try:
+            self.api_cap = ApiCaptureSession(self, ep, name, b.get("serial"), b.get("clear", True), tag)
+        except FileNotFoundError:
+            raise ApiError("找不到 adb，请把 Android SDK platform-tools 加到 PATH")
+        self._remember_api_preset(ep, name, tag)
+        return self.api_cap.snapshot()
+
+    def api_ds_api_capture_poll(self, q):
+        if not self.api_cap:
+            return {"running": False, "endpoint": "", "name": "", "tag": "", "lines": 0, "captured": [], "error": ""}
+        return self.api_cap.snapshot()
+
+    def api_ds_api_capture_stop(self, b):
+        if not self.api_cap:
+            return {"ok": True, "captured": []}
+        self.api_cap.stop()
+        snap = self.api_cap.snapshot()
+        return {"ok": True, **snap}
+
+    def api_ds_api_capture_extract(self, b):
+        ep = str(b.get("endpoint") or "").strip()
+        text = str(b.get("text") or "")
+        if not ep:
+            raise ApiError("先输入要提取的接口地址，如 /config/app/myPageV3")
+        if not text.strip():
+            raise ApiError("请粘贴包含 OkHttp 响应的 logcat 日志文本")
+        name = re.sub(r"[^\w\-]", "_", str(b.get("name") or "").strip()) or infer_api_ds_name(ep)
+        tag = str(b.get("tag") or "").strip()
+        ext = OkHttpApiExtractor(ep, tag)
+        hits = []
+        for line in text.splitlines():
+            h = ext.feed(line)
+            if h:
+                hits.append(h)
+        hits.extend(ext.flush())
+        if not hits:
+            raise ApiError(f"没有在日志中找到接口「{ep}」的有效 JSON 返回值（请确认 OkHttp 日志级别为 BODY 且包含返回 JSON）")
+        saved = []
+        for url, obj in hits:
+            saved.append(self._save_json_ds(name, obj, url=url, source="日志提取"))
+        self._remember_api_preset(ep, name, tag)
+        return {"ok": True, "count": len(saved), "latest": saved[-1], "saved": saved}
 
     def api_ds_delete(self, b):
         fn = os.path.basename(str(b.get("file") or ""))
@@ -1647,7 +2180,11 @@ ROUTES = {
     ("POST", "/api/dict/tag"): "api_dict_tag", ("GET", "/api/export"): "api_export",
     ("POST", "/api/live/scenario"): "api_live_scenario", ("POST", "/api/live/decide"): "api_live_decide",
     ("GET", "/api/ds/list"): "api_ds_list", ("POST", "/api/ds/upload"): "api_ds_upload", ("POST", "/api/ds/paste"): "api_ds_paste",
-    ("POST", "/api/ds/delete"): "api_ds_delete", ("POST", "/api/device/dbs"): "api_device_dbs", ("POST", "/api/pull/dbs"): "api_pull_dbs",
+    ("POST", "/api/ds/delete"): "api_ds_delete",
+    ("POST", "/api/ds/history/use"): "api_ds_history_use", ("POST", "/api/ds/history/delete"): "api_ds_history_delete",
+    ("GET", "/api/ds/history/json"): "api_ds_history_json",
+    ("POST", "/api/ds/api_capture/start"): "api_ds_api_capture_start", ("GET", "/api/ds/api_capture/poll"): "api_ds_api_capture_poll",
+    ("POST", "/api/ds/api_capture/stop"): "api_ds_api_capture_stop", ("POST", "/api/ds/api_capture/extract"): "api_ds_api_capture_extract", ("POST", "/api/device/dbs"): "api_device_dbs", ("POST", "/api/pull/dbs"): "api_pull_dbs",
     ("POST", "/api/pull/apidump"): "api_pull_apidump", ("GET", "/api/evdict"): "api_evdict",
     ("POST", "/api/evdict/import"): "api_evdict_import", ("POST", "/api/evdict/delete"): "api_evdict_delete",
     ("POST", "/api/ai_prompt"): "api_ai_prompt", ("GET", "/api/spec_text"): "api_spec_text",
