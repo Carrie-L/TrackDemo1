@@ -23,7 +23,7 @@
   .input { @apply w-full rounded-xl border-2 border-wood-200 bg-white/80 px-2.5 py-1.5 text-sm text-ink placeholder:text-ink-faint focus:border-leaf-400 focus:outline-none focus:ring-4 focus:ring-leaf-100; }
   .label { @apply mb-1 block text-xs font-bold text-wood-600; }
   .chip { @apply inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-bold; }
-  .navitem { @apply flex w-full items-center gap-2.5 rounded-2xl px-3 py-1.5 text-sm font-bold text-ink-soft transition hover:translate-x-0.5 hover:bg-wood-100 hover:text-wood-700; }
+  .navitem { @apply flex w-full items-center gap-2.5 rounded-2xl px-3 py-2 text-sm font-bold text-ink-soft transition hover:translate-x-0.5 hover:bg-wood-100 hover:text-wood-700; }
   .navitem-on { @apply bg-leaf-500 text-white shadow-leafbtn hover:bg-leaf-500 hover:text-white; }
   .tbl { @apply w-full border-separate border-spacing-0 text-sm; }
   .tbl th { @apply sticky top-0 z-[1] whitespace-nowrap border-b-2 border-wood-200 bg-cream-2 px-3 py-2 text-left text-xs font-extrabold text-wood-600; }
@@ -38,10 +38,10 @@
 .pic { display: inline-block; flex-shrink: 0; object-fit: contain; filter: drop-shadow(0 1px 0 rgba(140,100,60,.18)); user-select: none; -webkit-user-drag: none; }
 .yaml .yk { color: #4E8A35; font-weight: 700; } .yaml .yk2 { color: #7F63B8; } .yaml .yc { color: #B9A894; font-style: italic; }
 .ico { display: inline-block; width: 1.1em; height: 1.1em; flex-shrink: 0; vertical-align: -0.15em; }
-.st-ASK { background: #EEE6F9; color: #7F63B8; }
-.row-ASK td { background: #F7F3FC; }
-.dot-ASK { background: #9A7FD0; }
-.bar-ASK { border-left: 5px solid #9A7FD0; }
+.st-ASK { background: #DDEFF9; color: #2F6A93; }
+.row-ASK td { background: #EEF7FC; }
+.dot-ASK { background: #5AA2D2; }
+.bar-ASK { border-left: 5px solid #5AA2D2; }
 .st-PASS { background: #E2F1D4; color: #436E31; }
 .st-FAIL { background: #FCE1DF; color: #A04840; }
 .st-WARN { background: #FDF1C9; color: #8F6A0E; }
@@ -53,7 +53,7 @@
 .dot-UNKNOWN, .dot-SKIP, .dot-MISS, .dot-INFO { background: #C39566; }
 .bar-PASS { border-left: 5px solid #84BB64; } .bar-FAIL { border-left: 5px solid #DE776E; }
 .bar-WARN { border-left: 5px solid #DDA92C; } .bar-UNKNOWN { border-left: 5px solid #D7B78C; }
-.ds-ok { background: #E2F1D4; color: #436E31; } .ds-confirm { background: #FDF1C9; color: #8F6A0E; } .ds-todo { background: #EEE6F9; color: #7F63B8; }
+.ds-ok { background: #E2F1D4; color: #436E31; } .ds-confirm { background: #FDF1C9; color: #8F6A0E; } .ds-todo { background: #FDE7D7; color: #C9763F; }
 
 body {
   background:

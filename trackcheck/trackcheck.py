@@ -461,8 +461,10 @@ def doc_to_event_entries(text, filename=""):
     for headers, rows in parse_doc_tables(text, filename):
         if not rows:
             continue
-        idc = next((i for i, h in enumerate(headers) if re.search(r"(id|ID|Id|编号|编码)", h) and
-                    re.search(r"(点位|埋点|事件|event|Event|^ID$|^id$)", h)), None)
+        idc = next((i for i, h in enumerate(headers) if h.strip() in ("点位ID", "点位id", "埋点ID", "事件ID")), None)
+        if idc is None:
+            idc = next((i for i, h in enumerate(headers) if re.search(r"(id|ID|Id|编号|编码)", h) and
+                        re.search(r"(点位|埋点|事件|event|Event|^ID$|^id$)", h)), None)
         if idc is None:
             idc = next((i for i, h in enumerate(headers) if h.strip().lower() in _ID_KEYS), None)
         if idc is None:  # 按内容猜：大多数值是长数字的那一列
@@ -473,7 +475,9 @@ def doc_to_event_entries(text, filename=""):
             idc = best[1] if best[0] >= max(1, len(rows) // 3) else None
         if idc is None:
             continue
-        namec = next((i for i, h in enumerate(headers) if i != idc and re.search(r"(事件名|点位名|埋点名|名称|name|Name)", h)), None)
+        namec = next((i for i, h in enumerate(headers) if i != idc and h.strip() in ("事件名称", "点位名称", "埋点名称")), None)
+        if namec is None:
+            namec = next((i for i, h in enumerate(headers) if i != idc and re.search(r"(事件名|点位名|埋点名|名称|name|Name)", h)), None)
         last = None
         for r in rows:
             row = OrderedDict((h, (r[i] or "").strip()) for i, h in enumerate(headers))
@@ -819,6 +823,13 @@ def type_ok(v, t):
     return True
 
 
+def is_stub_event(es):
+    """只有点位ID和事件名称、还没配置任何字段/断言/定位的占位条目"""
+    if not es:
+        return True
+    return not any(es.get(k) for k in ("fields", "context", "asserts", "dedupe", "extends", "strict_fields"))
+
+
 def norm_rule(rule):
     if rule is None:
         return {}
@@ -1134,8 +1145,8 @@ class Checker:
         self._dec = dict(decisions or {})
         res = {"seq": ev.seq, "ts": ev.ts, "id": ev.id, "cls": ev.cls or "", "raw": ev.raw,
                "line_no": ev.line_no, "fields": [], "errors": [], "ctx": {}, "data": dict(ev.fields)}
-        if es is None:
-            res.update(name=self.spec.catalog.get(ev.id) or ev.cls or "", status="UNKNOWN")
+        if es is None or is_stub_event(es):
+            res.update(name=str((es or {}).get("name") or self.spec.catalog.get(ev.id) or ev.cls or ""), status="UNKNOWN")
             return res
         res["name"] = str(es.get("name") or self.spec.catalog.get(ev.id) or ev.cls or "")
         # 点位自己的字典（events.<id>.dicts）优先于全局共享字典
@@ -1204,6 +1215,8 @@ def coverage(spec, results, case_name=None):
     else:
         cnt = Counter(r["id"] for r in results)
         for eid, es in spec.events.items():
+            if is_stub_event(es):
+                continue
             rows.append({"id": eid, "name": es.get("name", ""), "count": cnt.get(eid, 0), "expect": "",
                          "status": "PASS" if cnt.get(eid) else "MISS"})
     return rows

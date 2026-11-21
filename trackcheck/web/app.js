@@ -12,7 +12,7 @@ const NAV = [
 ];
 const CARD_TONES = [
   'bg-pond-50 border-pond-200', 'bg-leaf-50 border-leaf-200', 'bg-peach-50 border-peach-200',
-  'bg-berry-50 border-berry-200', 'bg-lilac-50 border-lilac-200', 'bg-sun-50 border-sun-200',
+  'bg-berry-50 border-berry-200', 'bg-wood-50 border-wood-200', 'bg-sun-50 border-sun-200',
 ];
 const TIPS = [
   '一个点位只需要配置一次规则，之后每次测试都会自动复用。',
@@ -122,7 +122,12 @@ function app() {
       const body = typeof arg === 'string' ? { path: arg } : (arg || {});
       try {
         const r = await this.api('/api/open_path', body);
-        this.toast('已在文件管理器打开：' + this.fileName(r.path), 'ok');
+        if (r.sandbox) {
+          try { await navigator.clipboard.writeText(r.path); } catch (e) {}
+          this.toast('当前服务运行在后台沙箱中无法弹窗，已复制路径到剪贴板；双击「启动埋点小岛.bat」在本机启动后即可直接打开资源管理器', 'warn');
+        } else {
+          this.toast('已在文件管理器打开：' + this.fileName(r.path), 'ok');
+        }
       } catch (e) { this.toast(e.message, 'err'); }
     },
     get quickHits() {
@@ -179,12 +184,14 @@ function app() {
     get stats() {
       const s = this.st; if (!s) return {};
       const last = s.reports[0];
-      const evs = s.events, ok = evs.filter(e => e.last?.status === 'PASS').length, bad = evs.filter(e => e.last && e.last.status !== 'PASS').length;
+      const evs = s.events, real = evs.filter(e => !e.stub), stubs = evs.filter(e => e.stub);
+      const ok = real.filter(e => e.last?.status === 'PASS').length, bad = real.filter(e => e.last && e.last.status !== 'PASS').length;
+      const catOnly = s.catalog.filter(c => !c.configured).length;
       return {
-        events: evs.length, sources: Object.keys(s.sources).length, evdict: s.evdict.count,
+        events: real.length, totalEvents: evs.length, sources: Object.keys(s.sources).length, evdict: s.evdict.count,
         rate: last && last.summary.total ? Math.round(last.summary.pass * 100 / last.summary.total) : null, ok, bad,
-        untested: evs.filter(e => !e.last).length,
-        catalog: s.catalog.length, unconfigured: s.catalog.filter(c => !c.configured).length,
+        untested: real.filter(e => !e.last).length,
+        catalog: Math.max(s.catalog.length, evs.length), unconfigured: stubs.length + catOnly,
       };
     },
     get notices() {
@@ -197,7 +204,7 @@ function app() {
       r = r || {}; const out = [];
       if (r.ignore) return [{ i: 'circle-x', t: '不校验', c: 'bg-wood-100 text-ink-soft' }];
       if (r.from) out.push({ i: 'file-json', t: r.from, c: 'bg-pond-50 text-pond-700' });
-      if (r.map) out.push({ i: 'git-compare-arrows', t: typeof r.map === 'object' && !Array.isArray(r.map) ? Object.entries(r.map).map(([k, v]) => k + '→' + v).join(' / ') : [].concat(r.map).join(' → '), c: 'bg-lilac-50 text-lilac-600' });
+      if (r.map) out.push({ i: 'git-compare-arrows', t: typeof r.map === 'object' && !Array.isArray(r.map) ? Object.entries(r.map).map(([k, v]) => k + '→' + v).join(' / ') : [].concat(r.map).join(' → '), c: 'bg-peach-50 text-peach-600' });
       if (r.sql) out.push({ i: 'database', t: (r.db ? r.db + ': ' : '') + r.sql, c: 'bg-peach-50 text-peach-600' });
       if (r.enum) {
         let t;
@@ -213,7 +220,7 @@ function app() {
       if (r.compare && r.compare !== 'eq') out.push({ i: 'sliders-horizontal', t: { lte: '上报 ≤ 期望', gte: '上报 ≥ 期望', lt: '上报 < 期望', gt: '上报 > 期望' }[r.compare], c: 'bg-wood-50 text-wood-600' });
       if (r.tolerance !== undefined) out.push({ i: 'sliders-horizontal', t: '容差 ±' + r.tolerance, c: 'bg-wood-50 text-wood-600' });
       if (r.trend) out.push({ i: 'trending-up', t: { up: '只增不减', down: '只减不增', same: '保持不变', strict_up: '必须增加' }[r.trend] || r.trend, c: 'bg-wood-50 text-wood-600' });
-      if (r.ask) out.push({ i: 'user-check', t: '人工确认 / 按场景', c: 'bg-lilac-50 text-lilac-600' });
+      if (r.ask) out.push({ i: 'user-check', t: '人工确认 / 按场景', c: 'bg-pond-50 text-pond-700' });
       if (r.type) out.push({ i: 'tag', t: '类型 ' + r.type, c: 'bg-wood-50 text-wood-600' });
       if (r.regex) out.push({ i: 'tag', t: '正则 ' + r.regex, c: 'bg-wood-50 text-wood-600' });
       if (r.range) out.push({ i: 'tag', t: '范围 ' + r.range.join('~'), c: 'bg-wood-50 text-wood-600' });
@@ -436,7 +443,7 @@ function app() {
           try {
             const r = await this.call(() => this.api('/api/evdict/import', { filename: f.name, content: text, overwrite: this.evd.overwrite }));
             this.evd.result = { file: f.name, ...r };
-            this.toast(`${f.name}：解析 ${r.parsed} 个点位，新增 ${r.added}，跳过重复 ${r.skipped}` + (r.updated ? `，覆盖 ${r.updated}` : ''), 'ok');
+            this.toast(`${f.name}：解析 ${r.parsed} 个点位，字典新增 ${r.added}，跳过重复 ${r.skipped}` + (r.updated ? `，覆盖 ${r.updated}` : '') + (r.rules_added ? `，已同步 ${r.rules_added} 个到点位规则` : ''), 'ok');
           } catch (e) { /* 已提示 */ }
         }
         await this.loadEvdict(); this.refresh();
@@ -462,7 +469,7 @@ function app() {
     evdEntry(id) { return this.evd.entries.find(e => e.id === String(id)); },
     async loadEvdSamples() {
       const r = await this.call(() => this.api('/api/evdict/samples', {}));
-      this.toast(`已导入示例文档 ${r.docs.join('、')}：新增 ${r.added} 个点位`, 'ok'); await this.loadEvdict(); this.refresh();
+      this.toast(`已导入示例文档 ${r.docs.join('、')}：字典新增 ${r.added} 个` + (r.rules_added ? `，已同步 ${r.rules_added} 个到点位规则` : ''), 'ok'); await this.loadEvdict(); this.refresh();
     },
     async delEvd(id) {
       if (!confirm(id ? `从埋点字典删除 ${id}？` : '清空整个埋点字典？')) return;
@@ -715,10 +722,13 @@ function app() {
       const s = this.st; if (!s) return [];
       if (this.ruleTab === 'tpl') return Object.keys(s.templates || {}).filter(n => !q || n.toLowerCase().includes(q))
         .map(n => ({ id: n, name: n, isTpl: true, refs: (s.tpl_refs?.[n] || []).length }));
-      const conf = new Set(s.events.map(e => e.id));
+      const inYaml = new Set(s.events.map(e => e.id));
+      const real = s.events.filter(e => !e.stub), stubs = s.events.filter(e => e.stub);
+      const catOnly = s.catalog.filter(c => !inYaml.has(c.id)).map(c => ({ id: c.id, name: c.name, nfields: 0, unconfigured: true }));
       let list = [];
-      if (this.ruleTab !== 'todo') list = list.concat(s.events);
-      if (this.ruleTab !== 'done') list = list.concat(s.catalog.filter(c => !conf.has(c.id)).map(c => ({ id: c.id, name: c.name, nfields: 0, unconfigured: true })));
+      if (this.ruleTab === 'done') list = real;
+      else if (this.ruleTab === 'todo') list = [...stubs, ...catOnly];
+      else list = [...real, ...stubs, ...catOnly];
       return list.filter(e => !q || e.id.includes(q) || (e.name || '').toLowerCase().includes(q)).slice(0, 500);
     },
     openRuleItem(e) {

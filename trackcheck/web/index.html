@@ -19,19 +19,19 @@
       <span class="wood-title pointer-events-none absolute inset-x-4 top-[37%] -translate-y-1/2 text-[22px] font-black leading-none tracking-[0.14em]">埋点小岛</span>
       <span class="wood-sub pointer-events-none absolute inset-x-4 top-[83%] -translate-y-1/2 truncate text-[10.5px] font-bold leading-none tracking-wide">Android 埋点调试与校验</span>
     </button>
-    <nav class="panel flex flex-col gap-1 p-3">
+    <nav class="panel flex flex-col gap-2.5 p-3">
       <template x-for="n in NAV" :key="n.id">
         <button class="navitem" :class="page === n.id && 'navitem-on'" @click="go(n.id)">
           <img class="pic h-7 w-7 -my-1" :src="pic(n.icon)" alt=""><span x-text="n.label"></span>
           <span x-show="n.id === 'live' && live.running" class="live-dot ml-auto h-2.5 w-2.5 rounded-full bg-leaf-400"></span>
-          <span x-show="n.id === 'rules' && st" class="ml-auto rounded-full bg-wood-100 px-2 text-[11px] text-wood-600" :class="page === n.id && '!bg-white/30 !text-white'" x-text="st?.events.length"></span>
+          <span x-show="n.id === 'rules' && st" class="ml-auto rounded-full bg-wood-100 px-2 text-[11px] text-wood-600" :class="page === n.id && '!bg-white/30 !text-white'" x-text="stats.events"></span>
           <span x-show="n.id === 'evdict' && st?.evdict.count" class="ml-auto rounded-full bg-wood-100 px-2 text-[11px] text-wood-600" :class="page === n.id && '!bg-white/30 !text-white'" x-text="st?.evdict.count"></span>
         </button>
       </template>
     </nav>
     <div class="panel mt-auto flex items-center gap-3 p-3 text-xs">
       <img src="/static/mascot.jpg" class="bob h-12 w-12 rounded-full object-cover ring-2 ring-leaf-200" alt="">
-      <div class="min-w-0"><div class="font-bold text-wood-700">小芽陪你测埋点</div><div class="truncate text-ink-faint" x-text="(st?.events.length || 0) + ' 个点位已配置规则'"></div></div>
+      <div class="min-w-0"><div class="font-bold text-wood-700">小芽陪你测埋点</div><div class="truncate text-ink-faint" x-text="(stats.events || 0) + ' 个点位已配置规则'"></div></div>
     </div>
   </aside>
 
@@ -106,15 +106,15 @@
       <!-- ========== 首页 ========== -->
       <section x-show="page === 'home'" x-cloak class="grid grid-cols-1 gap-5 xl:grid-cols-[1fr_300px]">
         <div class="flex min-w-0 flex-col gap-5">
-          <div class="panel relative h-48 overflow-hidden !p-0">
-            <img src="/static/hero.jpg" class="absolute inset-0 h-full w-full object-cover object-[center_62%]" alt="">
-            <div class="absolute inset-0 bg-gradient-to-r from-cream/75 via-cream/10 to-transparent"></div>
-            <div class="relative flex h-full max-w-md flex-col justify-center gap-3 p-8">
-              <div class="w-fit rounded-2xl border-2 border-wood-200 bg-cream/90 px-5 py-3 shadow-soft">
-                <h2 class="text-xl font-black text-wood-700">欢迎回来</h2>
+          <div class="panel relative h-[290px] lg:h-[320px] overflow-hidden !p-0">
+            <img src="/static/hero.jpg" class="absolute inset-0 h-full w-full object-cover object-[center_58%]" alt="">
+            <div class="absolute inset-0 bg-gradient-to-r from-cream/65 via-cream/10 to-transparent"></div>
+            <div class="relative flex h-full max-w-md flex-col justify-center gap-4 p-8">
+              <div class="w-fit rounded-3xl border-2 border-wood-200 bg-cream/90 px-5 py-3.5 shadow-soft">
+                <h2 class="text-xl font-black text-wood-700">欢迎回来，小岛开发者！</h2>
                 <p class="mt-1 text-sm text-ink-soft">每个点位只需配置一次规则，之后每次测试自动复用。</p>
               </div>
-              <div class="flex flex-wrap gap-2">
+              <div class="flex flex-wrap gap-2.5">
                 <button class="btn-leaf" @click="go('live')"><img class="pic h-6 w-6" src="/static/icons/live.png" alt="">开始实时调试</button>
                 <button class="btn-wood" @click="go('evdict')"><img class="pic h-6 w-6" src="/static/icons/dict.png" alt="">埋点字典</button>
               </div>
@@ -145,7 +145,7 @@
               </div>
             </div>
             <div class="grid grid-cols-2 gap-3 md:grid-cols-3 2xl:grid-cols-4">
-              <template x-for="(e, i) in (st?.events || []).slice(0, 12)" :key="e.id">
+              <template x-for="(e, i) in (st?.events || []).filter(x => !x.stub).slice(0, 12)" :key="e.id">
                 <button class="rounded-2xl border-2 px-3 py-2.5 text-left transition hover:-translate-y-0.5 hover:shadow-soft" :class="tone(i)" @click="loadEditor(e.id); go('rules')">
                   <div class="flex items-center justify-between gap-2">
                     <span class="truncate text-sm font-bold text-wood-700" x-text="e.name || '未命名'"></span>
@@ -251,11 +251,11 @@
           </div>
 
           <!-- 本次要测的点位 & 期望值（紧凑胶囊条 + 单点位按需展开，20+ 点位也不占屏） -->
-          <div class="mt-3 rounded-2xl border-2 border-lilac-200 bg-lilac-50/60 px-3 py-2.5">
+          <div class="mt-3 rounded-2xl border-2 border-pond-200 bg-pond-50/65 px-3 py-2.5">
             <div class="flex flex-wrap items-center gap-2">
               <img class="pic h-6 w-6" src="/static/icons/cases.png" alt="">
-              <span class="text-sm font-bold text-lilac-600">本次要测的点位</span>
-              <span class="chip" x-show="live.plan.length" :class="livePlanHitCount === live.plan.length ? 'st-PASS' : 'bg-white text-lilac-600'" x-text="'已触发 ' + livePlanHitCount + ' / ' + live.plan.length"></span>
+              <span class="text-sm font-bold text-pond-700">本次要测的点位</span>
+              <span class="chip" x-show="live.plan.length" :class="livePlanHitCount === live.plan.length ? 'st-PASS' : 'bg-white text-pond-700'" x-text="'已触发 ' + livePlanHitCount + ' / ' + live.plan.length"></span>
               <span class="subtle" x-show="!live.plan.length">选一个用例或添加点位；点击点位胶囊就能随时改期望值</span>
               <div class="ml-auto flex flex-wrap items-center gap-1.5">
                 <input x-show="live.plan.length > 6 && live.planOpen" class="input !w-36 !py-1 text-xs" placeholder="筛选清单…" x-model="live.planQ">
@@ -269,14 +269,14 @@
               <div class="flex max-h-24 flex-wrap gap-1.5 overflow-y-auto pr-1 scroll-soft">
                 <template x-for="row in livePlanFiltered" :key="row.id">
                   <button class="chip border transition"
-                          :class="live.planSel === row.id ? 'border-lilac-500 bg-lilac-500 text-white shadow-sm' : (liveHits(row.id) ? 'border-leaf-200 bg-leaf-50 text-leaf-700 hover:bg-leaf-100' : 'border-wood-200 bg-white text-wood-700 hover:bg-wood-50')"
+                          :class="live.planSel === row.id ? 'border-leaf-500 bg-leaf-500 text-white shadow-sm' : (liveHits(row.id) ? 'border-leaf-200 bg-leaf-50 text-leaf-700 hover:bg-leaf-100' : 'border-wood-200 bg-white text-wood-700 hover:bg-wood-50')"
                           :title="row.id + ' · 点击修改该点位的期望值'"
                           @click="live.planSel = live.planSel === row.id ? '' : row.id">
                     <span class="h-2 w-2 rounded-full" :class="live.planSel === row.id ? 'bg-white' : (liveHits(row.id) ? 'bg-leaf-500' : 'bg-wood-300')"></span>
                     <span class="max-w-[140px] truncate" x-text="eventName(row.id) || row.id"></span>
                     <span class="font-mono text-[10.5px] opacity-80" x-show="liveHits(row.id)" x-text="'×' + liveHits(row.id)"></span>
                     <span class="max-w-[110px] truncate rounded-full px-1.5 text-[10.5px] font-normal"
-                          :class="live.planSel === row.id ? 'bg-white/25 text-white' : 'bg-lilac-100 text-lilac-600'"
+                          :class="live.planSel === row.id ? 'bg-white/25 text-white' : 'bg-pond-100 text-pond-700'"
                           x-show="rowValSummary(row)" x-text="rowValSummary(row)"></span>
                   </button>
                 </template>
@@ -297,15 +297,15 @@
                   <div class="mt-2 space-y-1.5">
                     <template x-for="f in rowFields(livePlanCur)" :key="f.name">
                       <div class="flex flex-wrap items-center gap-1.5">
-                        <span class="w-24 shrink-0 truncate text-xs font-bold" :class="f.ask ? 'text-lilac-600' : 'text-wood-600'" :title="f.name + (f.ask ? '（由用户操作决定）' : '')" x-text="f.desc || f.name"></span>
+                        <span class="w-24 shrink-0 truncate text-xs font-bold" :class="f.ask ? 'text-pond-700' : 'text-wood-600'" :title="f.name + (f.ask ? '（由用户操作决定）' : '')" x-text="f.desc || f.name"></span>
                         <template x-for="[k, v] in Object.entries(f.options)" :key="k">
-                          <button class="chip border transition" :class="valOn(livePlanCur, f.name, k) ? 'border-lilac-500 bg-lilac-500 text-white' : 'border-lilac-200 bg-white text-lilac-600 hover:bg-lilac-100'" @click="toggleVal(livePlanCur, f.name, k); pushPlan()"><span class="font-mono" x-text="k"></span><span class="font-normal" x-show="v" x-text="v"></span></button>
+                          <button class="chip border transition" :class="valOn(livePlanCur, f.name, k) ? 'border-leaf-500 bg-leaf-500 text-white shadow-sm' : 'border-wood-200 bg-white text-wood-700 hover:border-leaf-300 hover:bg-leaf-50'" @click="toggleVal(livePlanCur, f.name, k); pushPlan()"><span class="font-mono" x-text="k"></span><span class="font-normal" x-show="v" x-text="v"></span></button>
                         </template>
                         <input x-show="!Object.keys(f.options).length" class="input !w-52 !py-0.5 font-mono text-xs" :value="valText(livePlanCur.values[f.name])" @change="setValText(livePlanCur, f.name, $event.target.value); pushPlan()" placeholder="不填不比对；多个候选用 | 分隔">
                       </div>
                     </template>
                     <p x-show="!st?.event_fields?.[livePlanCur.id]" class="text-xs text-ink-faint">这个点位还没配置规则，上报后会显示为「未配置」。</p>
-                    <button class="text-xs font-bold text-lilac-600 hover:underline" x-show="rowHidden(livePlanCur)" @click="livePlanCur.showAll = !livePlanCur.showAll" x-text="livePlanCur.showAll ? '收起其他字段' : '展开其他字段（' + rowHidden(livePlanCur) + '）'"></button>
+                    <button class="text-xs font-bold text-pond-700 hover:underline" x-show="rowHidden(livePlanCur)" @click="livePlanCur.showAll = !livePlanCur.showAll" x-text="livePlanCur.showAll ? '收起其他字段' : '展开其他字段（' + rowHidden(livePlanCur) + '）'"></button>
                   </div>
                 </div>
               </template>
@@ -319,7 +319,7 @@
             <span class="chip st-WARN">警告 <b x-text="liveCounts.WARN"></b></span>
             <span class="chip st-ASK">待确认 <b x-text="liveCounts.ASK"></b></span>
             <span class="chip st-UNKNOWN">无规则 <b x-text="liveCounts.UNKNOWN"></b></span>
-            <span class="chip bg-pond-50 text-pond-700" x-show="st?.live?.snap_on"><img class="pic h-5 w-5" src="/static/icons/data.png" alt="">DB 快照 <b x-text="st?.live?.snaps"></b></span>
+            <span class="chip bg-pond-50 text-pond-700" x-show="st?.live?.snap_on"><img class="pic h-5 w-5" src="/static/icons/db.png" alt="">DB 快照 <b x-text="st?.live?.snaps"></b></span>
             <span class="chip st-WARN" x-show="live.snapErr" :title="live.snapErr">快照未开启</span>
             <div class="ml-auto flex gap-2">
               <button class="btn-wood btn-xs" x-show="live.results.length" @click="recheckLive()"><img class="pic h-5 w-5" src="/static/icons/refresh.png" alt="">用最新规则重新校验</button>
@@ -350,7 +350,7 @@
                     <span class="chip" :class="'st-' + it.r.status" x-text="statusText(it.r.status)"></span>
                     <span class="truncate text-sm font-bold" x-text="it.r.name || it.r.cls || '未知点位'"></span>
                     <span class="ml-auto shrink-0 text-xs font-bold text-berry-600" x-show="badCount(it.r)" x-text="badCount(it.r) + ' 个问题'"></span>
-                    <span class="ml-auto shrink-0 text-xs font-bold text-lilac-600" x-show="!badCount(it.r) && askCount(it.r)" x-text="askCount(it.r) + ' 待确认'"></span>
+                    <span class="ml-auto shrink-0 text-xs font-bold text-pond-700" x-show="!badCount(it.r) && askCount(it.r)" x-text="askCount(it.r) + ' 待确认'"></span>
                   </div>
                   <div class="mt-0.5 flex gap-2 font-mono text-[11px] text-ink-soft"><span x-text="'#' + it.r.seq"></span><span x-text="it.r.id"></span><span class="ml-auto" x-text="(it.r.ts || '').slice(6)"></span></div>
                 </button>
@@ -381,10 +381,10 @@
 
                 <div class="mt-3 flex flex-wrap gap-2 text-xs" x-show="Object.keys(liveCur.ctx).length || liveCur.snapshot || Object.keys(liveCur.scenario || {}).length">
                   <template x-for="[n, c] in Object.entries(liveCur.ctx)">
-                    <span class="chip" :class="c.ok ? 'bg-pond-50 text-pond-700' : 'bg-berry-50 text-berry-600'" :title="c.info"><svg class="ico h-3 w-3"><use :href="icon('map-pin')"></use></svg><b x-text="n"></b><span class="max-w-[320px] truncate font-normal" x-text="c.info"></span></span>
+                    <span class="chip" :class="c.ok ? 'bg-pond-50 text-pond-700' : 'bg-berry-50 text-berry-600'" :title="c.info"><img class="pic h-4 w-4" src="/static/icons/pin.png" alt=""><b x-text="n"></b><span class="max-w-[320px] truncate font-normal" x-text="c.info"></span></span>
                   </template>
-                  <span class="chip bg-pond-50 text-pond-700" x-show="liveCur.snapshot"><img class="pic h-4 w-4" src="/static/icons/data.png" alt="">DB 快照 <span class="font-normal" x-text="liveCur.snapshot ? ('#' + liveCur.snapshot.before + ' → #' + liveCur.snapshot.after) : ''"></span></span>
-                  <template x-for="[k, v] in Object.entries(liveCur.scenario || {})"><span class="chip bg-lilac-50 text-lilac-600"><img class="pic h-4 w-4" src="/static/icons/ask.png" alt=""><span x-text="k + '=' + v"></span></span></template>
+                  <span class="chip bg-pond-50 text-pond-700" x-show="liveCur.snapshot"><img class="pic h-4 w-4" src="/static/icons/db.png" alt="">DB 快照 <span class="font-normal" x-text="liveCur.snapshot ? ('#' + liveCur.snapshot.before + ' → #' + liveCur.snapshot.after) : ''"></span></span>
+                  <template x-for="[k, v] in Object.entries(liveCur.scenario || {})"><span class="chip bg-leaf-50 text-leaf-700"><img class="pic h-4 w-4" src="/static/icons/ask.png" alt=""><span x-text="k + '=' + v"></span></span></template>
                 </div>
                 <template x-for="er in liveCur.errors"><div class="mt-2 flex items-center gap-2 rounded-xl px-3 py-2 text-sm" :class="'st-' + er.status"><img class="pic h-6 w-6" src="/static/icons/warn.png" alt=""><span x-text="er.msg"></span></div></template>
 
@@ -440,7 +440,7 @@
                 <input type="file" class="hidden" multiple accept=".md,.markdown,.txt,.csv,.tsv,.json" @change="importDocs($event)">
               </label>
               <label class="mt-2 flex items-center gap-2 text-xs font-bold text-ink-soft"><input type="checkbox" class="accent-leaf-500" x-model="evd.overwrite"> 已存在的点位用新文档覆盖（默认跳过）</label>
-              <div x-show="evd.result" class="mt-2 rounded-xl bg-leaf-50 px-3 py-2 text-xs text-leaf-700" x-text="evd.result ? `${evd.result.file}：解析 ${evd.result.parsed} 个，新增 ${evd.result.added}，跳过重复 ${evd.result.skipped}，字典共 ${evd.result.total} 个` : ''"></div>
+              <div x-show="evd.result" class="mt-2 rounded-xl bg-leaf-50 px-3 py-2 text-xs text-leaf-700" x-text="evd.result ? `${evd.result.file}：解析 ${evd.result.parsed} 个，字典新增 ${evd.result.added}，跳过重复 ${evd.result.skipped}` + (evd.result.rules_added ? `，已同步 ${evd.result.rules_added} 个到点位规则` : '') + `（共 ${evd.result.total} 个）` : ''"></div>
             </div>
           </div>
         </div>
@@ -504,11 +504,11 @@
               <button class="tab flex-1 !px-1" :class="ruleTab === t[0] && 'tab-on'" @click="ruleTab = t[0]" x-text="t[1] + (t[0] === 'done' ? ' ' + stats.events : t[0] === 'todo' ? ' ' + stats.unconfigured : t[0] === 'tpl' ? ' ' + Object.keys(st?.templates || {}).length : '')"></button>
             </template>
           </div>
-          <div class="mt-3 flex-1 space-y-1.5 overflow-y-auto pr-1 scroll-soft">
+          <div class="mt-3 flex-1 space-y-2 overflow-y-auto pr-1 scroll-soft">
             <template x-for="e in ruleList" :key="e.id">
-              <button class="w-full rounded-2xl px-3 py-2 text-left transition hover:bg-white" :class="ed && (ed.oldId || ed.id) === e.id ? 'bg-white ring-2 ring-leaf-300' : (e.unconfigured ? 'bg-white/30' : 'bg-white/50')" @click="openRuleItem(e)">
-                <div class="flex items-center gap-2"><img x-show="e.isTpl" class="pic -ml-1 h-5 w-5" src="/static/icons/template.png" alt=""><span x-show="!e.isTpl" class="h-2.5 w-2.5 shrink-0 rounded-full" :class="e.unconfigured ? 'border-2 border-dashed border-wood-300' : 'dot-' + (e.last?.status || 'MISS')"></span><span class="truncate text-sm font-bold" :class="e.unconfigured && 'text-ink-soft'" x-text="e.name || '未命名'"></span>
-                  <span class="ml-auto shrink-0 text-[11px]" :class="e.unconfigured ? 'chip ds-todo !px-1.5' : 'text-ink-faint'" x-text="e.unconfigured ? '未配置' : e.isTpl ? e.refs + ' 个点位在用' : e.nfields + ' 字段'"></span></div>
+              <button class="w-full rounded-2xl px-3 py-2 text-left transition hover:bg-white" :class="ed && (ed.oldId || ed.id) === e.id ? 'bg-white ring-2 ring-leaf-300' : ((e.unconfigured || e.stub) ? 'bg-white/35' : 'bg-white/60')" @click="openRuleItem(e)">
+                <div class="flex items-center gap-2"><img x-show="e.isTpl" class="pic -ml-1 h-5 w-5" src="/static/icons/template.png" alt=""><span x-show="!e.isTpl" class="h-2.5 w-2.5 shrink-0 rounded-full" :class="(e.unconfigured || e.stub) ? 'border-2 border-dashed border-wood-300' : 'dot-' + (e.last?.status || 'MISS')"></span><span class="truncate text-sm font-bold" :class="(e.unconfigured || e.stub) && 'text-ink-soft'" x-text="e.name || '未命名'"></span>
+                  <span class="ml-auto shrink-0 text-[11px]" :class="(e.unconfigured || e.stub) ? 'chip ds-todo !px-1.5' : 'text-ink-faint'" x-text="e.unconfigured ? '未配置' : e.stub ? '待配字段' : e.isTpl ? e.refs + ' 个点位在用' : e.nfields + ' 字段'"></span></div>
                 <div class="ml-[18px] font-mono text-[11px] text-ink-soft" x-text="e.id"></div>
               </button>
             </template>
@@ -588,14 +588,14 @@
                 </div>
                 <div class="mt-2 flex flex-wrap items-center gap-2 text-sm" x-show="ed.tryRes">
                   <span>试跑结果：</span><span class="chip" :class="'st-' + ed.tryRes?.status" x-text="statusText(ed.tryRes?.status)"></span>
-                  <template x-for="[n, c] in Object.entries(ed.tryRes?.ctx || {})"><span class="chip" :class="c.ok ? 'bg-pond-50 text-pond-700' : 'bg-berry-50 text-berry-600'" :title="c.info"><svg class="ico h-3 w-3"><use :href="icon(c.ok ? 'map-pin' : 'circle-x')"></use></svg><span x-text="n"></span></span></template>
+                  <template x-for="[n, c] in Object.entries(ed.tryRes?.ctx || {})"><span class="chip" :class="c.ok ? 'bg-pond-50 text-pond-700' : 'bg-berry-50 text-berry-600'" :title="c.info"><img class="pic h-4 w-4" :src="pic(c.ok ? 'pin' : 'fail')" alt=""><span x-text="n"></span></span></template>
                   <template x-for="er in ed.tryRes?.errors || []"><span class="chip" :class="'st-' + er.status" x-text="er.msg"></span></template>
                 </div>
               </div>
 
               <div class="panel-pad">
                 <div class="mb-2 flex items-center justify-between">
-                  <div class="title"><svg class="ico h-4 w-4"><use :href="icon('map-pin')"></use></svg>数据定位 <span class="subtle font-normal">用上报字段里的 ID 去接口数据里找到「这一个」资源位 / 卡片</span></div>
+                  <div class="title"><img class="pic h-6 w-6" src="/static/icons/pin.png" alt="">数据定位 <span class="subtle font-normal">用上报字段里的 ID 去接口数据里找到「这一个」资源位 / 卡片</span></div>
                   <button class="btn-wood btn-xs" @click="addCtx()"><svg class="ico h-3.5 w-3.5"><use :href="icon('plus')"></use></svg>添加定位</button>
                 </div>
                 <div class="overflow-x-auto rounded-2xl border-2 border-wood-100 bg-white/70">
@@ -750,7 +750,7 @@
               <div class="flex flex-wrap gap-2">
                 <template x-for="db in ds.devDbs || []" :key="db">
                   <label class="chip cursor-pointer border transition" :class="ds.dbs.includes(db) ? 'border-leaf-400 bg-leaf-500 text-white' : 'border-wood-200 bg-white text-wood-700'">
-                    <input type="checkbox" class="hidden" :value="db" x-model="ds.dbs"><img class="pic h-5 w-5" src="/static/icons/data.png" alt=""><span x-text="db"></span></label>
+                    <input type="checkbox" class="hidden" :value="db" x-model="ds.dbs"><img class="pic h-5 w-5" src="/static/icons/db.png" alt=""><span x-text="db"></span></label>
                 </template>
               </div>
             </div>
@@ -791,7 +791,7 @@
             <template x-for="(f, i) in ds.files" :key="f.file">
               <div class="rounded-2xl border-2 p-4" :class="tone(i + 1)">
                 <div class="flex items-center gap-2">
-                  <img class="pic h-7 w-7" :src="pic(f.type === 'sqlite' ? 'data' : f.type === 'json_file' ? 'yaml' : 'none')" alt="">
+                  <img class="pic h-7 w-7" :src="pic(f.type === 'sqlite' ? 'db' : f.type === 'json_file' ? 'yaml' : 'none')" alt="">
                   <span class="font-mono font-bold text-wood-700" x-text="f.name || f.file"></span>
                   <span class="chip bg-white/80 text-wood-600" x-text="f.type === 'sqlite' ? '数据库' : f.type === 'json_file' ? '接口 JSON' : '不识别'"></span>
                   <button class="btn-ghost btn-xs ml-auto" @click="delDs(f.file)"><svg class="ico h-3.5 w-3.5"><use :href="icon('trash-2')"></use></svg></button>
@@ -843,7 +843,7 @@
         <div class="panel flex max-h-[calc(100vh-150px)] flex-col p-3">
           <div class="flex items-center justify-between px-1"><div class="title"><img class="pic h-7 w-7" src="/static/icons/cases.png" alt="">测试用例</div><button class="btn-leaf btn-xs" @click="openCase()"><svg class="ico h-3.5 w-3.5"><use :href="icon('plus')"></use></svg>新建</button></div>
           <p class="subtle mt-1 px-1">用例 = 这轮要测哪些点位 + 每个字段期望是什么。实时调试时选上它就自动比对。</p>
-          <div class="mt-3 flex-1 space-y-1.5 overflow-y-auto pr-1 scroll-soft">
+          <div class="mt-3 flex-1 space-y-2 overflow-y-auto pr-1 scroll-soft">
             <template x-for="([name, c], i) in Object.entries(st?.cases || {})" :key="name">
               <button class="w-full rounded-2xl px-3 py-2 text-left transition hover:bg-white" :class="caseEd && caseEd.old === name ? 'bg-white ring-2 ring-leaf-300' : 'bg-white/50'" @click="openCase(name)">
                 <div class="truncate text-sm font-bold text-wood-700" x-text="name"></div>
@@ -896,16 +896,16 @@
                     <div class="mt-3 space-y-2">
                       <template x-for="f in rowFields(row)" :key="f.name">
                         <div class="flex flex-wrap items-center gap-1.5">
-                          <div class="w-36 shrink-0"><div class="truncate text-xs font-bold" :class="f.ask ? 'text-lilac-600' : 'text-wood-600'" x-text="f.desc || f.name"></div><div class="truncate font-mono text-[11px] text-ink-faint" x-text="f.name + (f.ask ? ' · 看操作' : '')"></div></div>
+                          <div class="w-36 shrink-0"><div class="truncate text-xs font-bold" :class="f.ask ? 'text-pond-700' : 'text-wood-600'" x-text="f.desc || f.name"></div><div class="truncate font-mono text-[11px] text-ink-faint" x-text="f.name + (f.ask ? ' · 看操作' : '')"></div></div>
                           <template x-for="[k, v] in Object.entries(f.options)" :key="k">
-                            <button class="chip border transition" :class="valOn(row, f.name, k) ? 'border-lilac-500 bg-lilac-500 text-white' : 'border-lilac-200 bg-white text-lilac-600 hover:bg-lilac-100'" @click="toggleVal(row, f.name, k); caseEd.dirty = true"><span class="font-mono" x-text="k"></span><span class="font-normal" x-show="v" x-text="v"></span></button>
+                            <button class="chip border transition" :class="valOn(row, f.name, k) ? 'border-leaf-500 bg-leaf-500 text-white shadow-sm' : 'border-wood-200 bg-white text-wood-700 hover:border-leaf-300 hover:bg-leaf-50'" @click="toggleVal(row, f.name, k); caseEd.dirty = true"><span class="font-mono" x-text="k"></span><span class="font-normal" x-show="v" x-text="v"></span></button>
                           </template>
                           <input x-show="!Object.keys(f.options).length" class="input !w-60 !py-1 font-mono text-xs" :value="valText(row.values[f.name])" @change="setValText(row, f.name, $event.target.value); caseEd.dirty = true" placeholder="不填不比对；多个候选用 | 分隔">
                           <button class="text-[11px] text-ink-faint hover:text-berry-600" x-show="row.values[f.name] !== undefined" @click="delete row.values[f.name]; row.values = {...row.values}; caseEd.dirty = true">清除</button>
                         </div>
                       </template>
                       <div class="flex flex-wrap items-center gap-3">
-                        <button class="text-xs font-bold text-lilac-600 hover:underline" x-show="rowHidden(row)" @click="row.showAll = !row.showAll" x-text="row.showAll ? '收起其他字段' : '展开其他字段（' + rowHidden(row) + '）'"></button>
+                        <button class="text-xs font-bold text-pond-700 hover:underline" x-show="rowHidden(row)" @click="row.showAll = !row.showAll" x-text="row.showAll ? '收起其他字段' : '展开其他字段（' + rowHidden(row) + '）'"></button>
                         <input class="input !w-44 !py-0.5 font-mono text-xs" placeholder="＋ 其他字段 key" @change="addRowField(row, $event.target.value); $event.target.value = ''">
                       </div>
                     </div>
@@ -922,7 +922,7 @@
       <section x-show="page === 'reports'" x-cloak class="grid grid-cols-1 gap-5 lg:grid-cols-[300px_1fr]">
         <div class="panel flex max-h-[calc(100vh-150px)] flex-col p-3">
           <div class="title mb-2 px-1"><img class="pic h-6 w-6" src="/static/icons/report.png" alt="">校验报告</div>
-          <div class="flex-1 space-y-1.5 overflow-y-auto pr-1 scroll-soft">
+          <div class="flex-1 space-y-2 overflow-y-auto pr-1 scroll-soft">
             <template x-for="r in st?.reports || []" :key="r.name">
               <button class="w-full rounded-2xl px-3 py-2 text-left hover:bg-white" :class="rep.cur?.name === r.name ? 'bg-white ring-2 ring-leaf-300' : 'bg-white/50'" @click="openReport(r.name)">
                 <div class="flex items-center gap-2"><img class="pic h-6 w-6" :src="pic(r.summary.ok ? 'ok' : 'fail')" alt=""><span class="text-sm font-bold" x-text="r.time"></span></div>
@@ -945,7 +945,7 @@
                 </div>
               </div>
               <div class="mt-4 grid grid-cols-3 gap-3 md:grid-cols-7">
-                <template x-for="(c, i) in [['上报事件', rep.cur.summary.total, ''], ['通过', rep.cur.summary.pass, 'text-leaf-600'], ['失败', rep.cur.summary.fail, 'text-berry-600'], ['警告', rep.cur.summary.warn, 'text-sun-600'], ['待确认', rep.cur.summary.ask || 0, 'text-lilac-600'], ['无规则', rep.cur.summary.unknown, 'text-ink-soft'], ['用例未触发', rep.cur.summary.coverage_fail, 'text-berry-600']]">
+                <template x-for="(c, i) in [['上报事件', rep.cur.summary.total, ''], ['通过', rep.cur.summary.pass, 'text-leaf-600'], ['失败', rep.cur.summary.fail, 'text-berry-600'], ['警告', rep.cur.summary.warn, 'text-sun-600'], ['待确认', rep.cur.summary.ask || 0, 'text-pond-600'], ['无规则', rep.cur.summary.unknown, 'text-ink-soft'], ['用例未触发', rep.cur.summary.coverage_fail, 'text-berry-600']]">
                   <div class="rounded-2xl border-2 p-3 text-center" :class="tone(i)"><div class="text-2xl font-black" :class="c[2]" x-text="c[1]"></div><div class="subtle" x-text="c[0]"></div></div>
                 </template>
               </div>
@@ -1096,7 +1096,7 @@
 
     <footer class="flex flex-wrap items-center justify-between gap-2 rounded-full bg-wood-500/90 px-6 py-2 text-xs font-bold text-cream shadow-soft">
       <span class="flex items-center gap-1.5">🌼 埋点小岛 · trackcheck</span>
-      <span class="flex items-center gap-1.5" x-text="'🌱 ' + (st?.events.length || 0) + ' 个点位已配置规则' + (st?.evdict.count ? ' · 埋点字典 ' + st.evdict.count + ' 个' : '') + ' · Ctrl+S 快捷保存'"></span>
+      <span class="flex items-center gap-1.5" x-text="'🌱 ' + (stats.events || 0) + ' 个点位已配置规则' + (st?.evdict.count ? ' · 埋点字典 ' + st.evdict.count + ' 个' : '') + ' · Ctrl+S 快捷保存'"></span>
       <span class="flex items-center gap-1.5"><span class="h-2 w-2 rounded-full" :class="onlineDevice ? 'bg-leaf-300' : 'bg-berry-300'"></span><span x-text="onlineDevice ? ('在线：' + (onlineDevice.model || onlineDevice.serial)) : '等待设备'"></span></span>
     </footer>
   </div>
@@ -1164,14 +1164,14 @@
         <!-- 接口数据 -->
         <div x-show="fm?.tab === 'api'" class="space-y-3">
           <div><label class="label">取值路径（在下方 JSON 里点一下值自动生成）</label><input class="input font-mono" x-model="fm.from" placeholder="card.cardType  或  mine_page:data.list[0].id"></div>
-          <div x-show="fm?.note" class="flex items-center gap-2 rounded-xl bg-pond-50 px-3 py-2 text-sm text-pond-700"><svg class="ico h-4 w-4"><use :href="icon('map-pin')"></use></svg><span x-text="fm?.note"></span></div>
-          <div x-show="fm?.mapHint" class="flex flex-wrap items-center gap-2 rounded-xl bg-lilac-50 px-3 py-2 text-sm text-lilac-600">
+          <div x-show="fm?.note" class="flex items-center gap-2 rounded-xl bg-pond-50 px-3 py-2 text-sm text-pond-700"><img class="pic h-5 w-5" src="/static/icons/pin.png" alt=""><span x-text="fm?.note"></span></div>
+          <div x-show="fm?.mapHint" class="flex flex-wrap items-center gap-2 rounded-xl bg-peach-50 px-3 py-2 text-sm text-peach-600">
             <span>接口值 <b class="font-mono" x-text="fm?.mapHint?.k"></b> 和上报值 <b class="font-mono" x-text="fm?.mapHint?.v"></b> 不一样，是文档规定的转换吗？</span>
             <button class="btn-leaf btn-xs" @click="addMapHint()">加入映射表</button>
           </div>
-          <div class="rounded-2xl border-2 border-lilac-200 bg-lilac-50/60 p-3">
+          <div class="rounded-2xl border-2 border-peach-200 bg-peach-50/60 p-3">
             <div class="flex flex-wrap items-center gap-2">
-              <span class="flex items-center gap-1 text-sm font-bold text-lilac-600"><svg class="ico h-4 w-4"><use :href="icon('git-compare-arrows')"></use></svg>值转换（接口值 → 上报值）</span>
+              <span class="flex items-center gap-1 text-sm font-bold text-peach-600"><svg class="ico h-4 w-4"><use :href="icon('git-compare-arrows')"></use></svg>值转换（接口值 → 上报值）</span>
               <div class="flex gap-1 rounded-xl bg-white/70 p-1">
                 <button class="tab" :class="fm?.mapMode === 'none' && 'tab-on'" @click="fm.mapMode = 'none'">不需要</button>
                 <button class="tab" :class="fm?.mapMode === 'inline' && 'tab-on'" @click="fm.mapMode = 'inline'">映射表</button>
@@ -1256,7 +1256,7 @@
         <div class="flex flex-wrap items-center gap-x-6 gap-y-2 rounded-2xl border-2 border-dashed border-wood-200 p-4 text-sm">
           <div class="flex items-center gap-2"><span class="text-xs font-bold text-wood-600">多次上报的趋势</span>
             <select class="input !w-auto !py-1 text-xs" x-model="fm.trend"><option value="">不检查</option><option value="up">只增不减</option><option value="strict_up">每次都增加</option><option value="down">只减不增</option><option value="same">保持不变</option></select></div>
-          <label class="flex items-center gap-2 font-bold text-lilac-600"><input type="checkbox" class="accent-lilac-500" x-model="fm.ask"> 这个值取决于用户操作（入口、Tab…），测试时由我确认 / 按「本次操作」比对</label>
+          <label class="flex items-center gap-2 font-bold text-pond-700"><input type="checkbox" class="accent-pond-500" x-model="fm.ask"> 这个值取决于用户操作（入口、Tab…），测试时由我确认 / 按用例期望比对</label>
         </div>
 
         <div class="rounded-2xl border-2 border-dashed border-wood-200 p-4">

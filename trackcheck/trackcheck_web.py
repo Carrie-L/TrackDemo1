@@ -469,6 +469,7 @@ class App:
             for n in rule_dict_refs(res.get("fields")):
                 refs.setdefault(n, []).append(eid)
             events.append({"id": eid, "name": res.get("name") or s.catalog.get(eid, ""), "nfields": len(res.get("fields") or {}),
+                           "stub": tc.is_stub_event(res),
                            "extends": (raw or {}).get("extends"), "file": os.path.relpath(p, os.path.dirname(self.store.path)),
                            "last": last.get(eid)})
         dicts, dict_meta = {}, {}
@@ -1216,9 +1217,24 @@ class App:
         cand = os.path.join(self._docs_dir(), os.path.basename(str(name or "")))
         return cand if os.path.isfile(cand) else ""
 
+    def _sync_events_from_entries(self, entries):
+        """把埋点字典里「点位规则」还没有的点位，自动新增到规则文件 events 下（点位ID + 事件名称）"""
+        existing = self.store.items("events")
+        added = []
+        touched = set()
+        for rid, e in entries.items():
+            rid = str(rid)
+            if rid in existing:
+                continue
+            touched.add(self.store.put("events", rid, {"name": e.get("name") or "", "fields": {}}, save=False))
+            added.append(rid)
+        for p in touched:
+            self.store.save(p)
+        return added
+
     def api_evdict(self, q):
         d = tc.load_event_dict(self.spec.event_dict_path)
-        conf = set(self.spec.events)
+        conf = {eid for eid, es in self.spec.events.items() if not tc.is_stub_event(es)}
         ents = sorted(d["entries"].values(), key=lambda e: e["id"])
         for e in ents:
             e["configured"] = e["id"] in conf
@@ -1255,9 +1271,10 @@ class App:
             if item.get("name") == doc_name:
                 item["path"] = saved
         self._save_evdict(d)
+        rules_added = self._sync_events_from_entries(entries)
         self.reload()
         return {"parsed": len(entries), "added": len(added), "skipped": len(skipped), "updated": len(updated),
-                "added_ids": added[:200], "total": len(d["entries"]), "path": saved}
+                "rules_added": len(rules_added), "added_ids": added[:200], "total": len(d["entries"]), "path": saved}
 
     def api_evdict_delete(self, b):
         d = tc.load_event_dict(self.spec.event_dict_path)
@@ -1379,26 +1396,63 @@ class App:
         if not docs:
             raise ApiError("规则文件同目录的 docs/ 下没有示例文档")
         d = tc.load_event_dict(self.spec.event_dict_path)
-        tot = 0
+        tot, all_entries = 0, OrderedDict()
         for p in docs:
             bn = os.path.basename(p)
             with open(p, encoding="utf-8") as f:
                 entries = tc.doc_to_event_entries(f.read(), bn)
+            all_entries.update(entries)
             added, _, _ = tc.merge_event_dict(d, entries, bn, False)
             for item in d.get("docs", []):
                 if item.get("name") == bn:
                     item["path"] = p
             tot += len(added)
         self._save_evdict(d)
+        rules_added = self._sync_events_from_entries(all_entries)
         self.reload()
-        return {"added": tot, "total": len(d["entries"]), "docs": [os.path.basename(x) for x in docs]}
+        return {"added": tot, "rules_added": len(rules_added), "total": len(d["entries"]), "docs": [os.path.basename(x) for x in docs]}
+
+    def _is_hidden_desktop(self):
+        if os.name != "nt":
+            return False
+        try:
+            import ctypes
+            u32, k32 = ctypes.windll.user32, ctypes.windll.kernel32
+            hd = u32.GetThreadDesktop(k32.GetCurrentThreadId())
+            buf, n = ctypes.create_unicode_buffer(256), ctypes.c_ulong()
+            if u32.GetUserObjectInformationW(hd, 2, buf, 512, ctypes.byref(n)):
+                return buf.value.lower() != "default"
+        except Exception:
+            pass
+        return False
 
     def _open_in_fm(self, rp):
+        rp = os.path.normpath(rp)
         if os.name == "nt":
+            import ctypes
+            shell32, ole32 = ctypes.windll.shell32, ctypes.windll.ole32
             if os.path.isfile(rp):
-                subprocess.Popen(["explorer", "/select,", os.path.normpath(rp)])
+                co_hr = ole32.CoInitialize(None)
+                try:
+                    shell32.ILCreateFromPathW.argtypes = [ctypes.c_wchar_p]
+                    shell32.ILCreateFromPathW.restype = ctypes.c_void_p
+                    shell32.SHOpenFolderAndSelectItems.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p, ctypes.c_ulong]
+                    shell32.SHOpenFolderAndSelectItems.restype = ctypes.c_long
+                    shell32.ILFree.argtypes = [ctypes.c_void_p]
+                    pidl = shell32.ILCreateFromPathW(rp)
+                    if pidl:
+                        try:
+                            if shell32.SHOpenFolderAndSelectItems(pidl, 0, None, 0) == 0:
+                                return
+                        finally:
+                            shell32.ILFree(pidl)
+                finally:
+                    if co_hr in (0, 1):
+                        ole32.CoUninitialize()
+                subprocess.Popen(f'explorer.exe /select,"{rp}"')
             else:
-                os.startfile(os.path.normpath(rp))
+                if shell32.ShellExecuteW(None, "open", rp, None, None, 1) <= 32:
+                    subprocess.Popen(f'explorer.exe "{rp}"')
         elif sys.platform == "darwin":
             subprocess.Popen(["open", "-R", rp] if os.path.isfile(rp) else ["open", rp])
         else:
@@ -1441,9 +1495,10 @@ class App:
         ok = rp in allowed_exact or any(rp == r or rp.startswith(r + os.sep) for r in roots)
         if not ok:
             raise ApiError("安全限制：只能打开项目、数据源或报告目录下的路径")
-        if not b.get("dry_run"):
+        sandbox = self._is_hidden_desktop()
+        if not b.get("dry_run") and not sandbox:
             self._open_in_fm(rp)
-        return {"ok": True, "path": rp, "kind": "file" if os.path.isfile(rp) else "dir"}
+        return {"ok": True, "path": rp, "kind": "file" if os.path.isfile(rp) else "dir", "sandbox": sandbox}
 
     def api_reload(self, b):
         self.reload()
