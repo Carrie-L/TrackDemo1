@@ -24,8 +24,8 @@
         <button class="navitem" :class="page === n.id && 'navitem-on'" @click="go(n.id)">
           <img class="pic h-7 w-7 -my-1" :src="pic(n.icon)" alt=""><span x-text="n.label"></span>
           <span x-show="n.id === 'live' && live.running" class="live-dot ml-auto h-2.5 w-2.5 rounded-full bg-leaf-400"></span>
-          <span x-show="n.id === 'rules' && st" class="ml-auto rounded-full bg-wood-100 px-2 text-[11px] text-wood-600" :class="page === n.id && '!bg-white/30 !text-white'" x-text="stats.events"></span>
-          <span x-show="n.id === 'evdict' && st?.evdict.count" class="ml-auto rounded-full bg-wood-100 px-2 text-[11px] text-wood-600" :class="page === n.id && '!bg-white/30 !text-white'" x-text="st?.evdict.count"></span>
+          <span x-show="n.id === 'rules' && st" class="ml-auto rounded-full bg-pond-50 px-2 text-[11px] text-pond-700" :class="page === n.id && '!bg-white/30 !text-white'" x-text="stats.events"></span>
+          <span x-show="n.id === 'evdict' && st?.evdict.count" class="ml-auto rounded-full bg-pond-50 px-2 text-[11px] text-pond-700" :class="page === n.id && '!bg-white/30 !text-white'" x-text="st?.evdict.count"></span>
         </button>
       </template>
     </nav>
@@ -106,11 +106,11 @@
       <!-- ========== 首页 ========== -->
       <section x-show="page === 'home'" x-cloak class="grid grid-cols-1 gap-5 xl:grid-cols-[1fr_300px]">
         <div class="flex min-w-0 flex-col gap-5">
-          <div class="panel relative h-[290px] lg:h-[320px] overflow-hidden !p-0">
+          <div class="panel relative h-[300px] lg:h-[330px] overflow-hidden !p-0">
             <img src="/static/hero.jpg" class="absolute inset-0 h-full w-full object-cover object-[center_58%]" alt="">
-            <div class="absolute inset-0 bg-gradient-to-r from-cream/65 via-cream/10 to-transparent"></div>
+            <div class="absolute inset-0 bg-gradient-to-r from-[#EEF8FF]/45 via-transparent to-transparent"></div>
             <div class="relative flex h-full max-w-lg flex-col justify-start gap-3.5 px-8 pt-6">
-              <div class="w-fit rounded-3xl border-2 border-wood-200 bg-cream/92 px-6 py-4 shadow-soft">
+              <div class="w-fit rounded-3xl border-2 border-white bg-white/90 px-6 py-4 shadow-soft backdrop-blur-[2px]">
                 <h2 class="text-[22px] lg:text-[25px] font-black leading-snug tracking-wide text-wood-700">欢迎回来，小岛开发者！</h2>
                 <p class="mt-1 text-[13.5px] font-medium text-ink-soft">每个点位只需配置一次规则，之后每次测试自动复用。</p>
               </div>
@@ -881,12 +881,12 @@
                 <div class="title">要测的点位</div>
                 <span class="subtle">点选标签即为期望值（可多选），也支持把点位复制到其他用例复用。</span>
                 <div class="ml-auto flex flex-wrap items-center gap-2">
-                  <div x-show="copiedRow" class="inline-flex items-center overflow-hidden rounded-xl border-2 border-sakura-300 bg-sakura-50">
-                    <button class="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-bold text-sakura-700 hover:bg-sakura-100" @click="pasteCaseRow()" :title="'粘贴点位 ' + copiedRow?.id + '（含期望值）'">
-                      <svg class="ico h-3.5 w-3.5"><use :href="icon('clipboard-copy')"></use></svg>
+                  <div x-show="canPasteRow" class="inline-flex items-center overflow-hidden rounded-xl border-2 border-sakura-200 bg-sakura-100">
+                    <button class="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-bold text-sakura-700 hover:bg-sakura-200" @click="pasteCaseRow()" :title="'粘贴点位 ' + copiedRow?.id + '（含期望值）'">
+                      <svg class="ico h-3.5 w-3.5"><use :href="icon('clipboard-paste')"></use></svg>
                       <span class="max-w-[160px] truncate" x-text="'粘贴：' + (eventName(copiedRow?.id) || copiedRow?.id)"></span>
                     </button>
-                    <button class="px-1.5 py-1 text-sakura-700/70 hover:bg-sakura-200 hover:text-sakura-700" title="清空已复制的点位" @click="clearCopiedRow()"><svg class="ico h-3 w-3"><use :href="icon('x')"></use></svg></button>
+                    <button class="px-1.5 py-1 text-sakura-600 hover:bg-sakura-200 hover:text-sakura-700" title="放弃复制" @click="clearCopiedRow()"><svg class="ico h-3 w-3"><use :href="icon('x')"></use></svg></button>
                   </div>
                   <input class="input !w-60 !py-1 text-xs" list="evlist" placeholder="＋ 添加点位：输入 ID 或名称" x-model="caseEd.addId" @change="addCaseRow()" @keydown.enter="addCaseRow()">
                 </div>
@@ -935,14 +935,31 @@
       <!-- ========== 报告 ========== -->
       <section x-show="page === 'reports'" x-cloak class="grid grid-cols-1 gap-5 lg:grid-cols-[290px_1fr]">
         <div class="panel flex max-h-[calc(100vh-150px)] flex-col p-3">
-          <div class="title mb-2 px-1"><img class="pic h-6 w-6" src="/static/icons/report.png" alt="">校验报告</div>
+          <div class="mb-2.5 flex items-center justify-between px-1">
+            <div class="title"><img class="pic h-6 w-6" src="/static/icons/report.png" alt="">校验报告 <span class="text-xs font-normal text-ink-faint" x-show="st?.reports?.length" x-text="st?.reports?.length"></span></div>
+            <button class="btn-ghost btn-xs hover:!bg-berry-50 hover:!text-berry-600" x-show="st?.reports.length" title="清空全部校验报告" @click="clearReports()"><svg class="ico h-3.5 w-3.5"><use :href="icon('trash-2')"></use></svg>一键清空</button>
+          </div>
           <div class="flex-1 space-y-2 overflow-y-auto pr-1 scroll-soft">
             <template x-for="r in st?.reports || []" :key="r.name">
-              <button class="w-full rounded-2xl px-3 py-2 text-left transition hover:bg-white" :class="rep.cur?.name === r.name ? 'bg-white ring-2 ring-sakura-300 shadow-sm' : 'bg-white/60'" @click="openReport(r.name)">
-                <div class="flex items-center gap-2"><img class="pic h-5 w-5" :src="pic(r.summary.ok ? 'ok' : 'fail')" alt=""><span class="text-sm font-bold text-wood-700" x-text="r.time"></span></div>
-                <div class="mt-1.5 flex flex-wrap gap-1"><span class="chip st-PASS" x-text="'通过 ' + r.summary.pass"></span><span class="chip st-FAIL" x-show="r.summary.fail" x-text="'失败 ' + r.summary.fail"></span><span class="chip st-ASK" x-show="r.summary.ask" x-text="'待确认 ' + r.summary.ask"></span><span class="chip max-w-[140px] truncate bg-pond-100 text-wood-700" x-show="r.case" x-text="r.case"></span></div>
-              </button>
+              <div class="group cursor-pointer rounded-2xl border px-3 py-2.5 text-left transition"
+                   :class="rep.cur?.name === r.name ? 'border-pond-300 bg-white shadow-soft ring-2 ring-pond-100' : 'border-transparent bg-white/60 hover:border-pond-200 hover:bg-white'"
+                   @click="openReport(r.name)">
+                <div class="flex items-center gap-2">
+                  <span class="h-2 w-2 shrink-0 rounded-full" :class="r.summary.ok ? 'bg-leaf-400' : 'bg-berry-400'"></span>
+                  <span class="whitespace-nowrap text-sm font-bold text-ink" :title="r.time" x-text="r.time"></span>
+                  <span class="ml-auto max-w-[110px] truncate rounded-md bg-pond-50 px-1.5 py-0.5 text-[10.5px] font-bold text-pond-700" x-show="r.case" x-text="r.case"></span>
+                  <button class="hidden shrink-0 rounded-lg p-1 text-ink-faint transition hover:bg-berry-50 hover:text-berry-600 group-hover:inline-flex" :class="!r.case && 'ml-auto'" title="删除这份报告" @click.stop="deleteReport(r.name)"><svg class="ico h-3.5 w-3.5"><use :href="icon('trash-2')"></use></svg></button>
+                </div>
+                <div class="mt-1 flex items-center gap-1.5 pl-4 text-[11.5px] font-medium">
+                  <span class="text-leaf-600" x-text="'通过 ' + r.summary.pass"></span>
+                  <span class="text-ink-faint" x-show="r.summary.fail">·</span>
+                  <span class="text-berry-600" x-show="r.summary.fail" x-text="'失败 ' + r.summary.fail"></span>
+                  <span class="text-ink-faint" x-show="r.summary.ask">·</span>
+                  <span class="text-pond-700" x-show="r.summary.ask" x-text="'待确认 ' + r.summary.ask"></span>
+                </div>
+              </div>
             </template>
+            <p x-show="!st?.reports.length" class="py-10 text-center text-xs text-ink-faint">暂无校验报告</p>
           </div>
         </div>
         <div x-show="!rep.cur" class="panel-pad grid place-items-center gap-2 py-16 text-sm text-ink-soft"><img class="pic h-16 w-16" src="/static/icons/report.png" alt=""><span>从左边选一份报告</span></div>
@@ -1017,9 +1034,9 @@
               <div class="mb-3 flex flex-wrap items-center gap-3">
                 <div class="title"><img class="pic h-5 w-5" src="/static/icons/report.png" alt="">逐条明细</div>
                 <div class="flex gap-1 rounded-2xl bg-pond-50 p-1 ring-1 ring-pond-200">
-                  <template x-for="t in [['bad','有问题'],['pass','通过'],['all','全部']]"><button class="tab" :class="rep.view === t[0] ? '!bg-sakura-300 !text-sakura-700 shadow-sm' : 'hover:bg-white/70'" @click="rep.view = t[0]" x-text="t[1] + ' ' + repCount(t[0])"></button></template>
+                  <template x-for="t in [['bad','有问题'],['pass','通过'],['all','全部']]"><button class="tab" :class="rep.view === t[0] ? '!bg-sakura-200 !text-sakura-700 ring-1 ring-sakura-300/70 shadow-sm' : 'hover:bg-white/80'" @click="rep.view = t[0]" x-text="t[1] + ' ' + repCount(t[0])"></button></template>
                 </div>
-                <label class="flex items-center gap-2 text-sm font-bold text-ink-soft"><input type="checkbox" class="accent-sakura-500" x-model="rep.showUnk" @change="if (rep.showUnk) rep.view = 'all'"> 显示未配置规则的 <span class="chip st-UNKNOWN" x-text="rep.cur.summary.unknown"></span></label>
+                <label class="flex items-center gap-2 text-sm font-bold text-ink-soft"><input type="checkbox" class="accent-pond-500" x-model="rep.showUnk" @change="if (rep.showUnk) rep.view = 'all'"> 显示未配置规则的 <span class="chip st-UNKNOWN" x-text="rep.cur.summary.unknown"></span></label>
                 <div class="ml-auto flex items-center gap-2">
                   <button class="btn-wood btn-xs" @click="rep.expandAll = !rep.expandAll" x-text="rep.expandAll ? '全部收起' : '全部展开'"></button>
                   <input class="input !w-64" placeholder="搜索点位 / 字段 / 值" x-model="rep.q">
@@ -1152,10 +1169,10 @@
       </section>
     </main>
 
-    <footer class="flex flex-wrap items-center justify-between gap-2 rounded-full bg-wood-500/90 px-6 py-2 text-xs font-bold text-cream shadow-soft">
-      <span class="flex items-center gap-1.5">🌼 埋点小岛 · trackcheck</span>
+    <footer class="flex flex-wrap items-center justify-between gap-2 rounded-full border-2 border-[#DCEEF8] bg-white/85 px-6 py-2 text-xs font-bold text-ink-soft shadow-soft">
+      <span class="flex items-center gap-1.5 text-wood-700">🌼 埋点小岛 · trackcheck</span>
       <span class="flex items-center gap-1.5" x-text="'🌱 ' + (stats.events || 0) + ' 个点位已配置规则' + (st?.evdict.count ? ' · 埋点字典 ' + st.evdict.count + ' 个' : '') + ' · Ctrl+S 快捷保存'"></span>
-      <span class="flex items-center gap-1.5"><span class="h-2 w-2 rounded-full" :class="onlineDevice ? 'bg-leaf-300' : 'bg-berry-300'"></span><span x-text="onlineDevice ? ('在线：' + (onlineDevice.model || onlineDevice.serial)) : '等待设备'"></span></span>
+      <span class="flex items-center gap-1.5"><span class="h-2 w-2 rounded-full" :class="onlineDevice ? 'bg-leaf-400' : 'bg-berry-400'"></span><span x-text="onlineDevice ? ('在线：' + (onlineDevice.model || onlineDevice.serial)) : '等待设备'"></span></span>
     </footer>
   </div>
 </div>

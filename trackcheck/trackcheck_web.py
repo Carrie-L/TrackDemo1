@@ -548,6 +548,20 @@ class App:
         return {"id": eid, "raw": raw, "resolved": self.spec.events.get(eid, {}),
                 "file": os.path.relpath(p, os.path.dirname(self.store.path))}
 
+    def _del_report_files(self, name):
+        stem = os.path.basename(str(name or ""))
+        if not stem or not re.fullmatch(r"trackcheck_[\w\-]+", stem):
+            raise ApiError("无效的报告文件名")
+        removed = 0
+        for ext in (".json", ".html"):
+            p = os.path.join(self.out, stem + ext)
+            if os.path.isfile(p):
+                os.remove(p)
+                removed += 1
+        if self.live and self.live.report == stem:
+            self.live.report = None
+        return removed
+
     def api_report(self, q):
         name = os.path.basename(q.get("name", ""))
         p = os.path.join(self.out, name + ".json")
@@ -555,6 +569,24 @@ class App:
             raise ApiError("报告不存在")
         with open(p, encoding="utf-8") as f:
             return json.load(f)
+
+    def api_report_delete(self, b):
+        if not self._del_report_files(b.get("name")):
+            raise ApiError("报告不存在")
+        return {"ok": True}
+
+    def api_reports_clear(self, b):
+        n = 0
+        for p in glob.glob(os.path.join(self.out, "trackcheck_*.json")) + glob.glob(os.path.join(self.out, "trackcheck_*.html")):
+            try:
+                os.remove(p)
+                if p.endswith(".json"):
+                    n += 1
+            except OSError:
+                pass
+        if self.live:
+            self.live.report = None
+        return {"ok": True, "deleted": n}
 
     def api_source_json(self, q):
         try:
@@ -1529,6 +1561,7 @@ ROUTES = {
     ("POST", "/api/spec_text/save"): "api_spec_text_save", ("POST", "/api/evdict/samples"): "api_evdict_samples",
     ("POST", "/api/import/preview"): "api_import_preview", ("POST", "/api/import/apply"): "api_import_apply",
     ("POST", "/api/open_path"): "api_open_path",
+    ("POST", "/api/report/delete"): "api_report_delete", ("POST", "/api/reports/clear"): "api_reports_clear",
 }
 
 MIME = {".html": "text/html; charset=utf-8", ".js": "application/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",

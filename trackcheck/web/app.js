@@ -11,8 +11,8 @@ const NAV = [
   { id: 'share', icon: 'share', label: '导入 / 分享' },
 ];
 const CARD_TONES = [
-  'bg-pond-50 border-pond-200', 'bg-leaf-50 border-leaf-200', 'bg-peach-50 border-peach-200',
-  'bg-berry-50 border-berry-200', 'bg-wood-50 border-wood-200', 'bg-sun-50 border-sun-200',
+  'bg-pond-50/90 border-pond-200', 'bg-leaf-50/85 border-leaf-200', 'bg-sakura-50/90 border-sakura-200',
+  'bg-peach-50/85 border-peach-200', 'bg-wood-50/85 border-wood-200', 'bg-sun-50/85 border-sun-200',
 ];
 const TIPS = [
   '一个点位只需要配置一次规则，之后每次测试都会自动复用。',
@@ -996,22 +996,25 @@ function app() {
       this.$nextTick(() => { this.$refs.caseNameInput?.focus(); this.$refs.caseNameInput?.select(); });
       this.toast(`已复制「${name || '当前用例'}」，修改名称后点「保存用例」即可`, 'ok');
     },
+    get canPasteRow() {
+      return !!(this.copiedRow && this.caseEd && !this.caseEd.rows.some(r => r.id === this.copiedRow.id));
+    },
     copyCaseRow(row) {
       const copy = { id: row.id, min: row.min, max: row.max, where: clone(row.where || null), values: clone(row.values || {}) };
       this.copiedRow = copy;
       try { localStorage.setItem('tc_copied_row', JSON.stringify(copy)); } catch (e) {}
-      this.toast(`已复制点位「${this.eventName(row.id) || row.id}」（含期望值），切到其他用例点「粘贴点位」即可`, 'ok');
+      this.toast(`已复制点位「${this.eventName(row.id) || row.id}」（含期望值），切到其他还没包含它的用例即可粘贴`, 'ok');
     },
     pasteCaseRow() {
       const c = this.caseEd, r = this.copiedRow; if (!c || !r) return;
-      const exist = c.rows.find(x => x.id === r.id);
-      if (exist) {
-        if (!confirm(`当前用例里已经有「${this.eventName(r.id) || r.id}」，要用复制的期望值覆盖它吗？`)) return;
-        exist.min = r.min; exist.max = r.max; exist.where = clone(r.where || null); exist.values = clone(r.values || {});
-        c.dirty = true; this.toast('已用复制的期望值更新该点位', 'ok'); return;
+      if (c.rows.some(x => x.id === r.id)) {
+        this.toast(`当前用例已有「${this.eventName(r.id) || r.id}」`, 'warn'); return;
       }
       c.rows.push({ key: Math.random(), id: r.id, min: r.min ?? 1, max: r.max ?? '', where: clone(r.where || null), values: clone(r.values || {}), showAll: false });
-      c.dirty = true; this.toast(`已粘贴点位「${this.eventName(r.id) || r.id}」`, 'ok');
+      c.dirty = true;
+      const name = this.eventName(r.id) || r.id;
+      this.clearCopiedRow();
+      this.toast(`已粘贴点位「${name}」`, 'ok');
     },
     clearCopiedRow() { this.copiedRow = null; try { localStorage.removeItem('tc_copied_row'); } catch (e) {} },
     useCaseInLive(name) { this.live.caseName = name; this.loadPlanFromCase(); this.go('live'); },
@@ -1020,6 +1023,21 @@ function app() {
     async openReport(name) {
       this.rep.cur = await this.call(() => this.api('/api/report?name=' + encodeURIComponent(name)));
       this.rep.cur.name = name; this.rep.expandAll = false; this.go('reports');
+    },
+    async deleteReport(name) {
+      if (!confirm('删除这份校验报告？')) return;
+      await this.call(() => this.api('/api/report/delete', { name }), '已删除报告');
+      await this.refresh();
+      if (this.rep.cur?.name === name) {
+        const next = this.st?.reports?.[0]?.name;
+        if (next) await this.openReport(next); else this.rep.cur = null;
+      }
+    },
+    async clearReports() {
+      const n = (this.st?.reports || []).length;
+      if (!n || !confirm(`确定一键清空全部 ${n} 份校验报告吗？（原始抓包日志保留在 reports 目录）`)) return;
+      await this.call(() => this.api('/api/reports/clear', {}), '已清空全部校验报告');
+      this.rep.cur = null; await this.refresh();
     },
     repPct(n) {
       const s = this.rep.cur?.summary; if (!s) return 0;
