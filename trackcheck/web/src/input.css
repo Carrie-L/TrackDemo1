@@ -38,7 +38,7 @@
 .pic { display: inline-block; flex-shrink: 0; object-fit: contain; filter: drop-shadow(0 1px 0 rgba(140,100,60,.18)); user-select: none; -webkit-user-drag: none; }
 .yaml .yk { color: #4E8A35; font-weight: 700; } .yaml .yk2 { color: #7F63B8; } .yaml .yc { color: #B9A894; font-style: italic; }
 .ico { display: inline-block; width: 1.1em; height: 1.1em; flex-shrink: 0; vertical-align: -0.15em; }
-.st-ASK { background: #DCF2FD; color: #367DA6; }
+.st-ASK { background: #DFF3FE; color: #664A30; }
 .row-ASK td { background: #F4FAFF; }
 .dot-ASK { background: #74CAF6; }
 .bar-ASK { border-left: 5px solid #9BD9FA; }

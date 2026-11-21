@@ -344,7 +344,14 @@ function app() {
     _vals(v) { return v === undefined || v === '' ? [] : (Array.isArray(v) ? v.map(String) : [String(v)]); },
     _setVals(row, f, list) { const v = { ...(row.values || {}) }; v[f] = list.length === 0 ? '' : list.length === 1 ? list[0] : list; row.values = v; },
     valOn(row, f, k) { return this._vals((row.values || {})[f]).includes(String(k)); },
-    toggleVal(row, f, k) { const cur = this._vals((row.values || {})[f]); k = String(k); this._setVals(row, f, cur.includes(k) ? cur.filter(x => x !== k) : [...cur, k]); },
+    toggleVal(row, f, k) {
+      k = String(k);
+      const cur = this._vals((row.values || {})[f]);
+      const v = { ...(row.values || {}) };
+      if (cur.length === 1 && cur[0] === k) delete v[f];
+      else v[f] = k;
+      row.values = v;
+    },
     valText(v) { return this._vals(v).join(' | '); },
     setValText(row, f, t) { this._setVals(row, f, String(t || '').split('|').map(x => x.trim()).filter(Boolean)); },
     addRowField(row, key) { key = String(key || '').trim(); if (!key || (row.values || {})[key] !== undefined) return; row.values = { ...(row.values || {}), [key]: '' }; },
