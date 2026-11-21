@@ -9,3 +9,7 @@
 11-20 00:10:15.800  4321  4321 D Tracker : Event: id: 88860001000001 data: SearchBoxClickEvent(source=1, page=mine, keyword=露营)
 11-20 00:10:18.200  4321  4321 D Tracker : Event: id: 88860001000001 data: SearchBoxClickEvent(source=5, page=home, keyword=)
 11-20 00:10:20.000  4321  4321 D Tracker : Event: id: 88860009999999 data: {"page":"mine","action":"pull_refresh","duration":320}
+11-20 00:10:22.100  4321  4321 D Tracker : Event: id: 88860005000001 data: HistoryPageExposeEvent(allNums=6, novelNums=3, webNums=2, videoNums=1, source=0, tab=history)
+11-20 00:10:31.400  4321  4321 D Tracker : Event: id: 88860005000001 data: HistoryPageExposeEvent(allNums=7, novelNums=4, webNums=2, videoNums=1, source=0, tab=bookmark)
+11-20 00:10:40.900  4321  4321 D Tracker : Event: id: 88860005000001 data: HistoryPageExposeEvent(allNums=7, novelNums=4, webNums=2, videoNums=2, source=1, tab=history)
+11-20 00:10:48.200  4321  4321 D Tracker : Event: id: 88860005000001 data: HistoryPageExposeEvent(allNums=5, novelNums=2, webNums=2, videoNums=1, source=2, tab=history)

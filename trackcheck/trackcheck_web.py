@@ -195,34 +195,108 @@ def file_info(p):
 # 实时调试会话
 # ----------------------------------------------------------------------------
 class LiveSession:
-    def __init__(self, app, serial, clear, case, only):
+    """实时调试：抓 logcat；需要时在事件前后自动拍 DB 快照；记录每个事件当时的「操作场景」和人工确认结果"""
+
+    def __init__(self, app, serial, clear, case, only, scenario=None, snapshot=True):
         self.app, self.serial, self.case = app, serial or None, case or None
         self.only = {str(x) for x in (only or []) if str(x).strip()}
         self.lock = threading.Lock()
         self.results, self.running, self.report = [], True, None
         self.stamp = time.strftime("%Y%m%d_%H%M%S")
         self.raw = os.path.join(app.out, f"session_{self.stamp}.log")
+        self.scenario = {k: v for k, v in (scenario or {}).items() if v not in (None, "")}
+        self.ev_scn, self.decisions, self.ev_snap, self.evs = {}, {}, {}, []
+        dev = app.spec.device or {}
+        self.pkg, self.dbs = dev.get("package"), [str(x) for x in (dev.get("dbs") or [])]
+        self.snap_on = bool(snapshot and self.pkg and self.dbs)
+        self.snaps, self.snap_err = [], ""          # [{"t": 时间, "dir": 目录, "sources": Sources}]
+        self.snap_root = os.path.join(app.out, "snapshots", self.stamp)
+        if self.snap_on:
+            self._snapshot()                       # 开始前先拍一张，作为第一个事件的「事件前」
         self.ck = tc.Checker(app.spec, app.sources)
         self.cap = tc.Capture(app.spec, self.serial, self.raw, self.on_event)
         self.cap.start(clear=clear)
         self.started = time.time()
 
+    # ---- DB 快照 ----
+    def _snapshot(self):
+        d = os.path.join(self.snap_root, f"{len(self.snaps):03d}")
+        adb = tc.adb_base(self.app.spec, self.serial)
+        try:
+            for db in self.dbs:
+                tc.pull_app_db(adb, self.pkg, db, os.path.join(d, db))
+        except Exception as e:
+            self.snap_err = str(e)
+            self.snap_on = False
+            return None
+        snap = {"t": time.time(), "dir": d, "sources": self._sources_for(d)}
+        self.snaps.append(snap)
+        return len(self.snaps) - 1
+
+    def _sources_for(self, d):
+        s = copy.copy(self.app.spec)
+        srcs = {}
+        names = set(self.dbs)
+        for k, v in self.app.spec.sources.items():
+            if v.get("type") == "sqlite" and os.path.basename(str(v.get("path", ""))) in names:
+                v = dict(v, path=os.path.join(d, os.path.basename(str(v["path"]))))
+            srcs[k] = v
+        s.sources = srcs
+        return tc.Sources(s)
+
+    def _uses_db(self, eid):
+        es = self.app.spec.events.get(eid) or {}
+        return any(isinstance(r, dict) and r.get("sql") for r in (es.get("fields") or {}).values())
+
+    # ---- 事件 ----
     def on_event(self, ev):
         if self.only and ev.id not in self.only:
             return
-        r = self.ck.check(ev)
+        arrived = time.time()
+        self.ev_scn[ev.seq] = dict(self.scenario)
+        if self.snap_on and self._uses_db(ev.id):
+            before = max((i for i, s in enumerate(self.snaps) if s["t"] < arrived), default=None)
+            after = self._snapshot()
+            self.ev_snap[ev.seq] = (before, after)
         with self.lock:
+            self.evs.append(ev)
+            r = self._check(self.ck, ev)
             self.results.append(r)
 
+    def _check(self, ck, ev):
+        b, a = self.ev_snap.get(ev.seq, (None, None))
+        ck.sources = self.snaps[a]["sources"] if a is not None else self.app.sources
+        ck.alt_sources = self.snaps[b]["sources"] if b is not None and a is not None else None
+        r = ck.check(ev, scenario=self.ev_scn.get(ev.seq), decisions=self.decisions.get(ev.seq))
+        r["scenario"] = self.ev_scn.get(ev.seq) or {}
+        if a is not None:
+            r["snapshot"] = {"before": b, "after": a}
+        return r
+
     def events(self):
-        evs = list(self.cap.events)
-        return [e for e in evs if not self.only or e.id in self.only]
+        return list(self.evs)
 
     def recheck(self):
         ck = tc.Checker(self.app.spec, self.app.sources)
-        res = [ck.check(e) for e in self.events()]
         with self.lock:
-            self.ck, self.results = ck, res
+            self.results = [self._check(ck, e) for e in self.evs]
+            self.ck = ck
+
+    def set_scenario(self, scn, apply_pending=False):
+        self.scenario = {k: v for k, v in (scn or {}).items() if v not in (None, "")}
+        if apply_pending:   # 把场景补到还在「待确认」的事件上
+            for r in self.results:
+                if r["status"] == "ASK" or any(f["status"] == "ASK" for f in r["fields"]):
+                    self.ev_scn[r["seq"]] = {**self.ev_scn.get(r["seq"], {}), **self.scenario}
+            self.recheck()
+
+    def decide(self, seq, field, value):
+        d = self.decisions.setdefault(int(seq), {})
+        if value in ("ok", "bad"):
+            d[field] = value
+        else:
+            d.pop(field, None)
+        self.recheck()
 
     def stop(self, pull=False):
         self.cap.stop(linger=0.3)
@@ -349,20 +423,39 @@ class App:
         live = None
         if self.live:
             live = {"running": self.live.running, "count": len(self.live.results), "report": self.live.report,
-                    "raw": self.live.raw, "case": self.live.case, "only": sorted(self.live.only)}
+                    "raw": self.live.raw, "case": self.live.case, "only": sorted(self.live.only),
+                    "scenario": self.live.scenario, "snap_on": self.live.snap_on, "snap_err": self.live.snap_err,
+                    "snaps": len(self.live.snaps)}
+        ask = OrderedDict()   # 需要人工确认 / 按场景比对的字段：{字段: {desc, options, events}}
+        for eid, es in s.events.items():
+            for fname, r in (es.get("fields") or {}).items():
+                if isinstance(r, dict) and r.get("ask"):
+                    a = ask.setdefault(str(fname), {"desc": r.get("desc", ""), "options": {}, "events": []})
+                    e = r.get("enum")
+                    if isinstance(e, dict):
+                        a["options"].update({str(k): str(v) for k, v in e.items()})
+                    elif isinstance(e, list):
+                        a["options"].update({str(k): "" for k in e})
+                    elif isinstance(e, str):
+                        a["options"].update({str(k): str(v) for k, v in s.dicts.get(e, {}).items()})
+                    a["events"].append(eid)
+        evd = s.event_dict
         return {
             "spec_path": self.store.path, "spec_error": self.spec_error, "out": self.out,
             "files": [os.path.relpath(p, os.path.dirname(self.store.path)) for p in self.store.files],
             "events": events,
             "templates": {k: v for k, (v, _) in self.store.items("templates").items()},
             "dicts": dicts, "dict_meta": dict_meta, "catalog": catalog,
-            "sources": {k: v for k, (v, _) in self.store.items("sources").items()},
+            "sources": {k: v for k, v in s.sources.items()},
+            "sources_explicit": {k: v for k, (v, _) in self.store.items("sources").items()},
+            "datasource_dir": s.datasource_dir,
             "source_status": self.source_status(),
             "cases": {k: v for k, (v, _) in self.store.items("cases").items()},
             "device": self.store.main.get("device") or {},
             "options": self.store.main.get("options") or {},
             "log": self.store.main.get("log") or {},
-            "reports": reps, "sessions": self.sessions(), "live": live,
+            "reports": reps, "sessions": self.sessions(), "live": live, "ask_fields": ask,
+            "evdict": {"count": len(evd.get("entries", {})), "docs": evd.get("docs", [])},
         }
 
     def api_event(self, q):
@@ -870,10 +963,239 @@ class App:
         if self.live and self.live.running:
             raise ApiError("已经在抓取中")
         try:
-            self.live = LiveSession(self, b.get("serial"), b.get("clear", True), b.get("case"), b.get("only"))
+            self.live = LiveSession(self, b.get("serial"), b.get("clear", True), b.get("case"), b.get("only"),
+                                    b.get("scenario"), b.get("snapshot", True))
         except FileNotFoundError:
             raise ApiError("找不到 adb，请把 Android SDK platform-tools 加到 PATH")
-        return {"ok": True, "raw": self.live.raw}
+        return {"ok": True, "raw": self.live.raw, "snap_on": self.live.snap_on, "snap_err": self.live.snap_err}
+
+    def api_live_scenario(self, b):
+        if not self.live:
+            raise ApiError("还没开始抓取")
+        self.live.set_scenario(b.get("scenario") or {}, bool(b.get("apply_pending")))
+        return {"ok": True}
+
+    def api_live_decide(self, b):
+        if not self.live:
+            raise ApiError("还没开始抓取")
+        self.live.decide(b["seq"], b["field"], b.get("value"))
+        return {"ok": True}
+
+    # ---- 数据源目录 ----
+    def _ds_dir(self):
+        d = self.spec.datasource_dir
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def api_ds_list(self, q):
+        d = self._ds_dir()
+        auto = tc.scan_datasources(d)
+        by_file = {os.path.basename(v["path"]): k for k, v in auto.items()}
+        files = []
+        for f in sorted(os.listdir(d)):
+            p = os.path.join(d, f)
+            if not os.path.isfile(p) or re.search(r"-(wal|shm|journal)$", f):
+                continue
+            name = by_file.get(f)
+            info = {"file": f, "name": name, "type": auto.get(name, {}).get("type") if name else None, **file_info(p)}
+            if info["type"] == "sqlite":
+                try:
+                    conn = sqlite3.connect(f"file:{p}?mode=ro", uri=True)
+                    info["tables"] = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name != 'android_metadata' ORDER BY name")]
+                    conn.close()
+                except sqlite3.Error as e:
+                    info["error"] = str(e)
+            elif info["type"] == "json_file":
+                try:
+                    with open(p, encoding="utf-8-sig") as fh:
+                        obj = json.load(fh)
+                    info["keys"] = list(obj.keys())[:8] if isinstance(obj, dict) else [f"[{len(obj)}]"]
+                except Exception as e:
+                    info["error"] = f"JSON 解析失败: {e}"
+            files.append(info)
+        return {"dir": d, "files": files}
+
+    def api_ds_upload(self, b):
+        import base64
+        fn = os.path.basename(str(b.get("filename") or "")).strip()
+        if not fn:
+            raise ApiError("文件名为空")
+        data = base64.b64decode(b.get("b64") or "")
+        if fn.lower().endswith(".json"):
+            try:
+                json.loads(data.decode("utf-8-sig"))
+            except Exception as e:
+                raise ApiError(f"{fn} 不是合法的 JSON：{e}")
+        p = os.path.join(self._ds_dir(), fn)
+        with open(p, "wb") as f:
+            f.write(data)
+        self.reload()
+        return {"ok": True, "file": fn}
+
+    def api_ds_paste(self, b):
+        name = re.sub(r"[^\w\-]", "_", str(b.get("name") or "").strip())
+        if not name:
+            raise ApiError("给这份数据起个名字（比如 mine_page）")
+        try:
+            obj = json.loads(b.get("text") or "")
+        except Exception as e:
+            raise ApiError(f"不是合法的 JSON：{e}")
+        with open(os.path.join(self._ds_dir(), name + ".json"), "w", encoding="utf-8") as f:
+            json.dump(obj, f, ensure_ascii=False, indent=2)
+        self.reload()
+        return {"ok": True, "name": name}
+
+    def api_ds_delete(self, b):
+        fn = os.path.basename(str(b.get("file") or ""))
+        p = os.path.join(self._ds_dir(), fn)
+        if not os.path.isfile(p):
+            raise ApiError("文件不存在")
+        for suffix in ("", "-wal", "-shm", "-journal"):
+            if os.path.exists(p + suffix):
+                os.remove(p + suffix)
+        self.reload()
+        return {"ok": True}
+
+    def api_device_dbs(self, b):
+        pkg = str(b.get("package") or "").strip()
+        if not pkg:
+            raise ApiError("先填 App 包名")
+        try:
+            return {"dbs": tc.list_app_dbs(tc.adb_base(self.spec, b.get("serial")), pkg)}
+        except FileNotFoundError:
+            raise ApiError("找不到 adb")
+        except RuntimeError as e:
+            raise ApiError(str(e))
+
+    def api_pull_dbs(self, b):
+        pkg = str(b.get("package") or "").strip()
+        dbs = [str(x) for x in (b.get("dbs") or []) if str(x).strip()]
+        if not pkg or not dbs:
+            raise ApiError("需要包名和至少一个数据库")
+        adb = tc.adb_base(self.spec, b.get("serial"))
+        ok, errs = [], []
+        for db in dbs:
+            try:
+                tc.pull_app_db(adb, pkg, db, os.path.join(self._ds_dir(), db))
+                ok.append(db)
+            except Exception as e:
+                errs.append(f"{db}: {e}")
+        dev = dict(self.store.main.get("device") or {})
+        dev["package"], dev["dbs"] = pkg, dbs        # 记住，下次 / 实时调试快照直接用
+        self.store.put_top("device", dev)
+        self.reload()
+        if not ok:
+            raise ApiError("；".join(errs))
+        return {"ok": ok, "errors": errs}
+
+    def api_pull_apidump(self, b):
+        pkg = str(b.get("package") or (self.spec.device or {}).get("package") or "").strip()
+        if not pkg:
+            raise ApiError("先填 App 包名")
+        adb = tc.adb_base(self.spec, b.get("serial"))
+        remote = f"/sdcard/Android/data/{pkg}/files/api_dump/."
+        try:
+            p = subprocess.run(adb + ["pull", remote, self._ds_dir()], capture_output=True, text=True, errors="replace", timeout=120)
+        except FileNotFoundError:
+            raise ApiError("找不到 adb")
+        if p.returncode != 0:
+            raise ApiError(f"拉取失败（App 里加了 ApiDumpInterceptor 吗？）：{(p.stderr or p.stdout).strip()[-200:]}")
+        self.reload()
+        return {"ok": True, "log": (p.stdout or "").strip()[-300:]}
+
+    # ---- 埋点字典 ----
+    def _save_evdict(self, d):
+        p = self.spec.event_dict_path
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump(d, f, ensure_ascii=False, indent=1)
+
+    def api_evdict(self, q):
+        d = tc.load_event_dict(self.spec.event_dict_path)
+        conf = set(self.spec.events)
+        ents = sorted(d["entries"].values(), key=lambda e: e["id"])
+        for e in ents:
+            e["configured"] = e["id"] in conf
+        return {"entries": ents, "docs": d.get("docs", []), "columns": d.get("columns", [])}
+
+    def api_evdict_import(self, b):
+        text, fn = b.get("content") or "", os.path.basename(str(b.get("filename") or "埋点文档"))
+        if fn.lower().endswith(".json"):
+            cat = tc.parse_catalog(json.loads(text))
+            entries = OrderedDict((k, {"id": k, "name": v, "columns": {"点位ID": k, "事件名称": v}, "rows": []}) for k, v in cat.items())
+        else:
+            entries = tc.doc_to_event_entries(text, fn)
+        if not entries:
+            n = len(tc.parse_doc_tables(text, fn))
+            raise ApiError(f"没解析出点位：找到 {n} 个表格，但没有认出「点位ID」列。确认是 Markdown 表格（| 列 | 列 |，第二行 |---|），且有一列是点位 ID")
+        d = tc.load_event_dict(self.spec.event_dict_path)
+        added, skipped, updated = tc.merge_event_dict(d, entries, b.get("doc_name") or fn, bool(b.get("overwrite")))
+        self._save_evdict(d)
+        self.reload()
+        return {"parsed": len(entries), "added": len(added), "skipped": len(skipped), "updated": len(updated),
+                "added_ids": added[:200], "total": len(d["entries"])}
+
+    def api_evdict_delete(self, b):
+        d = tc.load_event_dict(self.spec.event_dict_path)
+        if b.get("all"):
+            d = {"entries": {}, "docs": [], "columns": []}
+        else:
+            d["entries"].pop(str(b.get("id")), None)
+        self._save_evdict(d)
+        self.reload()
+        return {"ok": True}
+
+    # ---- 给 AI 的提示词 ----
+    def api_ai_prompt(self, b):
+        eid = str(b.get("id") or "").strip()
+        s = self.spec
+        ent = s.event_dict.get("entries", {}).get(eid)
+        lines = ["你是 Android 埋点校验规则助手。请根据下面的【埋点文档】【上报日志】【可用数据源】，",
+                 f"为点位 {eid} 写一段 trackcheck 规则（YAML，放在 events: 下），只输出 YAML。", ""]
+        lines += ["## 规则写法速查",
+                  "- 每个字段一条规则，常用：",
+                  "  - 文档枚举：`source: {enum: {0: 端内, 1: 桌面小组件}, desc: 入口}`",
+                  "  - 由用户操作决定的值（入口、Tab 等）再加 `ask: true`，测试时由测试人员确认或按场景比对",
+                  "  - 接口下发值：先用 context 按上报的 ID 定位节点，再 `from: 节点.路径`；值需要转换时加 `map: {接口值: 上报值}`",
+                  "    context 例：`res: {from: <json数据源名>, path: \"data.list[*]\", where: {id: \"{resID}\"}}`",
+                  "  - 数据库值：`{sql: \"SELECT count(*) FROM t WHERE type = :type\", db: <db数据源名>}`（:字段名 引用上报值）",
+                  "  - 会随操作增长的计数：加 `compare: lte`（上报 ≤ 结束时 DB 值）、`trend: up`（多次上报不减少），或 `tolerance: 1`",
+                  "  - 字段间关系用事件级 asserts：`asserts: [{expr: \"int(a) == int(b) + int(c)\", msg: 说明}]`",
+                  "  - 其它：`type: int`、`regex`、`range: [1, 20]`、`not_empty: true`、`required: false`、`ignore: true`", ""]
+        if ent:
+            lines += ["## 埋点文档", f"点位ID：{eid}　名称：{ent.get('name', '')}"]
+            for k, v in ent.get("columns", {}).items():
+                if v:
+                    lines.append(f"- {k}：{v}")
+            rows = ent.get("rows") or []
+            if len(rows) > 1:
+                hdr = list(rows[0].keys())
+                lines += ["", "| " + " | ".join(hdr) + " |", "|" + "---|" * len(hdr)]
+                lines += ["| " + " | ".join(str(r.get(h, "")).replace("\n", " ") for h in hdr) + " |" for r in rows]
+            lines.append("")
+        if b.get("line") or b.get("fields"):
+            lines += ["## 上报日志", b.get("line") or json.dumps(b.get("fields"), ensure_ascii=False), ""]
+        lines.append("## 可用数据源")
+        for name, cfg in s.sources.items():
+            t = cfg.get("type", "json_file")
+            desc = ""
+            try:
+                if t == "sqlite":
+                    conn = self.sources.db(name)
+                    tbs = []
+                    for (tb,) in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name != 'android_metadata'"):
+                        cols = [r[1] for r in conn.execute(f'PRAGMA table_info("{tb}")')]
+                        tbs.append(f"{tb}({', '.join(cols)})")
+                    desc = "；".join(tbs[:30])
+                else:
+                    paths = sorted({tc.path_str(p, True) for p, _ in tc.iter_leaves(self.sources.json(name))})
+                    desc = "，".join(paths[:60]) + (" …" if len(paths) > 60 else "")
+            except Exception as e:
+                desc = f"（读取失败：{e}）"
+            lines.append(f"- {name}（{'数据库' if t == 'sqlite' else '接口 JSON'}）：{desc}")
+        cur = s._raw_events.get(eid)
+        if cur:
+            lines += ["", "## 现有规则（在此基础上修改）", yaml.safe_dump(plain({eid: cur}), allow_unicode=True, sort_keys=False, default_flow_style=None)]
+        return {"text": "\n".join(lines)}
 
     def api_live_stop(self, b):
         if not self.live or not self.live.running:
@@ -917,6 +1239,12 @@ ROUTES = {
     ("POST", "/api/live/stop"): "api_live_stop", ("POST", "/api/live/recheck"): "api_live_recheck",
     ("POST", "/api/live/clear"): "api_live_clear", ("POST", "/api/pull"): "api_pull", ("POST", "/api/reload"): "api_reload",
     ("POST", "/api/dict/tag"): "api_dict_tag", ("GET", "/api/export"): "api_export",
+    ("POST", "/api/live/scenario"): "api_live_scenario", ("POST", "/api/live/decide"): "api_live_decide",
+    ("GET", "/api/ds/list"): "api_ds_list", ("POST", "/api/ds/upload"): "api_ds_upload", ("POST", "/api/ds/paste"): "api_ds_paste",
+    ("POST", "/api/ds/delete"): "api_ds_delete", ("POST", "/api/device/dbs"): "api_device_dbs", ("POST", "/api/pull/dbs"): "api_pull_dbs",
+    ("POST", "/api/pull/apidump"): "api_pull_apidump", ("GET", "/api/evdict"): "api_evdict",
+    ("POST", "/api/evdict/import"): "api_evdict_import", ("POST", "/api/evdict/delete"): "api_evdict_delete",
+    ("POST", "/api/ai_prompt"): "api_ai_prompt",
     ("POST", "/api/import/preview"): "api_import_preview", ("POST", "/api/import/apply"): "api_import_apply",
 }
 

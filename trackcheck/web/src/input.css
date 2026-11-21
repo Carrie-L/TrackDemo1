@@ -33,6 +33,11 @@
 }
 
 /* 状态色（JS 动态拼接的类，放在 layer 外保证一定会生成） */
+.ico { display: inline-block; width: 1.1em; height: 1.1em; flex-shrink: 0; vertical-align: -0.15em; }
+.st-ASK { background: #EEE6F9; color: #7F63B8; }
+.row-ASK td { background: #F7F3FC; }
+.dot-ASK { background: #9A7FD0; }
+.bar-ASK { border-left: 5px solid #9A7FD0; }
 .st-PASS { background: #E2F1D4; color: #436E31; }
 .st-FAIL { background: #FCE1DF; color: #A04840; }
 .st-WARN { background: #FDF1C9; color: #8F6A0E; }

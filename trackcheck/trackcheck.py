@@ -369,6 +369,211 @@ def parse_catalog(obj):
     return out
 
 
+def is_sqlite_file(p):
+    try:
+        with open(p, "rb") as f:
+            return f.read(16) == b"SQLite format 3\x00"
+    except OSError:
+        return False
+
+
+def scan_datasources(d):
+    """数据源目录里的文件 -> 数据源配置。*.json = 接口 JSON；SQLite 文件（.db / 无扩展名均可）= 数据库"""
+    out = OrderedDict()
+    if not os.path.isdir(d):
+        return out
+    for f in sorted(os.listdir(d)):
+        p = os.path.join(d, f)
+        if not os.path.isfile(p) or f.startswith(".") or re.search(r"-(wal|shm|journal)$", f):
+            continue
+        stem, ext = os.path.splitext(f)
+        name = re.sub(r"[^\w]", "_", stem) or "src"
+        if ext.lower() == ".json":
+            out[name] = {"type": "json_file", "path": p, "auto": True}
+        elif ext.lower() in (".db", ".sqlite", ".sqlite3") or is_sqlite_file(p):
+            out[name] = {"type": "sqlite", "path": p, "auto": True}
+    return out
+
+
+# ----------------------------------------------------------------------------
+# 埋点字典：把公司埋点文档（Excel 导出的 Markdown / CSV）解析成 点位ID -> 参数说明
+# ----------------------------------------------------------------------------
+def load_event_dict(p):
+    if p and os.path.exists(p):
+        try:
+            with open(p, encoding="utf-8") as f:
+                d = json.load(f)
+            d.setdefault("entries", {})
+            d.setdefault("docs", [])
+            d.setdefault("columns", [])
+            return d
+        except Exception:
+            pass
+    return {"entries": {}, "docs": [], "columns": []}
+
+
+def _md_cells(line):
+    s = line.strip()
+    if s.startswith("|"):
+        s = s[1:]
+    if s.endswith("|") and not s.endswith("\\|"):
+        s = s[:-1]
+    parts = re.split(r"(?<!\\)\|", s)
+    return [re.sub(r"<br\s*/?>", "\n", p.strip().replace("\\|", "|")) for p in parts]
+
+
+def _is_md_sep(line):
+    s = line.strip()
+    return "-" in s and set(s) <= set("|-: ") and s.count("-") >= 3
+
+
+def parse_md_tables(text):
+    """Markdown 里的所有表格 -> [(表头, [行...])]"""
+    lines = (text or "").splitlines()
+    tables, i = [], 0
+    while i < len(lines):
+        if "|" in lines[i] and i + 1 < len(lines) and _is_md_sep(lines[i + 1]):
+            headers = [h or f"列{n + 1}" for n, h in enumerate(_md_cells(lines[i]))]
+            rows, i = [], i + 2
+            while i < len(lines) and "|" in lines[i] and lines[i].strip():
+                c = _md_cells(lines[i])
+                rows.append((c + [""] * len(headers))[:len(headers)])
+                i += 1
+            tables.append((headers, rows))
+            continue
+        i += 1
+    return tables
+
+
+def parse_doc_tables(text, filename=""):
+    import csv
+    import io as _io
+    fn = filename.lower()
+    if fn.endswith((".csv", ".tsv")):
+        rows = list(csv.reader(_io.StringIO(text), delimiter="\t" if fn.endswith(".tsv") else ","))
+        return [(rows[0], [(r + [""] * len(rows[0]))[:len(rows[0])] for r in rows[1:]])] if rows else []
+    return parse_md_tables(text)
+
+
+def doc_to_event_entries(text, filename=""):
+    """文档 -> OrderedDict(点位ID -> {id, name, columns, rows})。合并单元格导出后 ID 为空的行归到上一个点位。"""
+    out = OrderedDict()
+    for headers, rows in parse_doc_tables(text, filename):
+        if not rows:
+            continue
+        idc = next((i for i, h in enumerate(headers) if re.search(r"(id|ID|Id|编号|编码)", h) and
+                    re.search(r"(点位|埋点|事件|event|Event|^ID$|^id$)", h)), None)
+        if idc is None:
+            idc = next((i for i, h in enumerate(headers) if h.strip().lower() in _ID_KEYS), None)
+        if idc is None:  # 按内容猜：大多数值是长数字的那一列
+            best = (0, None)
+            for i in range(len(headers)):
+                n = sum(1 for r in rows if re.fullmatch(r"\s*\d{5,}\s*", r[i] or ""))
+                best = max(best, (n, i))
+            idc = best[1] if best[0] >= max(1, len(rows) // 3) else None
+        if idc is None:
+            continue
+        namec = next((i for i, h in enumerate(headers) if i != idc and re.search(r"(事件名|点位名|埋点名|名称|name|Name)", h)), None)
+        last = None
+        for r in rows:
+            row = OrderedDict((h, (r[i] or "").strip()) for i, h in enumerate(headers))
+            m = re.search(r"\d{5,}", row[headers[idc]].replace(" ", ""))
+            if m:
+                rid = m.group(0)
+            elif not row[headers[idc]] and last:
+                rid = last                      # 合并单元格：沿用上一行的点位
+            else:
+                continue
+            e = out.get(rid)
+            if e is None:
+                e = out[rid] = {"id": rid, "name": row.get(headers[namec], "") if namec is not None else "",
+                                "columns": OrderedDict(row), "rows": []}
+            for k, v in row.items():
+                if v and not e["columns"].get(k):
+                    e["columns"][k] = v
+            if not e["name"] and namec is not None:
+                e["name"] = row.get(headers[namec], "")
+            if any(v for k, v in row.items() if k != headers[idc]):
+                e["rows"].append(row)
+            last = rid
+    return out
+
+
+def merge_event_dict(store, entries, doc_name, overwrite=False):
+    """增量合并：点位ID 已存在则跳过（只记录它也出现在这份文档里），overwrite=True 时用新文档覆盖"""
+    added, skipped, updated = [], [], []
+    ents = store.setdefault("entries", {})
+    cols = store.setdefault("columns", [])
+    for rid, e in entries.items():
+        for c in e["columns"]:
+            if c not in cols:
+                cols.append(c)
+        cur = ents.get(rid)
+        if cur is None or overwrite:
+            docs = (cur or {}).get("docs", [])
+            ents[rid] = {"id": rid, "name": e["name"], "columns": dict(e["columns"]), "rows": [dict(r) for r in e["rows"]],
+                         "docs": list(dict.fromkeys(docs + [doc_name])), "added_at": time.strftime("%Y-%m-%d %H:%M:%S")}
+            (updated if cur is not None else added).append(rid)
+        else:
+            if doc_name not in cur.setdefault("docs", []):
+                cur["docs"].append(doc_name)
+            skipped.append(rid)
+    if doc_name not in [x.get("name") for x in store.setdefault("docs", [])]:
+        store["docs"].append({"name": doc_name, "imported_at": time.strftime("%Y-%m-%d %H:%M:%S"), "count": len(entries)})
+    return added, skipped, updated
+
+
+# ----------------------------------------------------------------------------
+# 从手机拉 App 数据库（debug 包用 run-as，root 测试机用 su）
+# ----------------------------------------------------------------------------
+def _shell_err(b):
+    head = b[:300].decode("utf-8", "replace").lower()
+    return len(b) < 400 and any(x in head for x in ("no such file", "permission denied", "not found", "unknown package",
+                                                     "is not debuggable", "inaccessible", "cat:", "su:", "run-as:"))
+
+
+def list_app_dbs(adb, pkg):
+    for cmd in (adb + ["shell", f"su -c 'ls /data/data/{pkg}/databases'"], adb + ["shell", "run-as", pkg, "ls", "databases"],
+                adb + ["shell", f"su 0 ls /data/data/{pkg}/databases"], adb + ["shell", f"ls /data/data/{pkg}/databases"]):
+        try:
+            p = subprocess.run(cmd, capture_output=True, timeout=20)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        out = p.stdout.decode("utf-8", "replace")
+        if p.returncode == 0 and out.strip() and not _shell_err(p.stdout):
+            return [x.strip() for x in out.split() if x.strip() and not re.search(r"-(wal|shm|journal)$", x.strip())]
+    raise RuntimeError(f"读不到 /data/data/{pkg}/databases：确认包名正确、手机已 root 或是 debug 包")
+
+
+def pull_app_db(adb, pkg, db, local):
+    """拉 /data/data/<包名>/databases/<db>（连同 -wal/-shm）到本地 local"""
+    os.makedirs(os.path.dirname(os.path.abspath(local)), exist_ok=True)
+    remote = f"/data/data/{pkg}/databases/{db}"
+    for suffix in ("", "-wal", "-shm"):
+        data = None
+        for cmd in (adb + ["exec-out", f"su -c 'cat {remote}{suffix}'"], adb + ["exec-out", "run-as", pkg, "cat", f"databases/{db}{suffix}"],
+                    adb + ["exec-out", f"su 0 cat {remote}{suffix}"], adb + ["exec-out", f"cat {remote}{suffix}"]):
+            try:
+                p = subprocess.run(cmd, capture_output=True, timeout=120)
+            except (OSError, subprocess.TimeoutExpired):
+                continue
+            if p.returncode == 0 and p.stdout and not _shell_err(p.stdout):
+                if suffix == "" and not p.stdout.startswith(b"SQLite format 3"):
+                    continue
+                data = p.stdout
+                break
+        lf = local + suffix
+        if data is None:
+            if suffix == "":
+                raise RuntimeError(f"拉取失败：{remote}（确认 db 名、手机已 root 或是 debug 包）")
+            if os.path.exists(lf):
+                os.remove(lf)   # 手机上没有 wal 了，删掉本地旧的
+            continue
+        with open(lf, "wb") as f:
+            f.write(data)
+    return local
+
+
 def merge_spec(a, b):
     out = dict(a)
     for k, v in b.items():
@@ -402,6 +607,9 @@ class Spec:
                     d[key].update(sub.get(key) or {})
         self.raw = d
         self.options = {"null_equals_empty": True, "strict_fields": False, **(d.get("options") or {})}
+        # 数据源目录：放进去的 .json / .db 文件自动成为数据源，名字 = 文件名（不含扩展名）
+        self.datasource_dir = self.abspath(str(self.options.get("datasource_dir") or "datasources"))
+        auto_sources = scan_datasources(self.datasource_dir)
         NULL_EQUALS_EMPTY = bool(self.options["null_equals_empty"])
         self.dicts, self.dict_meta = {}, {}
         for k, v in (d.get("dicts") or {}).items():
@@ -415,7 +623,13 @@ class Spec:
                 with open(cp, encoding="utf-8-sig") as f:
                     self.catalog.update(parse_catalog(json.load(f)))
         self.catalog.update(parse_catalog(d.get("catalog") or {}))
-        self.sources = d.get("sources") or {}
+        # 埋点字典（从公司埋点文档导入）：点位ID -> {name, columns, rows, docs}
+        self.event_dict_path = self.abspath(str(d.get("event_dict_file") or "event_dict.json"))
+        self.event_dict = load_event_dict(self.event_dict_path)
+        for k, e in self.event_dict.get("entries", {}).items():
+            if e.get("name") and not self.catalog.get(k):
+                self.catalog[k] = e["name"]
+        self.sources = {**auto_sources, **(d.get("sources") or {})}
         self.templates = {str(k): v for k, v in (d.get("templates") or {}).items()}
         self._raw_events = {str(k): (v or {}) for k, v in (d.get("events") or {}).items()}
         self.events = {k: self._resolve(v, {k}) for k, v in self._raw_events.items()}
@@ -536,7 +750,41 @@ class Sources:
 # ----------------------------------------------------------------------------
 # 校验
 # ----------------------------------------------------------------------------
-_RANK = {"FAIL": 3, "WARN": 2, "PASS": 1}
+_RANK = {"FAIL": 4, "WARN": 3, "ASK": 2, "PASS": 1}
+
+
+def _num(x):
+    try:
+        return float(norm(x))
+    except (TypeError, ValueError):
+        return None
+
+
+def match_expected(actual, exp, rule, alt=None):
+    """期望值比较：精确 / 容差 tolerance / 方向 compare / 事件前后快照区间。返回 (是否通过, 说明)"""
+    tol = rule.get("tolerance")
+    cmp = rule.get("compare", "eq")
+    a = _num(actual)
+    for x in exp:
+        n = _num(x)
+        if cmp == "eq":
+            if eq_val(actual, x):
+                return True, ""
+            if tol is not None and a is not None and n is not None and abs(a - n) <= float(tol):
+                return True, f"与期望 {disp(x)} 相差在 ±{tol} 内"
+        elif a is not None and n is not None:
+            if {"lte": a <= n, "gte": a >= n, "lt": a < n, "gt": a > n}.get(cmp, False):
+                return True, ""
+    if alt:
+        if any(eq_val(actual, x) for x in alt):
+            return True, "与事件发生前的 DB 快照一致"
+        nums = [v for v in (_num(x) for x in list(exp) + list(alt)) if v is not None]
+        t = float(tol or 0)
+        if a is not None and nums and min(nums) - t <= a <= max(nums) + t:
+            lo, hi = min(nums), max(nums)
+            f = lambda v: str(int(v)) if v.is_integer() else str(v)
+            return True, f"落在事件前后的快照区间 [{f(lo)}, {f(hi)}] 内"
+    return False, ""
 
 
 def worst(statuses, default="PASS"):
@@ -584,11 +832,15 @@ def norm_rule(rule):
 
 
 class Checker:
-    def __init__(self, spec, sources):
+    def __init__(self, spec, sources, alt_sources=None, scenario=None):
         self.spec = spec
         self.sources = sources
+        self.alt_sources = alt_sources      # 事件发生前的 DB 快照（实时调试时自动拉取）
+        self.scenario = dict(scenario or {})  # 本次操作场景：{字段: 期望值}，给 ask 字段用
         self.seen = {}
+        self.last_vals = {}                 # trend 用：同一点位同一字段上一次的值
         self.cur_dicts = spec.dicts
+        self._scn, self._dec = {}, {}
 
     # ---- 上下文定位 ----
     def build_context(self, es, ev):
@@ -726,7 +978,7 @@ class Checker:
             return done(sev, "事件中缺少该字段") if rule.get("required", True) else done("SKIP", "可选字段，未上报")
 
         actual = norm(raw)
-        problems, label = [], ""
+        problems, label, alt = [], "", None
         try:
             if actual == "":
                 if rule.get("not_empty"):
@@ -770,7 +1022,12 @@ class Checker:
                 params = {k: norm(v) for k, v in ev.fields.items()}
                 rows = conn.execute(sql, params).fetchall()
                 r["source"] = f"SQL: {sql}"
-                if not rows:
+                if self.alt_sources is not None:
+                    try:
+                        alt = [row[0] for row in self.alt_sources.db(rule.get("db")).execute(sql, params).fetchall()]
+                    except Exception:
+                        alt = None
+                if not rows and not alt:
                     problems.append("SQL 没有查到数据（数据不存在 / db 没重新拉取？）")
                 else:
                     exp = [row[0] for row in rows]
@@ -790,16 +1047,58 @@ class Checker:
                     problems.append("接口值无法映射：" + "；".join(unmapped[:3]) + "（文档字典缺这个值？）")
                 exp = mapped if mapped else None
 
-            if exp:
-                ex = uniq(exp)
-                r["expected"] = " | ".join(disp(x) for x in ex[:5]) + (" …" if len(ex) > 5 else "")
-                if not any(eq_val(actual, x) for x in ex):
-                    problems.append("值不一致")
+            if exp or alt:
+                ex = uniq(exp or [])
+                cmp_txt = {"lte": "≤ ", "gte": "≥ ", "lt": "< ", "gt": "> "}.get(rule.get("compare"), "")
+                r["expected"] = cmp_txt + " | ".join(disp(x) for x in ex[:5]) + (" …" if len(ex) > 5 else "")
+                if rule.get("tolerance") is not None:
+                    r["expected"] += f"（±{rule['tolerance']}）"
+                if alt and uniq(alt) != ex:
+                    r["expected"] += f"；事件前快照 {' | '.join(disp(x) for x in uniq(alt)[:3])}"
+                ok, note = match_expected(raw, ex, rule, alt)
+                if ok:
+                    label = note or label
+                else:
+                    problems.append({"lte": "上报值应 ≤ 期望值", "gte": "上报值应 ≥ 期望值", "lt": "上报值应 < 期望值",
+                                     "gt": "上报值应 > 期望值"}.get(rule.get("compare"), "值不一致"))
+
+            if rule.get("trend") and actual != "":
+                key = (ev.id, fname)
+                prev = self.last_vals.get(key)
+                try:
+                    a, p = float(actual), (float(prev[1]) if prev else None)
+                    if p is not None:
+                        bad = {"up": a < p, "down": a > p, "same": a != p, "strict_up": a <= p}.get(rule["trend"], False)
+                        if bad:
+                            problems.append(f"和上一次（#{prev[0]} 上报 {prev[1]}）相比趋势不对，应为 "
+                                            + {"up": "不减少", "down": "不增加", "same": "不变", "strict_up": "增加"}.get(rule["trend"], rule["trend"]))
+                    self.last_vals[key] = (ev.seq, actual)
+                except ValueError:
+                    problems.append("趋势检查需要数字")
 
             if "assert" in rule:
                 env2 = dict(env, value="" if raw is None else raw)
                 if not eval_expr(str(rule["assert"]), env2):
                     problems.append(str(rule.get("msg") or f"断言失败: {rule['assert']}"))
+
+            if rule.get("ask") and not problems:
+                dec = self._dec.get(fname)
+                want = self._scn.get(f"{ev.id}.{fname}", self._scn.get(fname))
+                meaning = label.split(" = ", 1)[1] if " = " in label else ""
+                if dec in ("ok", "bad"):
+                    if dec == "bad":
+                        problems.append("人工确认：值不对")
+                    else:
+                        label = "人工确认 ✓" + (f"（{meaning}）" if meaning else "")
+                elif want not in (None, ""):
+                    r["expected"] = str(want)
+                    r["source"] = "本次操作场景"
+                    if eq_val(raw, want):
+                        label = "与本次操作场景一致" + (f"（{meaning}）" if meaning else "")
+                    else:
+                        problems.append(f"本次操作场景是 {want}，上报的是 {actual}")
+                else:
+                    return done("ASK", f"需要你确认：上报 {actual}" + (f"（{meaning}）" if meaning else "") + "，和你刚才的操作一致吗？")
         except LocateError as e:
             problems.append(f"无法取得期望值：{e}")
         except (RuleError, SourceError) as e:
@@ -814,8 +1113,11 @@ class Checker:
         return done("PASS", label)
 
     # ---- 单事件 ----
-    def check(self, ev):
+    def check(self, ev, scenario=None, decisions=None):
         es = self.spec.events.get(ev.id)
+        self._scn = dict(self.scenario)
+        self._scn.update(scenario or {})
+        self._dec = dict(decisions or {})
         res = {"seq": ev.seq, "ts": ev.ts, "id": ev.id, "cls": ev.cls or "", "raw": ev.raw,
                "line_no": ev.line_no, "fields": [], "errors": [], "ctx": {}, "data": dict(ev.fields)}
         if es is None:
@@ -910,7 +1212,7 @@ def build_report(spec, results, case_name=None, meta=None):
         "meta": {"generated_at": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "spec": spec.path,
                  "case": case_name, **(meta or {})},
         "summary": {"total": len(results), "pass": st.get("PASS", 0), "warn": st.get("WARN", 0),
-                    "fail": st.get("FAIL", 0), "unknown": st.get("UNKNOWN", 0), "coverage_fail": cov_fail,
+                    "fail": st.get("FAIL", 0), "unknown": st.get("UNKNOWN", 0), "ask": st.get("ASK", 0), "coverage_fail": cov_fail,
                     "ok": st.get("FAIL", 0) == 0 and cov_fail == 0},
         "coverage": cov,
         "hot_fields": hot_rows,
@@ -928,7 +1230,7 @@ section{background:#fff;border-radius:8px;padding:12px 16px;margin-bottom:16px;b
 table{border-collapse:collapse;width:100%}th,td{border-bottom:1px solid #eee;padding:5px 8px;text-align:left;vertical-align:top;word-break:break-all}
 th{background:#fafafa;font-weight:600;white-space:nowrap}tr.r-FAIL td{background:#fde8e8}tr.r-WARN td{background:#fff5d6}tr.r-SKIP td,tr.r-INFO td{color:#888}
 .badge{display:inline-block;border-radius:4px;padding:0 6px;font-size:12px;font-weight:600;color:#fff}.b-PASS{background:#16a34a}.b-FAIL{background:#dc2626}
-.b-WARN{background:#d97706}.b-UNKNOWN,.b-MISS,.b-INFO,.b-SKIP{background:#9ca3af}
+.b-WARN{background:#d97706}.b-ASK{background:#7c3aed}.ASK{color:#7c3aed}tr.r-ASK td{background:#f3edff}.ev-ASK{border-left:4px solid #7c3aed!important}.b-UNKNOWN,.b-MISS,.b-INFO,.b-SKIP{background:#9ca3af}
 details.ev{border:1px solid #e5e7eb;border-radius:6px;margin:8px 0;background:#fff}details.ev>summary{cursor:pointer;padding:8px 12px;list-style:none}
 details.ev>summary::-webkit-details-marker{display:none}details.ev[open]>summary{border-bottom:1px solid #eee}.evb{padding:8px 12px}
 .ev-FAIL{border-left:4px solid #dc2626!important}.ev-WARN{border-left:4px solid #d97706!important}.ev-PASS{border-left:4px solid #16a34a!important}
@@ -940,7 +1242,7 @@ details.ev>summary::-webkit-details-marker{display:none}details.ev[open]>summary
 
 _HTML_JS = """
 function apply(){const only=document.getElementById('only').checked,q=document.getElementById('q').value.trim().toLowerCase();
-document.querySelectorAll('details.ev').forEach(d=>{const bad=d.dataset.st==='FAIL'||d.dataset.st==='WARN';
+document.querySelectorAll('details.ev').forEach(d=>{const bad=d.dataset.st==='FAIL'||d.dataset.st==='WARN'||d.dataset.st==='ASK';
 const hit=!q||d.textContent.toLowerCase().includes(q);d.style.display=((!only||bad)&&hit)?'':'none';
 d.querySelectorAll('tr.fr').forEach(tr=>{tr.style.display=(!only||tr.classList.contains('r-FAIL')||tr.classList.contains('r-WARN'))?'':'none'});});}
 """
@@ -1021,7 +1323,7 @@ def write_report(rep, out_dir, stem=None):
 
 
 def print_result(r):
-    tag = {"PASS": color("PASS", "green"), "WARN": color("WARN", "yellow"), "FAIL": color("FAIL", "red"),
+    tag = {"PASS": color("PASS", "green"), "WARN": color("WARN", "yellow"), "FAIL": color("FAIL", "red"), "ASK": color("待确认", "cyan"),
            "UNKNOWN": color("????", "gray")}[r["status"]]
     print(f"{tag} #{r['seq']:<4} {r['ts']:<18} {color(r['id'], 'cyan')} {r.get('name', '')}"
           + (color("  (规则外点位)", "gray") if r["status"] == "UNKNOWN" else ""))
@@ -1030,12 +1332,13 @@ def print_result(r):
             print(color(f"       定位失败 {n}: {c['info']}", "red"))
     blocked = 0
     for f in r["fields"]:
-        if f["status"] in ("FAIL", "WARN"):
+        if f["status"] in ("FAIL", "WARN", "ASK"):
             if f["reason"].startswith("无法取得期望值：上下文"):
                 blocked += 1
                 continue
-            c = "red" if f["status"] == "FAIL" else "yellow"
-            print(color(f"       ✗ {f['field']:<18}", c) + f" 上报={f['actual']!s:<20} 期望={f['expected'] or '-'}  "
+            c = {"FAIL": "red", "WARN": "yellow", "ASK": "cyan"}[f["status"]]
+            mark = "?" if f["status"] == "ASK" else "✗"
+            print(color(f"       {mark} {f['field']:<18}", c) + f" 上报={f['actual']!s:<20} 期望={f['expected'] or '-'}  "
                   + color(f["reason"], c))
     if blocked:
         print(color(f"       … 另有 {blocked} 个字段因数据定位失败无法比对（详见报告）", "red"))
@@ -1048,7 +1351,7 @@ def print_summary(rep, hp):
     print()
     print(color("=" * 60, "gray"))
     print(f"事件 {s['total']}  " + color(f"通过 {s['pass']}", "green") + "  " + color(f"失败 {s['fail']}", "red") + "  "
-          + color(f"警告 {s['warn']}", "yellow") + f"  规则外 {s['unknown']}")
+          + color(f"警告 {s['warn']}", "yellow") + f"  规则外 {s['unknown']}" + (color(f"  待人工确认 {s.get('ask', 0)}", "cyan") if s.get("ask") else ""))
     miss = [c for c in rep["coverage"] if c["status"] in ("FAIL", "MISS")]
     if miss:
         lab = "用例未满足" if rep["meta"].get("case") else "规则内未触发"
@@ -1070,8 +1373,16 @@ def do_pull(spec, serial=None):
     pkg = dev.get("package")
     adb = adb_base(spec, serial)
     items = dev.get("pull") or []
+    dbs = [str(x) for x in (dev.get("dbs") or [])]
+    for db in dbs:   # 只填 包名 + db 名：拉到数据源目录
+        try:
+            lp = pull_app_db(adb, pkg, db, os.path.join(spec.datasource_dir, db))
+            print(color("  ✓ ", "green") + f"{pkg}/databases/{db} -> {lp}")
+        except Exception as e:
+            print(color(f"  ✗ {db}: {e}", "red"))
     if not items:
-        print(color("规则文件 device.pull 没有配置，跳过拉取", "yellow"))
+        if not dbs:
+            print(color("没有配置要拉取的内容（device.package + device.dbs）", "yellow"))
         return
     for it in items:
         remote, local = str(it["remote"]), spec.abspath(str(it["local"]))
@@ -1157,8 +1468,17 @@ def _stamp():
     return dt.datetime.now().strftime("%Y%m%d_%H%M%S")
 
 
-def check_all(spec, events, verbose=True):
-    ck = Checker(spec, Sources(spec))
+def parse_sets(items):
+    out = {}
+    for it in items or []:
+        k, _, v = str(it).partition("=")
+        if k.strip():
+            out[k.strip()] = v.strip()
+    return out
+
+
+def check_all(spec, events, verbose=True, scenario=None):
+    ck = Checker(spec, Sources(spec), scenario=scenario)
     results = []
     for ev in events:
         r = ck.check(ev)
@@ -1175,7 +1495,7 @@ def cmd_check(a):
         print(color(f"日志里没有匹配到埋点行，检查 log.pattern：{spec.pattern}", "yellow"))
     if a.only:
         events = [e for e in events if e.id in set(a.only)]
-    results = check_all(spec, events, verbose=not a.quiet)
+    results = check_all(spec, events, verbose=not a.quiet, scenario=parse_sets(a.set))
     rep = build_report(spec, results, a.case, {"log": os.path.abspath(a.log)})
     hp, _ = write_report(rep, a.out)
     print_summary(rep, hp)
@@ -1184,7 +1504,7 @@ def cmd_check(a):
 
 def _live_common(a, runner=None):
     spec = Spec(a.spec)
-    ck = Checker(spec, Sources(spec))
+    ck = Checker(spec, Sources(spec), scenario=parse_sets(a.set))
     stamp = _stamp()
     raw = os.path.join(a.out, f"session_{stamp}.log")
     lock = threading.Lock()
@@ -1211,7 +1531,7 @@ def _live_common(a, runner=None):
     if a.pull:
         print(color("拉取手机最新 db / 接口 dump 后重新校验 ...", "cyan"))
         do_pull(spec, a.serial)
-    results = check_all(spec, cap.events, verbose=False)
+    results = check_all(spec, cap.events, verbose=False, scenario=parse_sets(a.set))
     rep = build_report(spec, results, a.case, {"log": raw})
     hp, _ = write_report(rep, a.out, f"trackcheck_{stamp}")
     print_summary(rep, hp)
@@ -1685,6 +2005,7 @@ def main(argv=None):
     common(p)
     p.add_argument("--log", required=True, help="logcat 日志文件")
     p.add_argument("--case", help="按 cases 中的用例检查覆盖率")
+    p.add_argument("--set", action="append", metavar="字段=值", help="本次操作场景，给 ask 字段做期望值，如 --set source=1 --set tab=bookmark")
     p.add_argument("--only", nargs="*", help="只校验这些点位ID")
     p.add_argument("--out", default="reports", help="报告输出目录")
     p.add_argument("-q", "--quiet", action="store_true", help="不逐条打印")
@@ -1695,6 +2016,7 @@ def main(argv=None):
         p = sub.add_parser(name, help=hlp)
         common(p)
         p.add_argument("--case", help="按 cases 中的用例检查覆盖率")
+        p.add_argument("--set", action="append", metavar="字段=值", help="本次操作场景（ask 字段的期望值）")
         p.add_argument("--out", default="reports", help="报告/会话日志输出目录")
         p.add_argument("--clear", action="store_true", default=(name == "run"), help="开始前清空 logcat 缓冲")
         p.add_argument("--pull", action="store_true", help="结束后按 device.pull 拉取最新 db/接口 dump 再出最终报告")
