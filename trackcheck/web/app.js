@@ -59,8 +59,8 @@ function app() {
     fm: null, ai: null,
     evd: { entries: [], docs: [], q: '', filter: 'all', open: null, loaded: false, overwrite: false, result: null, limit: 100 },
     ds: { files: [], dir: '', pkg: '', dbs: [], devDbs: null, pasteName: '', pasteText: '', showPaste: false, log: '', advanced: false, drag: false },
-    srcEd: null, caseEd: null, settingsEd: null, pullLog: '',
-    rep: { list: [], cur: null, view: 'bad', showUnk: false, q: '' }, yv: null,
+    srcEd: null, caseEd: null, copiedRow: null, settingsEd: null, pullLog: '',
+    rep: { list: [], cur: null, view: 'bad', showUnk: false, q: '', expandAll: false }, yv: null,
     checkForm: { path: '', content: '', fileName: '', caseName: '' },
 
     async init() {
@@ -71,6 +71,7 @@ function app() {
       setInterval(() => this.pollLive(), 1000);
       setInterval(() => this.loadDevices(), 15000);
       setInterval(() => { this.tipIdx = (this.tipIdx + 1) % TIPS.length; }, 9000);
+      try { const saved = localStorage.getItem('tc_copied_row'); if (saved) this.copiedRow = JSON.parse(saved); } catch (e) {}
       const h = location.hash.slice(1); if (NAV.some(n => n.id === h)) this.go(h, true);
       window.addEventListener('hashchange', () => { const x = location.hash.slice(1); if (NAV.some(n => n.id === x) && x !== this.page) this.go(x, true); });
       window.addEventListener('keydown', e => {
@@ -982,12 +983,52 @@ function app() {
       if (this.live.caseName === c.old) this.live.caseName = name;
       c.old = name; c.dirty = false; await this.refresh();
     },
+    duplicateCase(name, fromEditor) {
+      const base = fromEditor && this.caseEd
+        ? { desc: this.caseEd.desc || '', expect: this.rowsToExpect(this.caseEd.rows) }
+        : clone(this.st?.cases?.[name] || { expect: [] });
+      const rawName = (name || '新用例').replace(/\s*-\s*副本\d*$/, '').trim() || '新用例';
+      const used = new Set(Object.keys(this.st?.cases || {}));
+      let newName = rawName + ' - 副本', i = 2;
+      while (used.has(newName)) newName = `${rawName} - 副本${i++}`;
+      this.caseEd = { name: newName, old: '', desc: base.desc || '', addId: '', rows: this.caseRows(base), dirty: true };
+      if (this.page !== 'cases') this.go('cases');
+      this.$nextTick(() => { this.$refs.caseNameInput?.focus(); this.$refs.caseNameInput?.select(); });
+      this.toast(`已复制「${name || '当前用例'}」，修改名称后点「保存用例」即可`, 'ok');
+    },
+    copyCaseRow(row) {
+      const copy = { id: row.id, min: row.min, max: row.max, where: clone(row.where || null), values: clone(row.values || {}) };
+      this.copiedRow = copy;
+      try { localStorage.setItem('tc_copied_row', JSON.stringify(copy)); } catch (e) {}
+      this.toast(`已复制点位「${this.eventName(row.id) || row.id}」（含期望值），切到其他用例点「粘贴点位」即可`, 'ok');
+    },
+    pasteCaseRow() {
+      const c = this.caseEd, r = this.copiedRow; if (!c || !r) return;
+      const exist = c.rows.find(x => x.id === r.id);
+      if (exist) {
+        if (!confirm(`当前用例里已经有「${this.eventName(r.id) || r.id}」，要用复制的期望值覆盖它吗？`)) return;
+        exist.min = r.min; exist.max = r.max; exist.where = clone(r.where || null); exist.values = clone(r.values || {});
+        c.dirty = true; this.toast('已用复制的期望值更新该点位', 'ok'); return;
+      }
+      c.rows.push({ key: Math.random(), id: r.id, min: r.min ?? 1, max: r.max ?? '', where: clone(r.where || null), values: clone(r.values || {}), showAll: false });
+      c.dirty = true; this.toast(`已粘贴点位「${this.eventName(r.id) || r.id}」`, 'ok');
+    },
+    clearCopiedRow() { this.copiedRow = null; try { localStorage.removeItem('tc_copied_row'); } catch (e) {} },
     useCaseInLive(name) { this.live.caseName = name; this.loadPlanFromCase(); this.go('live'); },
 
     // ---------------- 报告 ----------------
     async openReport(name) {
       this.rep.cur = await this.call(() => this.api('/api/report?name=' + encodeURIComponent(name)));
-      this.rep.cur.name = name; this.go('reports');
+      this.rep.cur.name = name; this.rep.expandAll = false; this.go('reports');
+    },
+    repPct(n) {
+      const s = this.rep.cur?.summary; if (!s) return 0;
+      const denom = Math.max(1, (s.pass || 0) + (s.fail || 0) + (s.warn || 0) + (s.ask || 0));
+      return Math.round((n || 0) * 100 / denom);
+    },
+    focusReportField(h) {
+      this.rep.view = 'bad'; this.rep.q = h.field; this.rep.expandAll = true;
+      this.$nextTick(() => document.getElementById('rep-details')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
     },
     repKeep(x, view) {
       if (view === 'bad') return ['FAIL', 'WARN', 'ASK'].includes(x.status);
