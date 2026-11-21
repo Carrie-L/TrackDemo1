@@ -1,13 +1,13 @@
 // 埋点小岛 —— 前端逻辑（Alpine.js）
 const NAV = [
   { id: 'home', icon: 'home', label: '首页' },
+  { id: 'sources', icon: 'data', label: '数据源' },
   { id: 'live', icon: 'live', label: '实时调试' },
-  { id: 'evdict', icon: 'dict', label: '埋点字典' },
   { id: 'rules', icon: 'rules', label: '点位规则' },
   { id: 'infer', icon: 'draft', label: '规则草稿' },
-  { id: 'sources', icon: 'data', label: '数据源' },
   { id: 'cases', icon: 'cases', label: '测试用例' },
   { id: 'reports', icon: 'report', label: '校验报告' },
+  { id: 'evdict', icon: 'dict', label: '埋点字典' },
   { id: 'share', icon: 'share', label: '导入 / 分享' },
 ];
 const CARD_TONES = [

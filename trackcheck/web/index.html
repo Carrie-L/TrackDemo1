@@ -1093,7 +1093,7 @@
       <section x-show="page === 'share'" x-cloak class="flex flex-col gap-5">
         <div class="grid grid-cols-1 gap-5 xl:grid-cols-2">
           <div class="panel-pad">
-            <div class="title text-lg"><img class="pic h-8 w-8" src="/static/icons/share.png" alt="">分享给同事</div>
+            <div class="title text-lg"><img class="pic h-8 w-8" src="/static/icons/export.png" alt="">分享给同事</div>
             <p class="subtle mt-1">导出一个 .yaml 规则包（点位规则 + 模板 + 用到的映射），发给同事，对方在这里导入就能直接用。</p>
             <div class="mt-4 flex gap-1 rounded-2xl bg-wood-50 p-1 md:w-80">
               <button class="tab flex-1" :class="exp.mode === 'all' && 'tab-on'" @click="exp.mode = 'all'">全部规则</button>
@@ -1114,7 +1114,7 @@
             <button class="btn-leaf mt-4" @click="doExport()"><svg class="ico h-4 w-4"><use :href="icon('download')"></use></svg>导出规则包</button>
           </div>
           <div class="panel-pad">
-            <div class="title text-lg"><img class="pic h-8 w-8" src="/static/icons/share.png" alt="">导入同事的规则</div>
+            <div class="title text-lg"><img class="pic h-8 w-8" src="/static/icons/import_pkg.png" alt="">导入同事的规则</div>
             <p class="subtle mt-1">上传规则包 .yaml（或整份 trackcheck.yaml），逐条对比差异后再决定导入哪些。<br>埋点文档 / 点位清单请到「埋点字典」页导入。</p>
             <label class="btn-wood mt-4 cursor-pointer"><img class="pic h-6 w-6" src="/static/icons/data.png" alt="">选择文件 <input type="file" class="hidden" accept=".yaml,.yml,.json,.txt" @change="readImport($event)"></label>
             <span class="ml-2 text-sm" x-text="imp.fileName"></span>
