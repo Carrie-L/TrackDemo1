@@ -1050,6 +1050,7 @@ function app() {
     },
     repKeep(x, view) {
       if (view === 'bad') return ['FAIL', 'WARN', 'ASK'].includes(x.status);
+      if (view === 'ask') return x.status === 'ASK';
       if (view === 'pass') return x.status === 'PASS';
       return this.rep.showUnk || x.status !== 'UNKNOWN';
     },
