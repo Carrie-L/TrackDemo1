@@ -73,9 +73,9 @@ events:
       res: {from: mine_api_cache, path: "data.myPage[*].res[*]", where: {id: "{resID}"}}
     fields:
       rank:              {type: int, range: [1, 20], desc: 卡片位置（从1开始）}
-      type:              {enum: [open, close], desc: 点击类型}
+      type:              {enum: {open: 打开, close: 关闭}, desc: 点击类型}
       notificationNum:   {type: int, desc: 角标数（可为空）}
-      operationCardType: {enum: [1, 2], desc: 运营卡类型}
+      operationCardType: {enum: {1: 普通运营卡, 2: 活动运营卡}, desc: 运营卡类型}
       cardState:         {enum: {0: 未领取, 1: 已领取}, desc: 卡片状态}
       resName:           {db: app, sql: "SELECT plan_name FROM res_plan WHERE res_id = :resID", desc: 投放计划名（查DB）}
 
@@ -105,11 +105,21 @@ events:
       # 自洽校验：不依赖 DB 时机，最稳
       - {expr: "int(allNums) == int(novelNums) + int(webNums) + int(videoNums)", msg: "allNums 应等于 小说 + 网页 + 视频 之和"}
 
-# ---------------- 测试用例：本轮必须触发哪些点位 ----------------
+# ---------------- 测试用例：本轮要测哪些点位 + 每个字段期望是什么 ----------------
+# values 里填的值会在校验时比对（可以写多个候选值，满足其一即可）；
+# 入口、Tab 这种只有测试的人知道的值，在用例里填好，实时调试时还能随手改。
 cases:
   我的页卡片:
+    desc: 进入我的页，看到顶部氛围卡并点击打开
     expect:
       - 88860004086007
-      - {id: 88860004086008, where: {type: open}}
+      - id: 88860004086008
+        values: {type: open, operationCardType: 1}
       - {id: 88860001000001, min: 1}
       - {id: 88860004086009, min: 1}    # 演示：没触发的点位会被标红
+  历史记录-桌面小组件进入:
+    desc: 从桌面小组件进入历史记录页，再切到书签 Tab
+    expect:
+      - id: 88860005000001
+        min: 2
+        values: {source: 1, tab: [history, bookmark]}

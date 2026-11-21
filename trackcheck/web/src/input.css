@@ -32,7 +32,9 @@
   .tab-on { @apply bg-white text-leaf-700 shadow-sm ring-2 ring-leaf-200 hover:bg-white; }
 }
 
-/* 状态色（JS 动态拼接的类，放在 layer 外保证一定会生成） */
+/* status colors: classes built dynamically in JS, kept outside layers */
+.pic { display: inline-block; flex-shrink: 0; object-fit: contain; filter: drop-shadow(0 1px 0 rgba(140,100,60,.18)); user-select: none; -webkit-user-drag: none; }
+.yaml .yk { color: #4E8A35; font-weight: 700; } .yaml .yk2 { color: #7F63B8; } .yaml .yc { color: #B9A894; font-style: italic; }
 .ico { display: inline-block; width: 1.1em; height: 1.1em; flex-shrink: 0; vertical-align: -0.15em; }
 .st-ASK { background: #EEE6F9; color: #7F63B8; }
 .row-ASK td { background: #F7F3FC; }

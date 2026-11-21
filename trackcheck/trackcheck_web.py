@@ -204,15 +204,18 @@ class LiveSession:
         self.results, self.running, self.report = [], True, None
         self.stamp = time.strftime("%Y%m%d_%H%M%S")
         self.raw = os.path.join(app.out, f"session_{self.stamp}.log")
-        self.scenario = {k: v for k, v in (scenario or {}).items() if v not in (None, "")}
+        self.scenario = {k: v for k, v in (scenario or {}).items() if v not in (None, "", [])}
         self.ev_scn, self.decisions, self.ev_snap, self.evs = {}, {}, {}, []
+        self.pending, self.pend_cv = [], threading.Condition()   # 等待「事件后」快照的事件（一阵连发只拍一张）
         dev = app.spec.device or {}
         self.pkg, self.dbs = dev.get("package"), [str(x) for x in (dev.get("dbs") or [])]
         self.snap_on = bool(snapshot and self.pkg and self.dbs)
         self.snaps, self.snap_err = [], ""          # [{"t": 时间, "dir": 目录, "sources": Sources}]
         self.snap_root = os.path.join(app.out, "snapshots", self.stamp)
         if self.snap_on:
+            self._cleanup_old()
             self._snapshot()                       # 开始前先拍一张，作为第一个事件的「事件前」
+            threading.Thread(target=self._snap_worker, daemon=True).start()
         self.ck = tc.Checker(app.spec, app.sources)
         self.cap = tc.Capture(app.spec, self.serial, self.raw, self.on_event)
         self.cap.start(clear=clear)
@@ -232,6 +235,47 @@ class LiveSession:
         snap = {"t": time.time(), "dir": d, "sources": self._sources_for(d)}
         self.snaps.append(snap)
         return len(self.snaps) - 1
+
+    def _cleanup_old(self, keep=5):
+        root = os.path.dirname(self.snap_root)
+        try:
+            olds = sorted(glob.glob(os.path.join(root, "*")), key=os.path.getmtime)
+            for d in olds[:-keep]:
+                shutil.rmtree(d, ignore_errors=True)
+        except Exception:
+            pass
+
+    def _snap_worker(self):
+        """连续到达的 SQL 事件合并成一次「事件后」快照：最后一个事件后安静 0.6 秒（最多等 2 秒）再拉一次 DB"""
+        while self.running:
+            with self.pend_cv:
+                while not self.pending and self.running:
+                    self.pend_cv.wait(0.5)
+                if not self.pending:
+                    continue
+                first = self.pending[0][1]
+                while self.running:
+                    last = self.pending[-1][1]
+                    now = time.time()
+                    if now - last >= 0.6 or now - first >= 2.0:
+                        break
+                    self.pend_cv.wait(0.15)
+                batch, self.pending = self.pending, []
+            after = self._snapshot() if self.snap_on else None
+            for ev, arrived in batch:
+                before = max((i for i, s in enumerate(self.snaps) if s["t"] < arrived), default=None)
+                if after is not None:
+                    self.ev_snap[ev.seq] = (before, after)
+                self._append(ev)
+        with self.pend_cv:
+            batch, self.pending = self.pending, []
+        for ev, _ in batch:
+            self._append(ev)
+
+    def _append(self, ev):
+        with self.lock:
+            self.evs.append(ev)
+            self.results.append(self._check(self.ck, ev))
 
     def _sources_for(self, d):
         s = copy.copy(self.app.spec)
@@ -255,13 +299,11 @@ class LiveSession:
         arrived = time.time()
         self.ev_scn[ev.seq] = dict(self.scenario)
         if self.snap_on and self._uses_db(ev.id):
-            before = max((i for i, s in enumerate(self.snaps) if s["t"] < arrived), default=None)
-            after = self._snapshot()
-            self.ev_snap[ev.seq] = (before, after)
-        with self.lock:
-            self.evs.append(ev)
-            r = self._check(self.ck, ev)
-            self.results.append(r)
+            with self.pend_cv:
+                self.pending.append((ev, arrived))
+                self.pend_cv.notify()
+            return
+        self._append(ev)
 
     def _check(self, ck, ev):
         b, a = self.ev_snap.get(ev.seq, (None, None))
@@ -283,7 +325,16 @@ class LiveSession:
             self.ck = ck
 
     def set_scenario(self, scn, apply_pending=False):
-        self.scenario = {k: v for k, v in (scn or {}).items() if v not in (None, "")}
+        """apply_pending: True/'pending' = 补到待确认的事件；'all' = 已收到的全部事件按新期望值重判"""
+        new = {k: v for k, v in (scn or {}).items() if v not in (None, "", [])}
+        if apply_pending == "all":
+            for seq in list(self.ev_scn):
+                old = self.ev_scn.get(seq, {})
+                self.ev_scn[seq] = {**{k: v for k, v in old.items() if k not in self.scenario}, **new}
+            self.scenario = new
+            self.recheck()
+            return
+        self.scenario = new
         if apply_pending:   # 把场景补到还在「待确认」的事件上
             for r in self.results:
                 if r["status"] == "ASK" or any(f["status"] == "ASK" for f in r["fields"]):
@@ -301,6 +352,13 @@ class LiveSession:
     def stop(self, pull=False):
         self.cap.stop(linger=0.3)
         self.running = False
+        with self.pend_cv:
+            self.pend_cv.notify_all()
+        time.sleep(0.3)
+        with self.pend_cv:                     # 还没来得及拍快照的事件直接按当前数据校验
+            batch, self.pending = self.pending, []
+        for ev, _ in batch:
+            self._append(ev)
         log = ""
         if pull:
             log = self.app.pull_log()
@@ -440,6 +498,27 @@ class App:
                         a["options"].update({str(k): str(v) for k, v in s.dicts.get(e, {}).items()})
                     a["events"].append(eid)
         evd = s.event_dict
+        ev_fields = {}
+        for eid, es in s.events.items():
+            fs = OrderedDict()
+            for fname, r in (es.get("fields") or {}).items():
+                r = tc.norm_rule(r) if not isinstance(r, dict) else r
+                opts, e = OrderedDict(), r.get("enum")
+                if isinstance(e, dict):
+                    opts.update((str(k), str(v)) for k, v in e.items())
+                elif isinstance(e, list):
+                    opts.update((str(k), "") for k in e)
+                elif isinstance(e, str):
+                    opts.update((str(k), str(v)) for k, v in s.dicts.get(e, {}).items())
+                kind = next((k for k in ("from", "sql", "expr", "eq", "enum") if k in r), "")
+                fs[str(fname)] = {"desc": str(r.get("desc", "") or ""), "options": opts, "ask": bool(r.get("ask")), "kind": kind,
+                                  "ignore": bool(r.get("ignore"))}
+            ev_fields[eid] = fs
+        tpl_refs = {}
+        for eid, (raw, _) in self.store.items("events").items():
+            ex = (raw or {}).get("extends")
+            for t in ([ex] if isinstance(ex, (str, int)) else (ex or [])):
+                tpl_refs.setdefault(str(t), []).append(eid)
         return {
             "spec_path": self.store.path, "spec_error": self.spec_error, "out": self.out,
             "files": [os.path.relpath(p, os.path.dirname(self.store.path)) for p in self.store.files],
@@ -455,6 +534,7 @@ class App:
             "options": self.store.main.get("options") or {},
             "log": self.store.main.get("log") or {},
             "reports": reps, "sessions": self.sessions(), "live": live, "ask_fields": ask,
+            "event_fields": ev_fields, "tpl_refs": tpl_refs,
             "evdict": {"count": len(evd.get("entries", {})), "docs": evd.get("docs", [])},
         }
 
@@ -719,7 +799,7 @@ class App:
 
     def api_check_log(self, b):
         p, evs = self._read_log(b)
-        res = tc.check_all(self.spec, evs, verbose=False)
+        res = tc.check_all(self.spec, evs, verbose=False, scenario=tc.case_values(self.spec, b.get("case") or None))
         rep = tc.build_report(self.spec, res, b.get("case") or None, {"log": p})
         stem = "trackcheck_" + time.strftime("%Y%m%d_%H%M%S")
         tc.write_report(rep, self.out, stem)
@@ -972,7 +1052,8 @@ class App:
     def api_live_scenario(self, b):
         if not self.live:
             raise ApiError("还没开始抓取")
-        self.live.set_scenario(b.get("scenario") or {}, bool(b.get("apply_pending")))
+        ap = b.get("apply_pending")
+        self.live.set_scenario(b.get("scenario") or {}, ap if ap == "all" else bool(ap))
         return {"ok": True}
 
     def api_live_decide(self, b):
@@ -1076,6 +1157,7 @@ class App:
         ok, errs = [], []
         for db in dbs:
             try:
+                self._backup_ds(db)
                 tc.pull_app_db(adb, pkg, db, os.path.join(self._ds_dir(), db))
                 ok.append(db)
             except Exception as e:
@@ -1087,6 +1169,21 @@ class App:
         if not ok:
             raise ApiError("；".join(errs))
         return {"ok": ok, "errors": errs}
+
+    def _backup_ds(self, fname, keep=5):
+        p = os.path.join(self._ds_dir(), fname)
+        if not os.path.exists(p):
+            return
+        hd = os.path.join(self._ds_dir(), ".history")
+        os.makedirs(hd, exist_ok=True)
+        stem, ext = os.path.splitext(fname)
+        shutil.copyfile(p, os.path.join(hd, f"{stem}_{time.strftime('%Y%m%d_%H%M%S')}{ext}"))
+        olds = sorted(glob.glob(os.path.join(hd, f"{stem}_*{ext}")), key=os.path.getmtime)
+        for x in olds[:-keep]:
+            try:
+                os.remove(x)
+            except OSError:
+                pass
 
     def api_pull_apidump(self, b):
         pkg = str(b.get("package") or (self.spec.device or {}).get("package") or "").strip()
@@ -1219,6 +1316,51 @@ class App:
         self.reload()
         return {"log": log}
 
+    def api_spec_text(self, q):
+        p = self.store.path
+        files = []
+        for f in self.store.files:
+            with open(f, encoding="utf-8") as fh:
+                files.append({"path": f, "name": os.path.relpath(f, os.path.dirname(p)), "text": fh.read()})
+        return {"files": files}
+
+    def api_spec_text_save(self, b):
+        name, text = str(b.get("name") or ""), b.get("text") or ""
+        target = next((f for f in self.store.files if os.path.relpath(f, os.path.dirname(self.store.path)) == name), None)
+        if not target:
+            raise ApiError("没有这个规则文件")
+        try:
+            yaml.safe_load(text)
+        except yaml.YAMLError as e:
+            raise ApiError(f"YAML 格式有误：{e}")
+        old = open(target, encoding="utf-8").read()
+        shutil.copyfile(target, target + ".bak")
+        with open(target, "w", encoding="utf-8") as f:
+            f.write(text)
+        self.reload()
+        if self.spec_error:
+            with open(target, "w", encoding="utf-8") as f:
+                f.write(old)
+            err = self.spec_error
+            self.reload()
+            raise ApiError("规则解析失败，已撤回：" + err)
+        return {"ok": True}
+
+    def api_evdict_samples(self, b):
+        docs = sorted(glob.glob(os.path.join(os.path.dirname(self.store.path), "docs", "*.md")))
+        if not docs:
+            raise ApiError("规则文件同目录的 docs/ 下没有示例文档")
+        d = tc.load_event_dict(self.spec.event_dict_path)
+        tot = 0
+        for p in docs:
+            with open(p, encoding="utf-8") as f:
+                entries = tc.doc_to_event_entries(f.read(), os.path.basename(p))
+            added, _, _ = tc.merge_event_dict(d, entries, os.path.basename(p), False)
+            tot += len(added)
+        self._save_evdict(d)
+        self.reload()
+        return {"added": tot, "total": len(d["entries"]), "docs": [os.path.basename(x) for x in docs]}
+
     def api_reload(self, b):
         self.reload()
         return {"ok": True, "error": self.spec_error}
@@ -1244,7 +1386,8 @@ ROUTES = {
     ("POST", "/api/ds/delete"): "api_ds_delete", ("POST", "/api/device/dbs"): "api_device_dbs", ("POST", "/api/pull/dbs"): "api_pull_dbs",
     ("POST", "/api/pull/apidump"): "api_pull_apidump", ("GET", "/api/evdict"): "api_evdict",
     ("POST", "/api/evdict/import"): "api_evdict_import", ("POST", "/api/evdict/delete"): "api_evdict_delete",
-    ("POST", "/api/ai_prompt"): "api_ai_prompt",
+    ("POST", "/api/ai_prompt"): "api_ai_prompt", ("GET", "/api/spec_text"): "api_spec_text",
+    ("POST", "/api/spec_text/save"): "api_spec_text_save", ("POST", "/api/evdict/samples"): "api_evdict_samples",
     ("POST", "/api/import/preview"): "api_import_preview", ("POST", "/api/import/apply"): "api_import_apply",
 }
 

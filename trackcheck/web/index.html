@@ -21,18 +21,16 @@
     <nav class="panel flex flex-col gap-1 p-3">
       <template x-for="n in NAV" :key="n.id">
         <button class="navitem" :class="page === n.id && 'navitem-on'" @click="go(n.id)">
-          <svg class="ico h-[18px] w-[18px]"><use :href="icon(n.icon)"></use></svg><span x-text="n.label"></span>
+          <img class="pic h-7 w-7 -my-1" :src="pic(n.icon)" alt=""><span x-text="n.label"></span>
           <span x-show="n.id === 'live' && live.running" class="live-dot ml-auto h-2.5 w-2.5 rounded-full bg-leaf-400"></span>
           <span x-show="n.id === 'rules' && st" class="ml-auto rounded-full bg-wood-100 px-2 text-[11px] text-wood-600" :class="page === n.id && '!bg-white/30 !text-white'" x-text="st?.events.length"></span>
           <span x-show="n.id === 'evdict' && st?.evdict.count" class="ml-auto rounded-full bg-wood-100 px-2 text-[11px] text-wood-600" :class="page === n.id && '!bg-white/30 !text-white'" x-text="st?.evdict.count"></span>
         </button>
       </template>
     </nav>
-    <div class="panel mt-auto p-4 text-xs">
-      <div class="flex items-center gap-2 font-bold text-wood-700"><svg class="ico h-4 w-4"><use :href="icon('smartphone')"></use></svg>设备</div>
-      <div class="mt-2 flex items-center gap-2"><span class="h-2.5 w-2.5 rounded-full" :class="onlineDevice ? 'live-dot bg-leaf-400' : 'bg-berry-500'"></span>
-        <span class="truncate" x-text="onlineDevice ? (onlineDevice.model || onlineDevice.serial) : (devErr || '未连接')"></span></div>
-      <div class="mt-1 truncate text-ink-faint" x-show="st?.device.package" x-text="'包名 ' + st?.device.package"></div>
+    <div class="panel mt-auto flex items-center gap-3 p-3 text-xs">
+      <img src="/static/mascot.jpg" class="bob h-12 w-12 rounded-full object-cover ring-2 ring-leaf-200" alt="">
+      <div class="min-w-0"><div class="font-bold text-wood-700">小芽陪你测埋点</div><div class="truncate text-ink-faint" x-text="(st?.events.length || 0) + ' 个点位已配置规则'"></div></div>
     </div>
   </aside>
 
@@ -44,15 +42,21 @@
         <input class="input !rounded-full !border-white !bg-white/85 !py-2.5 !pl-11 shadow-soft" placeholder="搜索点位 ID 或名称…" x-model="search" @keydown.enter="ruleFilter = search; go('rules')">
       </div>
       <div class="ml-auto flex items-center gap-2">
-        <button class="grid h-10 w-10 place-items-center rounded-full bg-white/85 text-wood-600 shadow-soft hover:bg-white" title="重新加载规则文件" @click="call(() => api('/api/reload', {}), '已重新加载').then(refresh)"><svg class="ico h-4 w-4"><use :href="icon('refresh-cw')"></use></svg></button>
-        <div class="flex h-10 items-center gap-2 rounded-full bg-white/85 pl-1 pr-4 shadow-soft">
+        <button class="flex h-10 items-center gap-2 rounded-full bg-white/85 px-4 shadow-soft hover:bg-white" :title="devTitle" @click="loadDevices()">
+          <span class="h-2.5 w-2.5 shrink-0 rounded-full" :class="onlineDevice ? 'live-dot bg-leaf-400' : 'bg-berry-400'"></span>
+          <span class="max-w-[200px] truncate text-sm font-bold" x-text="onlineDevice ? (onlineDevice.model || onlineDevice.serial) : (devErr ? 'adb 不可用' : '未连接设备')"></span>
+          <span x-show="onlineCount > 1" class="chip bg-leaf-50 !px-1.5 text-leaf-700" x-text="'+' + (onlineCount - 1)"></span>
+        </button>
+        <button class="grid h-10 w-10 place-items-center rounded-full bg-white/85 shadow-soft hover:bg-white" title="重新加载规则文件" @click="call(() => api('/api/reload', {}), '已重新加载').then(() => refresh())"><img class="pic h-7 w-7" src="/static/icons/refresh.png" alt=""></button>
+        <button class="flex h-10 items-center gap-2 rounded-full bg-white/85 pl-1 pr-3 shadow-soft hover:bg-white" title="点击查看规则文件" @click="openYaml()">
           <img src="/static/mascot.jpg" class="h-8 w-8 rounded-full object-cover ring-2 ring-leaf-200" alt="">
           <span class="max-w-[220px] truncate text-sm font-bold" :title="st?.spec_path" x-text="fileName(st?.spec_path)"></span>
-        </div>
+          <img class="pic h-6 w-6" src="/static/icons/yaml.png" alt="">
+        </button>
       </div>
     </header>
 
-    <div x-show="st?.spec_error" x-cloak class="panel flex items-center gap-2 border-berry-200 bg-berry-50 p-4 text-sm text-berry-700"><svg class="ico h-4 w-4"><use :href="icon('triangle-alert')"></use></svg>规则文件解析出错：<span x-text="st?.spec_error"></span></div>
+    <div x-show="st?.spec_error" x-cloak class="panel flex items-center gap-2 border-berry-200 bg-berry-50 p-4 text-sm text-berry-700"><img class="pic h-6 w-6" src="/static/icons/warn.png" alt="">规则文件解析出错：<span x-text="st?.spec_error"></span></div>
 
     <main class="min-h-[70vh]">
       <!-- ========== 首页 ========== -->
@@ -67,20 +71,20 @@
                 <p class="mt-1 text-sm text-ink-soft">每个点位只需配置一次规则，之后每次测试自动复用。</p>
               </div>
               <div class="flex flex-wrap gap-2">
-                <button class="btn-leaf" @click="go('live')"><svg class="ico h-4 w-4"><use :href="icon('play')"></use></svg>开始实时调试</button>
-                <button class="btn-wood" @click="go('evdict')"><svg class="ico h-4 w-4"><use :href="icon('book-open')"></use></svg>埋点字典</button>
+                <button class="btn-leaf" @click="go('live')"><img class="pic h-6 w-6" src="/static/icons/live.png" alt="">开始实时调试</button>
+                <button class="btn-wood" @click="go('evdict')"><img class="pic h-6 w-6" src="/static/icons/dict.png" alt="">埋点字典</button>
               </div>
             </div>
           </div>
 
           <div class="grid grid-cols-2 gap-4 lg:grid-cols-4">
             <template x-for="(c, i) in [
-                {k: '已配置规则', v: stats.catalog ? stats.events + ' / ' + stats.catalog : stats.events, s: stats.catalog ? '已配置 / 埋点总数' : '个点位', icon: 'list-checks', p: 'rules'},
-                {k: '埋点字典', v: stats.evdict, s: '个点位文档', icon: 'book-open', p: 'evdict'},
-                {k: '数据源', v: stats.sources, s: '个可用', icon: 'database', p: 'sources'},
-                {k: '最近通过率', v: stats.rate === null ? '—' : stats.rate + '%', s: '最近一次报告', icon: 'chart-column', p: 'reports'}]">
+                {k: '已配置规则', v: stats.catalog ? stats.events + ' / ' + stats.catalog : stats.events, s: stats.catalog ? '已配置 / 埋点总数' : '个点位', icon: 'rules', p: 'rules'},
+                {k: '埋点字典', v: stats.evdict, s: '个点位文档', icon: 'dict', p: 'evdict'},
+                {k: '数据源', v: stats.sources, s: '个可用', icon: 'data', p: 'sources'},
+                {k: '最近通过率', v: stats.rate === null ? '—' : stats.rate + '%', s: '最近一次报告', icon: 'report', p: 'reports'}]">
               <button class="rounded-3xl border-2 p-4 text-left shadow-soft transition hover:-translate-y-0.5" :class="tone(i)" @click="go(c.p)">
-                <div class="flex items-center justify-between text-ink-soft"><span class="text-sm font-bold" x-text="c.k"></span><svg class="ico h-5 w-5"><use :href="icon(c.icon)"></use></svg></div>
+                <div class="flex items-center justify-between text-ink-soft"><span class="text-sm font-bold" x-text="c.k"></span><img class="pic h-9 w-9 -my-1" :src="pic(c.icon)" alt=""></div>
                 <div class="mt-1 text-2xl font-black text-wood-700" x-text="c.v"></div>
                 <div class="subtle" x-text="c.s"></div>
               </button>
@@ -89,7 +93,7 @@
 
           <div class="panel-pad">
             <div class="mb-3 flex items-center justify-between">
-              <div class="title"><svg class="ico h-4 w-4"><use :href="icon('layers')"></use></svg>点位状态 <span class="subtle font-normal">（最近一次测试结果）</span></div>
+              <div class="title"><img class="pic h-6 w-6" src="/static/icons/rules.png" alt="">点位状态 <span class="subtle font-normal">（最近一次测试结果）</span></div>
               <div class="flex gap-2 text-xs">
                 <span class="chip st-PASS">健康 <b x-text="stats.ok"></b></span>
                 <span class="chip st-FAIL">有问题 <b x-text="stats.bad"></b></span>
@@ -113,11 +117,11 @@
 
           <div class="grid grid-cols-1 gap-5 lg:grid-cols-2">
             <div class="panel-pad">
-              <div class="mb-3 flex items-center justify-between"><div class="title"><svg class="ico h-4 w-4"><use :href="icon('chart-column')"></use></svg>最近的报告</div><button class="text-xs font-bold text-leaf-600" @click="go('reports')">查看全部</button></div>
+              <div class="mb-3 flex items-center justify-between"><div class="title"><img class="pic h-6 w-6" src="/static/icons/report.png" alt="">最近的报告</div><button class="text-xs font-bold text-leaf-600" @click="go('reports')">查看全部</button></div>
               <div class="space-y-2">
                 <template x-for="r in (st?.reports || []).slice(0, 5)" :key="r.name">
                   <button class="flex w-full items-center gap-3 rounded-2xl bg-white/70 px-3 py-2 text-left hover:bg-white" @click="openReport(r.name)">
-                    <svg class="ico h-5 w-5" :class="r.summary.ok ? 'text-leaf-500' : 'text-berry-500'"><use :href="icon(r.summary.ok ? 'circle-check' : 'circle-alert')"></use></svg>
+                    <img class="pic h-7 w-7" :src="pic(r.summary.ok ? 'ok' : 'fail')" alt="">
                     <div class="min-w-0 flex-1"><div class="text-sm font-bold" x-text="r.time"></div><div class="truncate text-xs text-ink-soft" x-text="(r.case ? '用例 ' + r.case + ' · ' : '') + fileName(r.log)"></div></div>
                     <span class="chip st-PASS" x-text="r.summary.pass"></span><span class="chip st-FAIL" x-text="r.summary.fail"></span>
                   </button>
@@ -126,7 +130,7 @@
               </div>
             </div>
             <div class="panel-pad">
-              <div class="title mb-3"><svg class="ico h-4 w-4"><use :href="icon('file-text')"></use></svg>快速校验一份日志</div>
+              <div class="title mb-3"><img class="pic h-6 w-6" src="/static/icons/yaml.png" alt="">快速校验一份日志</div>
               <label class="label">选择会话日志</label>
               <select class="input" x-model="checkForm.path" @change="checkForm.content = ''; checkForm.fileName = ''">
                 <option value="">— 选择 —</option>
@@ -142,11 +146,11 @@
 
         <div class="flex flex-col gap-5">
           <div class="panel-pad">
-            <div class="mb-2 flex items-center justify-between"><div class="title"><svg class="ico h-4 w-4"><use :href="icon('bell')"></use></svg>最近的问题 <span class="chip st-FAIL" x-show="notices.length" x-text="notices.length"></span></div></div>
+            <div class="mb-2 flex items-center justify-between"><div class="title"><img class="pic h-6 w-6" src="/static/icons/bell.png" alt="">最近的问题 <span class="chip st-FAIL" x-show="notices.length" x-text="notices.length"></span></div></div>
             <div class="space-y-2">
               <template x-for="n in notices">
                 <button class="flex w-full gap-2 rounded-2xl bg-white/70 p-2.5 text-left hover:bg-white" @click="openReport(n.report)">
-                  <span class="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-berry-100 text-berry-600"><svg class="ico h-4 w-4"><use :href="icon('bug')"></use></svg></span>
+                  <span class="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-berry-100 text-berry-600"><img class="pic h-6 w-6" src="/static/icons/bug.png" alt=""></span>
                   <div class="min-w-0"><div class="text-sm"><b x-text="n.name || n.id"></b> 的 <span class="code" x-text="n.field"></span> 出错 <b x-text="n.count"></b> 次</div>
                     <div class="truncate text-xs text-ink-soft" x-text="n.reason"></div></div>
                 </button>
@@ -163,7 +167,7 @@
             <button class="btn-wood btn-xs mt-3" @click="tipIdx = tipIdx + 1">下一条</button>
           </div>
           <div class="panel-pad text-sm">
-            <div class="title mb-2"><svg class="ico h-4 w-4"><use :href="icon('file-text')"></use></svg>规则文件</div>
+            <div class="title mb-2"><img class="pic h-6 w-6" src="/static/icons/yaml.png" alt="">规则文件</div>
             <div class="break-all font-mono text-xs text-ink-soft" x-text="st?.spec_path"></div>
             <div class="subtle mt-2">报告目录：<span class="break-all font-mono" x-text="st?.out"></span></div>
           </div>
@@ -177,37 +181,54 @@
             <div class="w-52"><label class="label">设备</label>
               <select class="input" x-model="live.serial" :disabled="live.running"><option value="">默认设备</option>
                 <template x-for="d in devices"><option :value="d.serial" x-text="(d.model || d.serial) + ' · ' + d.state"></option></template></select></div>
-            <div class="w-40"><label class="label">测试用例（覆盖率）</label>
-              <select class="input" x-model="live.caseName" :disabled="live.running"><option value="">不指定</option>
+            <div class="w-40"><label class="label">测试用例</label>
+              <select class="input" x-model="live.caseName" :disabled="live.running" @change="loadPlanFromCase()"><option value="">不指定</option>
                 <template x-for="c in Object.keys(st?.cases || {})"><option :value="c" x-text="c"></option></template></select></div>
-            <div class="w-60"><label class="label">只看这些点位（可留空）</label>
-              <input class="input" list="evlist" placeholder="例如 88860005000001" x-model="live.only" :disabled="live.running">
-              <datalist id="evlist"><template x-for="e in st?.events || []"><option :value="e.id" x-text="e.name"></option></template></datalist></div>
+            <datalist id="evlist"><template x-for="e in evPickList" :key="e.id"><option :value="e.id" x-text="e.name"></option></template></datalist>
             <div class="flex flex-col gap-1 pb-1 text-sm font-bold text-ink-soft">
               <label class="flex items-center gap-2"><input type="checkbox" class="accent-leaf-500" x-model="live.clear" :disabled="live.running"> 开始前清空 logcat</label>
+              <label class="flex items-center gap-2" x-show="live.plan.length"><input type="checkbox" class="accent-leaf-500" x-model="live.onlyPlan" :disabled="live.running"> 只抓清单里的点位</label>
               <label class="flex items-center gap-2" :title="st?.device.dbs?.length ? '每个用到 SQL 的事件，前后各拍一次 DB 快照' : '先在「数据源」页填包名并拉一次数据库'"><input type="checkbox" class="accent-leaf-500" x-model="live.snapshot" :disabled="live.running || !st?.device.dbs?.length"> 事件前后自动拍 DB 快照 <span class="font-normal text-ink-faint" x-text="st?.device.dbs?.length ? '（' + st.device.dbs.join('、') + '）' : '（未配置数据库）'"></span></label>
             </div>
             <div class="ml-auto flex gap-2">
-              <button x-show="!live.running" class="btn-leaf" :disabled="busy" @click="startLive()"><svg class="ico h-4 w-4"><use :href="icon('play')"></use></svg>开始抓取</button>
+              <button x-show="!live.running" class="btn-leaf" :disabled="busy" @click="startLive()"><img class="pic h-6 w-6" src="/static/icons/live.png" alt="">开始抓取</button>
               <button x-show="live.running" class="btn-berry" :disabled="busy" @click="stopLive()"><svg class="ico h-4 w-4"><use :href="icon('square')"></use></svg>结束并生成报告</button>
             </div>
           </div>
 
-          <!-- 本次操作场景 -->
-          <div class="mt-4 rounded-2xl border-2 border-lilac-200 bg-lilac-50/70 p-3" x-show="askFields.length">
+          <!-- 本次要测的点位 & 期望值 -->
+          <div class="mt-4 rounded-2xl border-2 border-lilac-200 bg-lilac-50/60 p-3">
             <div class="flex flex-wrap items-center gap-2">
-              <svg class="ico h-4 w-4 text-lilac-600"><use :href="icon('hand')"></use></svg>
-              <span class="text-sm font-bold text-lilac-600">本次操作</span>
-              <span class="subtle">入口、Tab 这类只有你知道的值：操作前点选，之后到达的事件自动比对；不选就标「待确认」，事后点对 / 不对。</span>
-              <button class="btn-wood btn-xs ml-auto" x-show="liveCounts.ASK" @click="applyScnToPending()">把当前选择应用到 <span x-text="liveCounts.ASK"></span> 条待确认事件</button>
+              <img class="pic h-7 w-7" src="/static/icons/cases.png" alt="">
+              <span class="text-sm font-bold text-lilac-600">本次要测的点位</span>
+              <span class="subtle" x-text="live.caseName ? '来自用例「' + live.caseName + '」，期望值可以随手改，改完已收到的事件自动重新判定' : '选一个用例，或直接添加点位；给字段点选期望值，上报时自动比对，不填的字段只按规则校验'"></span>
+              <div class="ml-auto flex items-center gap-2">
+                <input class="input !w-60 !py-1 text-xs" list="evlist" placeholder="＋ 添加点位：输入 ID 或名称" x-model="live.addId" @change="addPlanRow()" @keydown.enter="addPlanRow()">
+                <button class="btn-wood btn-xs" x-show="live.plan.length" @click="savePlanToCase()"><img class="pic h-4 w-4" src="/static/icons/cases.png" alt=""><span x-text="live.caseName ? '保存回用例' : '存为用例'"></span></button>
+              </div>
             </div>
-            <div class="mt-2 flex flex-wrap gap-x-6 gap-y-2">
-              <template x-for="a in askFields" :key="a.field">
-                <div class="flex flex-wrap items-center gap-1.5">
-                  <span class="text-xs font-bold text-wood-700" x-text="(a.desc || a.field)"></span><span class="font-mono text-[11px] text-ink-faint" x-text="a.field"></span>
-                  <template x-for="[k, v] in Object.entries(a.options)" :key="k">
-                    <button class="chip border transition" :class="live.scn[a.field] === k ? 'border-lilac-500 bg-lilac-500 text-white' : 'border-lilac-200 bg-white text-lilac-600 hover:bg-lilac-100'" @click="setScn(a.field, k)"><span class="font-mono" x-text="k"></span><span class="font-normal" x-show="v" x-text="v"></span></button>
-                  </template>
+            <div class="mt-3 grid grid-cols-1 gap-2 2xl:grid-cols-2" x-show="live.plan.length">
+              <template x-for="(row, ri) in live.plan" :key="row.id">
+                <div class="rounded-2xl border-2 border-white bg-white/85 p-3">
+                  <div class="flex items-center gap-2">
+                    <span class="truncate text-sm font-bold text-wood-700" x-text="eventName(row.id) || '未命名点位'"></span>
+                    <span class="font-mono text-[11px] text-ink-faint" x-text="row.id"></span>
+                    <span class="chip ml-auto" :class="liveHits(row.id) ? 'st-PASS' : 'st-SKIP'" x-text="liveHits(row.id) ? '已上报 ' + liveHits(row.id) + ' 次' : '还没上报'"></span>
+                    <button class="btn-ghost btn-xs !px-1.5" title="移出清单" @click="live.plan.splice(ri, 1); pushPlan()"><svg class="ico h-3.5 w-3.5"><use :href="icon('x')"></use></svg></button>
+                  </div>
+                  <div class="mt-2 space-y-1.5">
+                    <template x-for="f in rowFields(row)" :key="f.name">
+                      <div class="flex flex-wrap items-center gap-1.5">
+                        <span class="w-24 shrink-0 truncate text-xs font-bold" :class="f.ask ? 'text-lilac-600' : 'text-wood-600'" :title="f.name + (f.ask ? '（由用户操作决定）' : '')" x-text="f.desc || f.name"></span>
+                        <template x-for="[k, v] in Object.entries(f.options)" :key="k">
+                          <button class="chip border transition" :class="valOn(row, f.name, k) ? 'border-lilac-500 bg-lilac-500 text-white' : 'border-lilac-200 bg-white text-lilac-600 hover:bg-lilac-100'" @click="toggleVal(row, f.name, k); pushPlan()"><span class="font-mono" x-text="k"></span><span class="font-normal" x-show="v" x-text="v"></span></button>
+                        </template>
+                        <input x-show="!Object.keys(f.options).length" class="input !w-52 !py-0.5 font-mono text-xs" :value="valText(row.values[f.name])" @change="setValText(row, f.name, $event.target.value); pushPlan()" placeholder="不填不比对；多个候选用 | 分隔">
+                      </div>
+                    </template>
+                    <p x-show="!st?.event_fields?.[row.id]" class="text-xs text-ink-faint">这个点位还没配置规则，上报后会显示为「未配置」。</p>
+                    <button class="text-xs font-bold text-lilac-600 hover:underline" x-show="rowHidden(row)" @click="row.showAll = !row.showAll" x-text="row.showAll ? '收起其他字段' : '展开其他字段（' + rowHidden(row) + '）'"></button>
+                  </div>
                 </div>
               </template>
             </div>
@@ -220,11 +241,11 @@
             <span class="chip st-WARN">警告 <b x-text="liveCounts.WARN"></b></span>
             <span class="chip st-ASK">待确认 <b x-text="liveCounts.ASK"></b></span>
             <span class="chip st-UNKNOWN">无规则 <b x-text="liveCounts.UNKNOWN"></b></span>
-            <span class="chip bg-pond-50 text-pond-700" x-show="st?.live?.snap_on"><svg class="ico h-3.5 w-3.5"><use :href="icon('database')"></use></svg>DB 快照 <b x-text="st?.live?.snaps"></b></span>
+            <span class="chip bg-pond-50 text-pond-700" x-show="st?.live?.snap_on"><img class="pic h-5 w-5" src="/static/icons/data.png" alt="">DB 快照 <b x-text="st?.live?.snaps"></b></span>
             <span class="chip st-WARN" x-show="live.snapErr" :title="live.snapErr">快照未开启</span>
             <div class="ml-auto flex gap-2">
-              <button class="btn-wood btn-xs" x-show="live.results.length" @click="recheckLive()"><svg class="ico h-3.5 w-3.5"><use :href="icon('rotate-ccw')"></use></svg>用最新规则重新校验</button>
-              <button class="btn-leaf btn-xs" x-show="live.report" @click="openReport(live.report)"><svg class="ico h-3.5 w-3.5"><use :href="icon('chart-column')"></use></svg>查看本轮报告</button>
+              <button class="btn-wood btn-xs" x-show="live.results.length" @click="recheckLive()"><img class="pic h-5 w-5" src="/static/icons/refresh.png" alt="">用最新规则重新校验</button>
+              <button class="btn-leaf btn-xs" x-show="live.report" @click="openReport(live.report)"><img class="pic h-5 w-5" src="/static/icons/report.png" alt="">查看本轮报告</button>
             </div>
           </div>
           <pre x-show="pullLog" class="mt-3 max-h-32 overflow-auto rounded-xl bg-wood-50 p-3 font-mono text-xs scroll-soft" x-text="pullLog"></pre>
@@ -239,10 +260,11 @@
         <div x-show="live.results.length" class="grid grid-cols-1 gap-5 lg:grid-cols-[360px_1fr]">
           <div class="panel flex max-h-[calc(100vh-300px)] min-h-[420px] flex-col p-3">
             <div class="mb-2 flex gap-1 rounded-2xl bg-wood-50 p-1">
-              <template x-for="t in [['all','全部'],['bad','有问题'],['ask','待确认'],['unk','无规则']]">
+              <template x-for="t in [['all','全部'],['bad','有问题'],['ask','待确认'],['pass','通过']]">
                 <button class="tab flex-1" :class="live.filter === t[0] && 'tab-on'" @click="live.filter = t[0]" x-text="t[1]"></button>
               </template>
             </div>
+            <label class="mb-2 flex items-center gap-2 px-1 text-xs font-bold text-ink-soft"><input type="checkbox" class="accent-leaf-500" x-model="live.showUnk" @change="if (live.showUnk) live.filter = 'all'"> 显示未配置规则的上报 <span class="chip st-UNKNOWN" x-text="liveCounts.UNKNOWN"></span></label>
             <div class="flex-1 space-y-2 overflow-y-auto pr-1 scroll-soft">
               <template x-for="it in liveList" :key="it.i">
                 <button class="pop w-full rounded-2xl bg-white/80 px-3 py-2 text-left transition hover:bg-white" :class="['bar-' + it.r.status, live.sel === it.i ? 'ring-2 ring-leaf-300' : '']" @click="live.sel = it.i">
@@ -255,6 +277,7 @@
                   <div class="mt-0.5 flex gap-2 font-mono text-[11px] text-ink-soft"><span x-text="'#' + it.r.seq"></span><span x-text="it.r.id"></span><span class="ml-auto" x-text="(it.r.ts || '').slice(6)"></span></div>
                 </button>
               </template>
+              <p x-show="!liveList.length" class="py-8 text-center text-xs text-ink-faint" x-text="!live.showUnk && liveCounts.UNKNOWN ? '已隐藏 ' + liveCounts.UNKNOWN + ' 条未配置规则的上报' : '没有符合条件的事件'"></p>
             </div>
           </div>
 
@@ -266,13 +289,13 @@
                   <h3 class="text-lg font-black text-wood-700" x-text="liveCur.name || liveCur.cls || '未知点位'"></h3>
                   <span class="code" x-text="liveCur.id"></span><span class="subtle" x-text="liveCur.cls"></span>
                   <div class="ml-auto flex gap-2">
-                    <button class="btn-wood btn-xs" @click="copyPrompt(liveCur.id, liveCur.raw)"><svg class="ico h-3.5 w-3.5"><use :href="icon('bot')"></use></svg>复制 AI 提示词</button>
-                    <button class="btn-wood btn-xs" x-show="liveCur.status !== 'UNKNOWN'" @click="openEventFromResult(liveCur)"><svg class="ico h-3.5 w-3.5"><use :href="icon('list-checks')"></use></svg>打开点位规则</button>
+                    <button class="btn-wood btn-xs" @click="copyPrompt(liveCur.id, liveCur.raw)"><img class="pic h-5 w-5" src="/static/icons/ai.png" alt="">复制 AI 提示词</button>
+                    <button class="btn-wood btn-xs" x-show="liveCur.status !== 'UNKNOWN'" @click="openEventFromResult(liveCur)"><img class="pic h-5 w-5" src="/static/icons/rules.png" alt="">打开点位规则</button>
                   </div>
                 </div>
 
                 <div x-show="liveCur.status === 'UNKNOWN'" class="mt-4 flex items-center gap-4 rounded-2xl border-2 border-dashed border-sun-200 bg-sun-50 p-4">
-                  <svg class="ico h-7 w-7 text-sun-600"><use :href="icon('circle-help')"></use></svg>
+                  <img class="pic h-10 w-10" src="/static/icons/none.png" alt="">
                   <div class="flex-1 text-sm"><b>这个点位还没有规则。</b>用这条上报当样本建一个，或者复制 AI 提示词让 AI 写。</div>
                   <button class="btn-leaf" @click="newEventFromResult(liveCur)"><svg class="ico h-4 w-4"><use :href="icon('plus')"></use></svg>为它建规则</button>
                 </div>
@@ -281,10 +304,10 @@
                   <template x-for="[n, c] in Object.entries(liveCur.ctx)">
                     <span class="chip" :class="c.ok ? 'bg-pond-50 text-pond-700' : 'bg-berry-50 text-berry-600'" :title="c.info"><svg class="ico h-3 w-3"><use :href="icon('map-pin')"></use></svg><b x-text="n"></b><span class="max-w-[320px] truncate font-normal" x-text="c.info"></span></span>
                   </template>
-                  <span class="chip bg-pond-50 text-pond-700" x-show="liveCur.snapshot"><svg class="ico h-3 w-3"><use :href="icon('database')"></use></svg>DB 快照 <span class="font-normal" x-text="liveCur.snapshot ? ('#' + liveCur.snapshot.before + ' → #' + liveCur.snapshot.after) : ''"></span></span>
-                  <template x-for="[k, v] in Object.entries(liveCur.scenario || {})"><span class="chip bg-lilac-50 text-lilac-600"><svg class="ico h-3 w-3"><use :href="icon('hand')"></use></svg><span x-text="k + '=' + v"></span></span></template>
+                  <span class="chip bg-pond-50 text-pond-700" x-show="liveCur.snapshot"><img class="pic h-4 w-4" src="/static/icons/data.png" alt="">DB 快照 <span class="font-normal" x-text="liveCur.snapshot ? ('#' + liveCur.snapshot.before + ' → #' + liveCur.snapshot.after) : ''"></span></span>
+                  <template x-for="[k, v] in Object.entries(liveCur.scenario || {})"><span class="chip bg-lilac-50 text-lilac-600"><img class="pic h-4 w-4" src="/static/icons/ask.png" alt=""><span x-text="k + '=' + v"></span></span></template>
                 </div>
-                <template x-for="er in liveCur.errors"><div class="mt-2 flex items-center gap-2 rounded-xl px-3 py-2 text-sm" :class="'st-' + er.status"><svg class="ico h-4 w-4"><use :href="icon('triangle-alert')"></use></svg><span x-text="er.msg"></span></div></template>
+                <template x-for="er in liveCur.errors"><div class="mt-2 flex items-center gap-2 rounded-xl px-3 py-2 text-sm" :class="'st-' + er.status"><img class="pic h-6 w-6" src="/static/icons/warn.png" alt=""><span x-text="er.msg"></span></div></template>
 
                 <div class="mt-4 overflow-x-auto rounded-2xl border-2 border-wood-100 bg-white/70" x-show="liveCur.status !== 'UNKNOWN'">
                   <table class="tbl min-w-[880px]">
@@ -324,16 +347,16 @@
         <div class="panel-pad">
           <div class="flex flex-wrap items-start gap-6">
             <div class="min-w-[300px] flex-1">
-              <div class="title text-lg"><svg class="ico h-5 w-5"><use :href="icon('book-open')"></use></svg>埋点字典</div>
+              <div class="title text-lg"><img class="pic h-7 w-7" src="/static/icons/dict.png" alt="">埋点字典</div>
               <p class="subtle mt-1 leading-relaxed">把公司埋点文档（Excel 导出的 Markdown 表格 / CSV）导进来，就能按点位 ID、名称、参数、含义搜索。<br>可以多次导入不同版本的文档：点位 ID 已存在的会跳过，只记录它也出现在哪份文档里。合并单元格导出后 ID 为空的行，会自动归到上一个点位。</p>
               <div class="mt-3 flex flex-wrap gap-2">
-                <template x-for="d in evd.docs" :key="d.name"><span class="chip bg-white text-wood-600"><svg class="ico h-3 w-3"><use :href="icon('file-text')"></use></svg><span x-text="d.name"></span><span class="font-normal text-ink-faint" x-text="d.count + ' 个 · ' + d.imported_at"></span></span></template>
+                <template x-for="d in evd.docs" :key="d.name"><span class="chip bg-white text-wood-600"><img class="pic h-4 w-4" src="/static/icons/yaml.png" alt=""><span x-text="d.name"></span><span class="font-normal text-ink-faint" x-text="d.count + ' 个 · ' + d.imported_at"></span></span></template>
               </div>
             </div>
             <div class="w-full max-w-sm">
               <label class="flex cursor-pointer flex-col items-center gap-2 rounded-2xl border-2 border-dashed border-wood-300 bg-white/60 p-5 text-center text-sm text-ink-soft hover:bg-white"
                      @dragover.prevent @drop.prevent="importDocs($event)">
-                <svg class="ico h-7 w-7 text-wood-500"><use :href="icon('file-up')"></use></svg>
+                <img class="pic h-10 w-10" src="/static/icons/dict.png" alt="">
                 <span class="font-bold text-wood-700">选择或拖入埋点文档</span><span class="text-xs">.md / .csv，可多选；也支持只有 ID 和名称的 .json 清单</span>
                 <input type="file" class="hidden" multiple accept=".md,.markdown,.txt,.csv,.tsv,.json" @change="importDocs($event)">
               </label>
@@ -376,7 +399,7 @@
                     <span class="subtle" x-text="'出现在：' + (e.docs || []).join('、')"></span>
                     <div class="ml-auto flex gap-2">
                       <button class="btn-ghost btn-xs" @click="delEvd(e.id)"><svg class="ico h-3.5 w-3.5"><use :href="icon('trash-2')"></use></svg>删除</button>
-                      <button class="btn-wood btn-xs" @click="copyPrompt(e.id)"><svg class="ico h-3.5 w-3.5"><use :href="icon('bot')"></use></svg>复制 AI 提示词</button>
+                      <button class="btn-wood btn-xs" @click="copyPrompt(e.id)"><img class="pic h-5 w-5" src="/static/icons/ai.png" alt="">复制 AI 提示词</button>
                       <button class="btn-leaf btn-xs" @click="configFromDict(e)"><svg class="ico h-3.5 w-3.5"><use :href="icon(e.configured ? 'pencil' : 'plus')"></use></svg><span x-text="e.configured ? '编辑规则' : '配置规则'"></span></button>
                     </div>
                   </div>
@@ -384,7 +407,11 @@
               </div>
             </template>
             <button class="btn-wood mx-auto block" x-show="evdView.length > evd.limit" @click="evd.limit += 200">显示更多</button>
-            <p x-show="!evd.entries.length" class="py-10 text-center text-sm text-ink-faint">还没有导入埋点文档</p>
+            <div x-show="!evd.entries.length" class="grid place-items-center gap-2 py-10 text-center text-sm text-ink-faint">
+              <img class="pic h-16 w-16" src="/static/icons/dict.png" alt="">
+              <span>还没有导入埋点文档</span>
+              <button class="btn-wood btn-xs" @click="loadEvdSamples()">载入示例文档看看效果</button>
+            </div>
           </div>
         </div>
       </section>
@@ -393,25 +420,26 @@
       <section x-show="page === 'rules'" x-cloak class="grid grid-cols-1 gap-5 lg:grid-cols-[260px_1fr]">
         <div class="panel flex max-h-[calc(100vh-150px)] flex-col p-3">
           <div class="flex gap-2"><input class="input" placeholder="筛选点位 ID / 名称…" x-model="ruleFilter"><button class="btn-leaf !px-3" title="新建点位" @click="newEvent()"><svg class="ico h-4 w-4"><use :href="icon('plus')"></use></svg></button></div>
-          <div class="mt-2 flex gap-1 rounded-2xl bg-wood-50 p-1" x-show="st?.catalog.length">
-            <template x-for="t in [['all','全部'],['done','已配置'],['todo','未配置']]">
-              <button class="tab flex-1 !px-1" :class="ruleTab === t[0] && 'tab-on'" @click="ruleTab = t[0]" x-text="t[1] + (t[0] === 'done' ? ' ' + stats.events : t[0] === 'todo' ? ' ' + stats.unconfigured : '')"></button>
+          <div class="mt-2 flex gap-1 rounded-2xl bg-wood-50 p-1">
+            <template x-for="t in [['all','全部'],['done','已配置'],['todo','未配置'],['tpl','模板']]">
+              <button class="tab flex-1 !px-1" :class="ruleTab === t[0] && 'tab-on'" @click="ruleTab = t[0]" x-text="t[1] + (t[0] === 'done' ? ' ' + stats.events : t[0] === 'todo' ? ' ' + stats.unconfigured : t[0] === 'tpl' ? ' ' + Object.keys(st?.templates || {}).length : '')"></button>
             </template>
           </div>
           <div class="mt-3 flex-1 space-y-1.5 overflow-y-auto pr-1 scroll-soft">
             <template x-for="e in ruleList" :key="e.id">
               <button class="w-full rounded-2xl px-3 py-2 text-left transition hover:bg-white" :class="ed && (ed.oldId || ed.id) === e.id ? 'bg-white ring-2 ring-leaf-300' : (e.unconfigured ? 'bg-white/30' : 'bg-white/50')" @click="openRuleItem(e)">
-                <div class="flex items-center gap-2"><span class="h-2.5 w-2.5 shrink-0 rounded-full" :class="e.unconfigured ? 'border-2 border-dashed border-wood-300' : 'dot-' + (e.last?.status || 'MISS')"></span><span class="truncate text-sm font-bold" :class="e.unconfigured && 'text-ink-soft'" x-text="e.name || '未命名'"></span>
-                  <span class="ml-auto shrink-0 text-[11px]" :class="e.unconfigured ? 'chip ds-todo !px-1.5' : 'text-ink-faint'" x-text="e.unconfigured ? '未配置' : e.nfields + ' 字段'"></span></div>
+                <div class="flex items-center gap-2"><img x-show="e.isTpl" class="pic -ml-1 h-5 w-5" src="/static/icons/template.png" alt=""><span x-show="!e.isTpl" class="h-2.5 w-2.5 shrink-0 rounded-full" :class="e.unconfigured ? 'border-2 border-dashed border-wood-300' : 'dot-' + (e.last?.status || 'MISS')"></span><span class="truncate text-sm font-bold" :class="e.unconfigured && 'text-ink-soft'" x-text="e.name || '未命名'"></span>
+                  <span class="ml-auto shrink-0 text-[11px]" :class="e.unconfigured ? 'chip ds-todo !px-1.5' : 'text-ink-faint'" x-text="e.unconfigured ? '未配置' : e.isTpl ? e.refs + ' 个点位在用' : e.nfields + ' 字段'"></span></div>
                 <div class="ml-[18px] font-mono text-[11px] text-ink-soft" x-text="e.id"></div>
               </button>
             </template>
-            <p x-show="!ruleList.length" class="py-6 text-center text-sm text-ink-faint">还没有点位规则</p>
+            <p x-show="!ruleList.length" class="py-6 text-center text-sm text-ink-faint" x-text="ruleTab === 'tpl' ? '还没有模板' : '还没有点位规则'"></p>
+            <button x-show="ruleTab === 'tpl'" class="btn-wood btn-xs mx-auto mt-1 flex" @click="newTemplate()"><svg class="ico h-3.5 w-3.5"><use :href="icon('plus')"></use></svg>新建模板</button>
           </div>
         </div>
 
         <div x-show="!ed" class="panel-pad grid place-items-center py-16 text-center">
-          <svg class="ico h-10 w-10 text-wood-300"><use :href="icon('list-checks')"></use></svg>
+          <img class="pic h-16 w-16" src="/static/icons/rules.png" alt="">
           <p class="mt-3 text-sm text-ink-soft">从左边选一个点位，或者点「＋」新建。<br>也可以在「实时调试」里点开事件 → 设置规则，或「复制 AI 提示词」交给 AI 写。</p>
         </div>
 
@@ -420,26 +448,43 @@
             <div class="flex flex-col gap-5">
               <div class="panel-pad">
                 <div class="flex flex-wrap items-end gap-3">
-                  <div class="w-48"><label class="label">点位 ID</label><input class="input font-mono" x-model="ed.id" @input="ed.dirty = true" placeholder="88860004086007"></div>
-                  <div class="w-60"><label class="label">名称</label><input class="input" x-model="ed.raw.name" @input="ed.dirty = true" placeholder="我的页-卡片曝光"></div>
-                  <div class="w-44"><label class="label">继承模板</label>
-                    <select class="input" x-model="ed.raw.extends" @change="ed.dirty = true"><option value="">不继承</option>
-                      <template x-for="t in Object.keys(st?.templates || {})"><option :value="t" :selected="t === ed.raw.extends" x-text="t"></option></template>
-                      <template x-for="e in (st?.events || []).filter(x => x.id !== ed.id)"><option :value="e.id" :selected="e.id === String(ed.raw.extends)" x-text="'点位 ' + e.id + ' ' + e.name"></option></template></select></div>
+                  <template x-if="ed.kind === 'template'">
+                    <div class="flex items-end gap-3">
+                      <img class="pic h-12 w-12" src="/static/icons/template.png" alt="">
+                      <div class="w-56"><label class="label">模板名</label><input class="input font-mono" x-model="ed.id" @input="ed.dirty = true" placeholder="mine_card"></div>
+                    </div>
+                  </template>
+                  <template x-if="ed.kind !== 'template'">
+                    <div class="flex flex-wrap items-end gap-3">
+                      <div class="w-48"><label class="label">点位 ID</label><input class="input font-mono" x-model="ed.id" @input="ed.dirty = true" placeholder="88860004086007"></div>
+                      <div class="w-60"><label class="label">名称</label><input class="input" x-model="ed.raw.name" @input="ed.dirty = true" placeholder="我的页-卡片曝光"></div>
+                      <div class="w-44"><label class="label">继承模板</label>
+                        <select class="input" x-model="ed.raw.extends" @change="ed.dirty = true"><option value="">不继承</option>
+                          <template x-for="t in Object.keys(st?.templates || {})"><option :value="t" :selected="t === ed.raw.extends" x-text="'模板 ' + t"></option></template>
+                          <template x-for="e in (st?.events || []).filter(x => x.id !== ed.id)"><option :value="e.id" :selected="e.id === String(ed.raw.extends)" x-text="'点位 ' + e.id + ' ' + e.name"></option></template></select></div>
+                      <button class="btn-wood btn-xs mb-1.5" x-show="ed.raw.extends && st?.templates?.[ed.raw.extends]" @click="openTemplate(ed.raw.extends)"><img class="pic h-4 w-4" src="/static/icons/template.png" alt="">查看模板</button>
+                    </div>
+                  </template>
                   <div class="ml-auto flex items-center gap-2">
                     <span class="subtle" x-show="ed.file" x-text="ed.file"></span>
                     <span class="chip st-WARN" x-show="ed.dirty">未保存</span>
-                    <button class="btn-wood btn-xs" @click="copyPrompt(ed.id, ed.sample?.line, ed.sample?.fields)"><svg class="ico h-3.5 w-3.5"><use :href="icon('bot')"></use></svg>复制 AI 提示词</button>
-                    <button class="btn-ghost btn-xs" x-show="!ed.isNew" @click="deleteEditor()"><svg class="ico h-3.5 w-3.5"><use :href="icon('trash-2')"></use></svg>删除</button>
+                    <button class="btn-wood btn-xs" x-show="ed.kind !== 'template'" @click="copyPrompt(ed.id, ed.sample?.line, ed.sample?.fields)"><img class="pic h-5 w-5" src="/static/icons/ai.png" alt="">复制 AI 提示词</button>
+                    <button class="btn-ghost btn-xs" x-show="!ed.isNew" @click="ed.kind === 'template' ? deleteTemplate() : deleteEditor()"><svg class="ico h-3.5 w-3.5"><use :href="icon('trash-2')"></use></svg>删除</button>
                     <button class="btn-leaf" :disabled="busy" @click="saveEditor()">保存规则</button>
                   </div>
                 </div>
-                <p class="subtle mt-2" x-show="ed.raw.extends">从模板继承的字段和数据定位显示为浅色，修改后会在本点位里覆盖。</p>
+                <p class="subtle mt-2" x-show="ed.kind !== 'template' && ed.raw.extends">从模板继承的字段和数据定位显示为浅色，修改后会在本点位里覆盖。</p>
+                <div class="mt-3 flex flex-wrap items-center gap-2 text-xs" x-show="ed.kind === 'template'">
+                  <span class="subtle">模板 = 多个点位共用的一套「数据定位 + 字段规则」，点位里选「继承模板」即可复用。</span>
+                  <span class="font-bold text-wood-600">正在使用：</span>
+                  <template x-for="id in (st?.tpl_refs?.[ed.oldId] || [])"><button class="chip bg-leaf-50 text-leaf-700 hover:bg-leaf-100" @click="loadEditor(id)" x-text="(eventName(id) || id) + ' ' + id"></button></template>
+                  <span x-show="!(st?.tpl_refs?.[ed.oldId] || []).length" class="text-ink-faint">还没有点位继承它</span>
+                </div>
               </div>
 
               <div class="panel-pad" x-show="edDoc">
                 <button class="flex w-full items-center gap-2" @click="ed.showDoc = !ed.showDoc">
-                  <div class="title"><svg class="ico h-4 w-4"><use :href="icon('book-open')"></use></svg>埋点文档</div>
+                  <div class="title"><img class="pic h-6 w-6" src="/static/icons/dict.png" alt="">埋点文档</div>
                   <span class="subtle" x-text="(edDoc?.docs || []).join('、')"></span>
                   <svg class="ico ml-auto h-4 w-4 text-ink-faint transition" :class="ed.showDoc && 'rotate-90'"><use :href="icon('chevron-right')"></use></svg>
                 </button>
@@ -457,7 +502,7 @@
               </div>
 
               <div class="panel-pad">
-                <div class="title mb-2"><svg class="ico h-4 w-4"><use :href="icon('flask-conical')"></use></svg>试跑样本 <span class="subtle font-normal">粘贴一条该点位的上报日志，边配规则边看结果</span></div>
+                <div class="title mb-2"><img class="pic h-6 w-6" src="/static/icons/cases.png" alt="">试跑样本 <span class="subtle font-normal">粘贴一条该点位的上报日志，边配规则边看结果</span></div>
                 <div class="flex gap-3">
                   <textarea class="input h-20 font-mono text-xs" x-model="ed.sampleText" placeholder="Event: id: 88860005000001 data: HistoryPageExposeEvent(allNums=6, ...)"></textarea>
                   <div class="flex flex-col gap-2"><button class="btn-leaf" @click="parseSample()">解析并试跑</button><button class="btn-wood" x-show="ed.sample" @click="tryEditor()">重新试跑</button></div>
@@ -496,7 +541,7 @@
 
               <div class="panel-pad">
                 <div class="mb-2 flex items-center justify-between">
-                  <div class="title"><svg class="ico h-4 w-4"><use :href="icon('list')"></use></svg>字段规则</div>
+                  <div class="title"><img class="pic h-6 w-6" src="/static/icons/rules.png" alt="">字段规则</div>
                   <button class="btn-wood btn-xs" @click="addEdField()"><svg class="ico h-3.5 w-3.5"><use :href="icon('plus')"></use></svg>添加字段</button>
                 </div>
                 <div class="overflow-x-auto rounded-2xl border-2 border-wood-100 bg-white/70">
@@ -507,7 +552,7 @@
                         <tr :class="f.res ? 'row-' + f.res.status : ''">
                           <td><div class="font-mono font-bold" :class="f.inherited && 'text-ink-faint'" x-text="f.name"></div><div class="subtle" x-text="(f.rule && f.rule.desc) || (f.inherited ? '来自模板' : '')"></div></td>
                           <td class="max-w-[180px] break-all font-mono text-xs" x-text="f.value === undefined ? '' : (f.value ?? 'null')"></td>
-                          <td class="max-w-[380px]"><div class="flex flex-wrap gap-1" :class="f.inherited && 'opacity-60'"><template x-for="c in fmtRule(f.rule)"><span class="chip max-w-full truncate font-mono font-normal" :class="c.c" :title="c.t"><svg class="ico h-3 w-3"><use :href="icon(c.i)"></use></svg><span class="truncate" x-text="c.t"></span></span></template></div></td>
+                          <td class="max-w-[380px]"><div class="flex flex-wrap gap-1" :class="f.inherited && 'opacity-60'"><template x-for="c in fmtRule(f.rule, ed.id, f.name)"><span class="chip max-w-full font-mono font-normal" :class="[c.c, c.w ? '!whitespace-normal' : 'truncate']" :title="c.t"><svg class="ico h-3 w-3"><use :href="icon(c.i)"></use></svg><span :class="c.w ? 'break-words' : 'truncate'" x-text="c.t"></span></span></template></div></td>
                           <td class="max-w-[240px]"><template x-if="f.res"><div><span class="chip" :class="'st-' + f.res.status" x-text="statusText(f.res.status)"></span><div class="mt-1 text-xs" x-text="f.res.reason"></div><div class="font-mono text-[11px] text-ink-soft" x-show="f.res.expected" x-text="'期望 ' + f.res.expected"></div></div></template></td>
                           <td class="whitespace-nowrap text-right"><button class="btn-wood btn-xs" @click="editEdField(f)"><svg class="ico h-3.5 w-3.5"><use :href="icon(f.rule && Object.keys(f.rule).length ? 'pencil' : 'plus')"></use></svg><span x-text="f.rule && Object.keys(f.rule).length ? '编辑' : '设置'"></span></button><button class="btn-ghost btn-xs" x-show="f.own" @click="delEdField(f.name)"><svg class="ico h-3.5 w-3.5"><use :href="icon('x')"></use></svg></button></td>
                         </tr>
@@ -519,7 +564,7 @@
 
               <div class="panel-pad">
                 <div class="mb-2 flex items-center justify-between">
-                  <div class="title"><svg class="ico h-4 w-4"><use :href="icon('circle-check')"></use></svg>字段间关系 <span class="subtle font-normal">不依赖数据时机，最稳的校验，比如 总数 = 各分类之和</span></div>
+                  <div class="title"><img class="pic h-6 w-6" src="/static/icons/ok.png" alt="">字段间关系 <span class="subtle font-normal">不依赖数据时机，最稳的校验，比如 总数 = 各分类之和</span></div>
                   <div class="flex gap-2"><button class="btn-wood btn-xs" @click="addSumAssert()"><svg class="ico h-3.5 w-3.5"><use :href="icon('sigma')"></use></svg>总数 = 各项之和</button><button class="btn-wood btn-xs" @click="ed.asserts.push({expr: '', msg: ''}); ed.dirty = true"><svg class="ico h-3.5 w-3.5"><use :href="icon('plus')"></use></svg>自定义</button></div>
                 </div>
                 <template x-for="(a, i) in ed.asserts"><div class="mb-2 flex gap-2"><input class="input font-mono text-xs" x-model="a.expr" @input="ed.dirty = true" placeholder="int(allNums) == int(novelNums) + int(webNums)"><input class="input !w-72 text-xs" x-model="a.msg" @input="ed.dirty = true" placeholder="不通过时的提示"><button class="btn-ghost btn-xs" @click="ed.asserts.splice(i, 1); ed.dirty = true"><svg class="ico h-3.5 w-3.5"><use :href="icon('x')"></use></svg></button></div></template>
@@ -540,7 +585,7 @@
         <div class="panel-pad">
           <div class="flex flex-wrap items-start gap-6">
             <div class="min-w-[280px] flex-1">
-              <div class="title text-lg"><svg class="ico h-5 w-5"><use :href="icon('wand-sparkles')"></use></svg>规则草稿 <span class="subtle font-normal">用日志里的值去接口 JSON / DB 里反查字段来源，你只负责确认</span></div>
+              <div class="title text-lg"><img class="pic h-7 w-7" src="/static/icons/draft.png" alt="">规则草稿 <span class="subtle font-normal">用日志里的值去接口 JSON / DB 里反查字段来源，你只负责确认</span></div>
               <ol class="mt-2 list-inside list-decimal space-y-1 text-sm text-ink-soft">
                 <li>选一份会话日志（实时调试结束后自动保存）</li>
                 <li><span class="chip ds-ok">已推断</span> 可直接用，<span class="chip ds-confirm">请确认</span> 看一眼，<span class="chip ds-todo">待补全</span> 多半是文档枚举</li>
@@ -568,7 +613,7 @@
         <template x-for="(d, di) in inf.drafts" :key="d.id">
           <div class="panel overflow-hidden">
             <div class="flex cursor-pointer flex-wrap items-center gap-3 px-5 py-4" :class="tone(di)" @click="inf.open = inf.open === di ? -1 : di">
-              <svg class="ico h-5 w-5" :class="d.saved ? 'text-leaf-600' : 'text-wood-500'"><use :href="icon(d.saved ? 'circle-check' : 'wand-sparkles')"></use></svg>
+              <img class="pic h-7 w-7" :src="pic(d.saved ? 'ok' : 'draft')" alt="">
               <span class="code" x-text="d.id"></span>
               <input class="input !w-64 !py-1.5" x-model="d.name" @click.stop placeholder="点位名称">
               <span class="subtle" x-text="'日志中出现 ' + d.count + ' 次' + (d.source ? ' · 数据源 ' + d.source : '')"></span>
@@ -597,7 +642,7 @@
                         <td><span class="chip" :class="'ds-' + f.status" x-text="DRAFT_TEXT[f.status]"></span></td>
                         <td class="font-mono font-bold" x-text="f.field"></td>
                         <td class="max-w-[200px]"><div class="flex flex-wrap gap-1"><template x-for="v in f.observed.slice(0, 5)"><span class="code" x-text="v === '' ? '(空)' : v"></span></template></div></td>
-                        <td class="max-w-[340px]"><div class="flex flex-wrap gap-1"><template x-for="c in fmtRule(f.rule)"><span class="chip max-w-full truncate font-mono font-normal" :class="c.c" :title="c.t"><svg class="ico h-3 w-3"><use :href="icon(c.i)"></use></svg><span class="truncate" x-text="c.t"></span></span></template></div></td>
+                        <td class="max-w-[340px]"><div class="flex flex-wrap gap-1"><template x-for="c in fmtRule(f.rule, d.id, f.field)"><span class="chip max-w-full font-mono font-normal" :class="[c.c, c.w ? '!whitespace-normal' : 'truncate']" :title="c.t"><svg class="ico h-3 w-3"><use :href="icon(c.i)"></use></svg><span :class="c.w ? 'break-words' : 'truncate'" x-text="c.t"></span></span></template></div></td>
                         <td class="max-w-[320px] text-xs text-ink-soft" x-text="f.note"></td>
                         <td class="text-right"><button class="btn-wood btn-xs" @click="editDraftField(di, fi)"><svg class="ico h-3.5 w-3.5"><use :href="icon('pencil')"></use></svg>修改</button></td>
                       </tr>
@@ -608,14 +653,14 @@
             </div>
           </div>
         </template>
-        <div x-show="!inf.drafts.length" class="py-6 text-center text-sm text-ink-faint">选好日志后点「生成草稿」，结果会出现在这里</div>
+        <div x-show="!inf.drafts.length" class="grid place-items-center gap-2 py-8 text-center text-sm text-ink-faint"><img class="pic h-14 w-14" src="/static/icons/draft.png" alt=""><span>选好日志后点「生成草稿」，结果会出现在这里</span></div>
       </section>
 
       <!-- ========== 数据源 ========== -->
       <section x-show="page === 'sources'" x-cloak class="flex flex-col gap-5">
         <div class="grid grid-cols-1 gap-5 xl:grid-cols-2">
           <div class="panel-pad">
-            <div class="title text-lg"><svg class="ico h-5 w-5"><use :href="icon('smartphone')"></use></svg>从手机拉数据库</div>
+            <div class="title text-lg"><img class="pic h-7 w-7" src="/static/icons/phone.png" alt="">从手机拉数据库</div>
             <p class="subtle mt-1">root 测试机或 debug 包都可以，只需要包名。拉下来的数据库放进数据源目录；实时调试时还会用它在事件前后自动拍快照。</p>
             <div class="mt-4 flex gap-2">
               <input class="input font-mono" placeholder="App 包名，如 com.example.app" x-model="ds.pkg" @keydown.enter="listDevDbs()">
@@ -626,7 +671,7 @@
               <div class="flex flex-wrap gap-2">
                 <template x-for="db in ds.devDbs || []" :key="db">
                   <label class="chip cursor-pointer border transition" :class="ds.dbs.includes(db) ? 'border-leaf-400 bg-leaf-500 text-white' : 'border-wood-200 bg-white text-wood-700'">
-                    <input type="checkbox" class="hidden" :value="db" x-model="ds.dbs"><svg class="ico h-3.5 w-3.5"><use :href="icon('database')"></use></svg><span x-text="db"></span></label>
+                    <input type="checkbox" class="hidden" :value="db" x-model="ds.dbs"><img class="pic h-5 w-5" src="/static/icons/data.png" alt=""><span x-text="db"></span></label>
                 </template>
               </div>
             </div>
@@ -639,12 +684,12 @@
           </div>
 
           <div class="panel-pad">
-            <div class="title text-lg"><svg class="ico h-5 w-5"><use :href="icon('file-json')"></use></svg>放入接口 JSON / 数据库文件</div>
+            <div class="title text-lg"><img class="pic h-7 w-7" src="/static/icons/data.png" alt="">放入接口 JSON / 数据库文件</div>
             <p class="subtle mt-1">文件会保存到数据源目录，<b>文件名就是数据源名</b>（mine_page.json → mine_page），规则里直接用这个名字。</p>
             <label class="mt-4 flex cursor-pointer flex-col items-center gap-2 rounded-2xl border-2 border-dashed p-6 text-center text-sm transition"
                    :class="ds.drag ? 'border-leaf-400 bg-leaf-50' : 'border-wood-300 bg-white/60 hover:bg-white'"
                    @dragover.prevent="ds.drag = true" @dragleave="ds.drag = false" @drop.prevent="uploadDs($event)">
-              <svg class="ico h-7 w-7 text-wood-500"><use :href="icon('upload')"></use></svg>
+              <img class="pic h-11 w-11" src="/static/icons/data.png" alt="">
               <span class="font-bold text-wood-700">选择或拖入文件</span><span class="text-xs text-ink-soft">.json 接口返回 / .db 数据库，可多选</span>
               <input type="file" class="hidden" multiple @change="uploadDs($event)">
             </label>
@@ -659,15 +704,15 @@
 
         <div class="panel-pad">
           <div class="mb-3 flex flex-wrap items-center gap-2">
-            <div class="title"><svg class="ico h-4 w-4"><use :href="icon('folder-open')"></use></svg>数据源目录</div>
+            <div class="title"><img class="pic h-6 w-6" src="/static/icons/data.png" alt="">数据源目录</div>
             <span class="break-all font-mono text-xs text-ink-soft" x-text="ds.dir"></span>
-            <button class="btn-ghost btn-xs ml-auto" @click="loadDs()"><svg class="ico h-3.5 w-3.5"><use :href="icon('refresh-cw')"></use></svg>刷新</button>
+            <button class="btn-ghost btn-xs ml-auto" @click="loadDs()"><img class="pic h-5 w-5" src="/static/icons/refresh.png" alt="">刷新</button>
           </div>
           <div class="grid grid-cols-1 gap-3 md:grid-cols-2 2xl:grid-cols-3">
             <template x-for="(f, i) in ds.files" :key="f.file">
               <div class="rounded-2xl border-2 p-4" :class="tone(i + 1)">
                 <div class="flex items-center gap-2">
-                  <svg class="ico h-5 w-5 text-wood-600"><use :href="icon(f.type === 'sqlite' ? 'database' : f.type === 'json_file' ? 'file-json' : 'file-text')"></use></svg>
+                  <img class="pic h-7 w-7" :src="pic(f.type === 'sqlite' ? 'data' : f.type === 'json_file' ? 'yaml' : 'none')" alt="">
                   <span class="font-mono font-bold text-wood-700" x-text="f.name || f.file"></span>
                   <span class="chip bg-white/80 text-wood-600" x-text="f.type === 'sqlite' ? '数据库' : f.type === 'json_file' ? '接口 JSON' : '不识别'"></span>
                   <button class="btn-ghost btn-xs ml-auto" @click="delDs(f.file)"><svg class="ico h-3.5 w-3.5"><use :href="icon('trash-2')"></use></svg></button>
@@ -684,7 +729,7 @@
 
         <div class="panel-pad">
           <button class="flex w-full items-center gap-2" @click="ds.advanced = !ds.advanced">
-            <div class="title"><svg class="ico h-4 w-4"><use :href="icon('settings')"></use></svg>高级</div><span class="subtle">特殊数据源（DB 里缓存的接口 JSON）、日志格式</span>
+            <div class="title"><img class="pic h-6 w-6" src="/static/icons/settings.png" alt="">高级</div><span class="subtle">特殊数据源（DB 里缓存的接口 JSON）、日志格式</span>
             <svg class="ico ml-auto h-4 w-4 text-ink-faint transition" :class="ds.advanced && 'rotate-90'"><use :href="icon('chevron-right')"></use></svg>
           </button>
           <div x-show="ds.advanced" class="mt-4 grid grid-cols-1 gap-5 lg:grid-cols-2">
@@ -715,42 +760,102 @@
       </section>
 
       <!-- ========== 测试用例 ========== -->
-      <section x-show="page === 'cases'" x-cloak>
-        <div class="mb-4 flex items-center justify-between">
-          <div><div class="title text-lg"><svg class="ico h-5 w-5"><use :href="icon('flask-conical')"></use></svg>测试用例</div><p class="subtle">一个用例 = 本轮必须触发的点位清单。调试 / 校验时选上用例，没触发的点位会标红。</p></div>
-          <button class="btn-leaf" @click="openCase()"><svg class="ico h-4 w-4"><use :href="icon('plus')"></use></svg>新建用例</button>
+      <section x-show="page === 'cases'" x-cloak class="grid grid-cols-1 gap-5 lg:grid-cols-[280px_1fr]">
+        <div class="panel flex max-h-[calc(100vh-150px)] flex-col p-3">
+          <div class="flex items-center justify-between px-1"><div class="title"><img class="pic h-7 w-7" src="/static/icons/cases.png" alt="">测试用例</div><button class="btn-leaf btn-xs" @click="openCase()"><svg class="ico h-3.5 w-3.5"><use :href="icon('plus')"></use></svg>新建</button></div>
+          <p class="subtle mt-1 px-1">用例 = 这轮要测哪些点位 + 每个字段期望是什么。实时调试时选上它就自动比对。</p>
+          <div class="mt-3 flex-1 space-y-1.5 overflow-y-auto pr-1 scroll-soft">
+            <template x-for="([name, c], i) in Object.entries(st?.cases || {})" :key="name">
+              <button class="w-full rounded-2xl px-3 py-2 text-left transition hover:bg-white" :class="caseEd && caseEd.old === name ? 'bg-white ring-2 ring-leaf-300' : 'bg-white/50'" @click="openCase(name)">
+                <div class="truncate text-sm font-bold text-wood-700" x-text="name"></div>
+                <div class="truncate text-xs text-ink-soft" x-text="c.desc || ((c.expect || []).length + ' 个点位')"></div>
+              </button>
+            </template>
+            <p x-show="!Object.keys(st?.cases || {}).length" class="py-6 text-center text-sm text-ink-faint">还没有用例</p>
+          </div>
         </div>
-        <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
-          <template x-for="([name, c], i) in Object.entries(st?.cases || {})" :key="name">
-            <div class="rounded-3xl border-2 p-4 shadow-soft" :class="tone(i + 2)">
-              <div class="flex items-center justify-between"><span class="text-base font-black text-wood-700" x-text="name"></span><button class="btn-wood btn-xs" @click="openCase(name)"><svg class="ico h-3.5 w-3.5"><use :href="icon('pencil')"></use></svg>编辑</button></div>
-              <ul class="mt-2 space-y-1 text-sm">
-                <template x-for="x in c.expect || []"><li class="flex gap-2"><svg class="ico mt-0.5 h-3.5 w-3.5 text-leaf-500"><use :href="icon('circle-dot')"></use></svg><span class="font-mono" x-text="typeof x === 'object' ? x.id : x"></span><span class="text-ink-soft" x-text="eventName(typeof x === 'object' ? x.id : x)"></span><span class="subtle" x-show="typeof x === 'object' && x.where" x-text="typeof x === 'object' ? whereText(x.where) : ''"></span></li></template>
-              </ul>
+
+        <div x-show="!caseEd" class="panel-pad grid place-items-center py-16 text-center">
+          <img class="pic h-16 w-16" src="/static/icons/cases.png" alt="">
+          <p class="mt-3 max-w-md text-sm text-ink-soft">从左边选一个用例，或者新建一个。<br>把这轮要测的点位加进来，给「入口」「Tab」这类只有你知道的字段点选期望值，调试时就不用每条都人工确认了。</p>
+        </div>
+        <template x-if="caseEd">
+          <div class="flex min-w-0 flex-col gap-5">
+            <div class="panel-pad">
+              <div class="flex flex-wrap items-end gap-3">
+                <div class="w-64"><label class="label">用例名</label><input class="input" x-model="caseEd.name" placeholder="历史记录-桌面小组件进入"></div>
+                <div class="min-w-[240px] flex-1"><label class="label">说明（操作步骤）</label><input class="input" x-model="caseEd.desc" placeholder="从桌面小组件进入历史记录页，再切到书签 Tab"></div>
+                <div class="ml-auto flex gap-2">
+                  <button class="btn-ghost btn-xs" x-show="caseEd.old" @click="delItem('cases', caseEd.old)"><svg class="ico h-3.5 w-3.5"><use :href="icon('trash-2')"></use></svg>删除</button>
+                  <button class="btn-wood" x-show="caseEd.old" @click="useCaseInLive(caseEd.old)"><img class="pic h-5 w-5" src="/static/icons/live.png" alt="">用它开始调试</button>
+                  <button class="btn-leaf" :disabled="busy" @click="saveCase()">保存用例</button>
+                </div>
+              </div>
             </div>
-          </template>
-        </div>
+            <div class="panel-pad">
+              <div class="mb-3 flex flex-wrap items-center gap-2">
+                <div class="title">要测的点位</div>
+                <span class="subtle">字段的可选值来自点位规则里的枚举；点选即为期望值（可多选，满足其一即可），不选就只按规则校验。</span>
+                <input class="input ml-auto !w-64 !py-1 text-xs" list="evlist" placeholder="＋ 添加点位：输入 ID 或名称" x-model="caseEd.addId" @change="addCaseRow()" @keydown.enter="addCaseRow()">
+              </div>
+              <div class="space-y-3">
+                <template x-for="(row, ri) in caseEd.rows" :key="row.key">
+                  <div class="rounded-2xl border-2 border-wood-100 bg-white/75 p-4">
+                    <div class="flex flex-wrap items-center gap-2">
+                      <span class="grid h-6 w-6 place-items-center rounded-full bg-leaf-100 text-xs font-black text-leaf-700" x-text="ri + 1"></span>
+                      <span class="text-sm font-bold text-wood-700" x-text="eventName(row.id) || '未命名点位'"></span>
+                      <span class="code" x-text="row.id"></span>
+                      <span class="chip ds-todo" x-show="!st?.event_fields?.[row.id]">未配置规则</span>
+                      <div class="ml-auto flex items-center gap-2 text-xs font-bold text-ink-soft">
+                        触发次数 ≥ <input class="input !w-14 !px-2 !py-0.5 text-xs" type="number" min="0" x-model="row.min">
+                        ≤ <input class="input !w-14 !px-2 !py-0.5 text-xs" type="number" min="0" x-model="row.max" placeholder="不限">
+                        <button class="btn-ghost btn-xs !px-1.5" @click="caseEd.rows.splice(ri, 1)"><svg class="ico h-3.5 w-3.5"><use :href="icon('x')"></use></svg></button>
+                      </div>
+                    </div>
+                    <div class="mt-3 space-y-2">
+                      <template x-for="f in rowFields(row)" :key="f.name">
+                        <div class="flex flex-wrap items-center gap-1.5">
+                          <div class="w-36 shrink-0"><div class="truncate text-xs font-bold" :class="f.ask ? 'text-lilac-600' : 'text-wood-600'" x-text="f.desc || f.name"></div><div class="truncate font-mono text-[11px] text-ink-faint" x-text="f.name + (f.ask ? ' · 看操作' : '')"></div></div>
+                          <template x-for="[k, v] in Object.entries(f.options)" :key="k">
+                            <button class="chip border transition" :class="valOn(row, f.name, k) ? 'border-lilac-500 bg-lilac-500 text-white' : 'border-lilac-200 bg-white text-lilac-600 hover:bg-lilac-100'" @click="toggleVal(row, f.name, k)"><span class="font-mono" x-text="k"></span><span class="font-normal" x-show="v" x-text="v"></span></button>
+                          </template>
+                          <input x-show="!Object.keys(f.options).length" class="input !w-60 !py-1 font-mono text-xs" :value="valText(row.values[f.name])" @change="setValText(row, f.name, $event.target.value)" placeholder="不填不比对；多个候选用 | 分隔">
+                          <button class="text-[11px] text-ink-faint hover:text-berry-600" x-show="row.values[f.name] !== undefined" @click="delete row.values[f.name]; row.values = {...row.values}">清除</button>
+                        </div>
+                      </template>
+                      <div class="flex flex-wrap items-center gap-3">
+                        <button class="text-xs font-bold text-lilac-600 hover:underline" x-show="rowHidden(row)" @click="row.showAll = !row.showAll" x-text="row.showAll ? '收起其他字段' : '展开其他字段（' + rowHidden(row) + '）'"></button>
+                        <input class="input !w-44 !py-0.5 font-mono text-xs" placeholder="＋ 其他字段 key" @change="addRowField(row, $event.target.value); $event.target.value = ''">
+                      </div>
+                    </div>
+                  </div>
+                </template>
+                <p x-show="!caseEd.rows.length" class="py-6 text-center text-sm text-ink-faint">在右上角输入点位 ID 或名称添加</p>
+              </div>
+            </div>
+          </div>
+        </template>
       </section>
 
       <!-- ========== 报告 ========== -->
       <section x-show="page === 'reports'" x-cloak class="grid grid-cols-1 gap-5 lg:grid-cols-[300px_1fr]">
         <div class="panel flex max-h-[calc(100vh-150px)] flex-col p-3">
-          <div class="title mb-2 px-1"><svg class="ico h-4 w-4"><use :href="icon('chart-column')"></use></svg>校验报告</div>
+          <div class="title mb-2 px-1"><img class="pic h-6 w-6" src="/static/icons/report.png" alt="">校验报告</div>
           <div class="flex-1 space-y-1.5 overflow-y-auto pr-1 scroll-soft">
             <template x-for="r in st?.reports || []" :key="r.name">
               <button class="w-full rounded-2xl px-3 py-2 text-left hover:bg-white" :class="rep.cur?.name === r.name ? 'bg-white ring-2 ring-leaf-300' : 'bg-white/50'" @click="openReport(r.name)">
-                <div class="flex items-center gap-2"><svg class="ico h-4 w-4" :class="r.summary.ok ? 'text-leaf-500' : 'text-berry-500'"><use :href="icon(r.summary.ok ? 'circle-check' : 'circle-alert')"></use></svg><span class="text-sm font-bold" x-text="r.time"></span></div>
+                <div class="flex items-center gap-2"><img class="pic h-6 w-6" :src="pic(r.summary.ok ? 'ok' : 'fail')" alt=""><span class="text-sm font-bold" x-text="r.time"></span></div>
                 <div class="mt-1 flex flex-wrap gap-1"><span class="chip st-PASS" x-text="'通过 ' + r.summary.pass"></span><span class="chip st-FAIL" x-text="'失败 ' + r.summary.fail"></span><span class="chip st-ASK" x-show="r.summary.ask" x-text="'待确认 ' + r.summary.ask"></span><span class="chip truncate bg-wood-100 text-wood-600" x-show="r.case" x-text="r.case"></span></div>
               </button>
             </template>
           </div>
         </div>
-        <div x-show="!rep.cur" class="panel-pad grid place-items-center py-16 text-sm text-ink-soft">从左边选一份报告</div>
+        <div x-show="!rep.cur" class="panel-pad grid place-items-center gap-2 py-16 text-sm text-ink-soft"><img class="pic h-16 w-16" src="/static/icons/report.png" alt=""><span>从左边选一份报告</span></div>
         <template x-if="rep.cur">
           <div class="flex min-w-0 flex-col gap-5">
             <div class="panel-pad">
               <div class="flex flex-wrap items-center gap-3">
-                <svg class="ico h-8 w-8" :class="rep.cur.summary.ok ? 'text-leaf-500' : 'text-berry-500'"><use :href="icon(rep.cur.summary.ok ? 'circle-check' : 'circle-alert')"></use></svg>
+                <img class="pic h-12 w-12" :src="pic(rep.cur.summary.ok ? 'ok' : 'fail')" alt="">
                 <div><div class="text-lg font-black text-wood-700" x-text="rep.cur.summary.ok ? '本轮全部通过' : '本轮有问题需要处理'"></div><div class="subtle" x-text="rep.cur.meta.generated_at + ' · ' + fileName(rep.cur.meta.log)"></div></div>
                 <a class="btn-wood btn-xs ml-auto" target="_blank" :href="'/report_html/' + rep.cur.name + '.html'"><svg class="ico h-3.5 w-3.5"><use :href="icon('external-link')"></use></svg>独立 HTML 报告</a>
               </div>
@@ -777,12 +882,15 @@
             <div class="panel-pad">
               <div class="mb-3 flex flex-wrap items-center gap-3">
                 <div class="title">逐条明细</div>
-                <label class="flex items-center gap-2 text-sm font-bold text-ink-soft"><input type="checkbox" class="accent-leaf-500" x-model="rep.onlyBad"> 只看有问题 / 待确认的</label>
+                <div class="flex gap-1 rounded-2xl bg-wood-50 p-1">
+                  <template x-for="t in [['bad','有问题'],['pass','通过'],['all','全部']]"><button class="tab" :class="rep.view === t[0] && 'tab-on'" @click="rep.view = t[0]" x-text="t[1] + ' ' + repCount(t[0])"></button></template>
+                </div>
+                <label class="flex items-center gap-2 text-sm font-bold text-ink-soft"><input type="checkbox" class="accent-leaf-500" x-model="rep.showUnk" @change="if (rep.showUnk) rep.view = 'all'"> 显示未配置规则的 <span class="chip st-UNKNOWN" x-text="rep.cur.summary.unknown"></span></label>
                 <input class="input ml-auto !w-72" placeholder="搜索点位 / 字段 / 值" x-model="rep.q">
               </div>
               <div class="space-y-2">
                 <template x-for="r in repResults" :key="r.seq">
-                  <details class="rounded-2xl bg-white/80" :class="'bar-' + r.status" :open="r.status === 'FAIL'">
+                  <details class="rounded-2xl bg-white/80" :class="'bar-' + r.status" :open="r.status === 'FAIL' && rep.view === 'bad'">
                     <summary class="flex cursor-pointer list-none items-center gap-2 px-4 py-2.5">
                       <span class="chip" :class="'st-' + r.status" x-text="statusText(r.status)"></span>
                       <span class="font-mono text-xs text-ink-soft" x-text="'#' + r.seq + ' ' + (r.ts || '')"></span>
@@ -791,8 +899,21 @@
                     </summary>
                     <div class="px-4 pb-4">
                       <template x-for="er in r.errors"><div class="mb-2 rounded-xl px-3 py-1.5 text-sm" :class="'st-' + er.status" x-text="er.msg"></div></template>
-                      <div class="overflow-x-auto"><table class="tbl"><thead><tr><th>字段</th><th>上报值</th><th>期望值</th><th>来源</th><th>结果</th></tr></thead><tbody>
-                        <template x-for="f in r.fields.filter(x => !rep.onlyBad || ['FAIL', 'WARN', 'ASK'].includes(x.status))"><tr :class="'row-' + f.status">
+                      <div x-show="r.status === 'UNKNOWN'" class="space-y-2">
+                        <div class="flex flex-wrap items-center gap-2 rounded-xl bg-wood-50 px-3 py-2 text-xs text-ink-soft">
+                          <img class="pic h-5 w-5" src="/static/icons/none.png" alt="">
+                          <span>这个点位还没有配置规则。</span>
+                          <div class="ml-auto flex gap-2">
+                            <button class="btn-wood btn-xs" @click="copyPrompt(r.id, r.raw)"><img class="pic h-4 w-4" src="/static/icons/ai.png" alt="">复制 AI 提示词</button>
+                            <button class="btn-leaf btn-xs" @click="newEventFromResult(r)"><svg class="ico h-3.5 w-3.5"><use :href="icon('plus')"></use></svg>为它建规则</button>
+                          </div>
+                        </div>
+                        <div class="overflow-x-auto"><table class="tbl"><thead><tr><th>字段</th><th>上报值</th></tr></thead><tbody>
+                          <template x-for="[k, v] in Object.entries(r.data || {})"><tr><td class="font-mono font-bold" x-text="k"></td><td class="break-all font-mono text-xs" x-text="v ?? 'null'"></td></tr></template>
+                        </tbody></table></div>
+                      </div>
+                      <div x-show="r.status !== 'UNKNOWN'" class="overflow-x-auto"><table class="tbl"><thead><tr><th>字段</th><th>上报值</th><th>期望值</th><th>来源</th><th>结果</th></tr></thead><tbody>
+                        <template x-for="f in r.fields.filter(x => rep.view !== 'bad' || ['FAIL', 'WARN', 'ASK'].includes(x.status))"><tr :class="'row-' + f.status">
                           <td><div class="font-mono font-bold" x-text="f.field"></div><div class="subtle" x-text="f.desc"></div></td>
                           <td class="max-w-[200px] break-all font-mono text-xs" x-text="f.actual"></td><td class="max-w-[200px] break-all font-mono text-xs" x-text="f.expected"></td>
                           <td class="max-w-[220px] break-all text-[11px] text-ink-soft" x-text="f.source"></td>
@@ -812,7 +933,7 @@
       <section x-show="page === 'share'" x-cloak class="flex flex-col gap-5">
         <div class="grid grid-cols-1 gap-5 xl:grid-cols-2">
           <div class="panel-pad">
-            <div class="title text-lg"><svg class="ico h-5 w-5"><use :href="icon('upload')"></use></svg>分享给同事</div>
+            <div class="title text-lg"><img class="pic h-8 w-8" src="/static/icons/share.png" alt="">分享给同事</div>
             <p class="subtle mt-1">导出一个 .yaml 规则包（点位规则 + 模板 + 用到的映射），发给同事，对方在这里导入就能直接用。</p>
             <div class="mt-4 flex gap-1 rounded-2xl bg-wood-50 p-1 md:w-80">
               <button class="tab flex-1" :class="exp.mode === 'all' && 'tab-on'" @click="exp.mode = 'all'">全部规则</button>
@@ -833,9 +954,9 @@
             <button class="btn-leaf mt-4" @click="doExport()"><svg class="ico h-4 w-4"><use :href="icon('download')"></use></svg>导出规则包</button>
           </div>
           <div class="panel-pad">
-            <div class="title text-lg"><svg class="ico h-5 w-5"><use :href="icon('download')"></use></svg>导入同事的规则</div>
+            <div class="title text-lg"><img class="pic h-8 w-8" src="/static/icons/share.png" alt="">导入同事的规则</div>
             <p class="subtle mt-1">上传规则包 .yaml（或整份 trackcheck.yaml），逐条对比差异后再决定导入哪些。<br>埋点文档 / 点位清单请到「埋点字典」页导入。</p>
-            <label class="btn-wood mt-4 cursor-pointer"><svg class="ico h-4 w-4"><use :href="icon('folder-open')"></use></svg>选择文件 <input type="file" class="hidden" accept=".yaml,.yml,.json,.txt" @change="readImport($event)"></label>
+            <label class="btn-wood mt-4 cursor-pointer"><img class="pic h-6 w-6" src="/static/icons/data.png" alt="">选择文件 <input type="file" class="hidden" accept=".yaml,.yml,.json,.txt" @change="readImport($event)"></label>
             <span class="ml-2 text-sm" x-text="imp.fileName"></span>
           </div>
         </div>
@@ -901,8 +1022,8 @@
   <template x-if="fm">
     <div class="pop panel flex max-h-[calc(100vh-3rem)] w-full max-w-5xl flex-col !bg-cream p-0" @click.outside="fm = null">
       <div class="flex shrink-0 flex-wrap items-center gap-3 rounded-t-3xl border-b-2 border-wood-100 bg-leaf-50 px-6 py-4">
-        <svg class="ico h-6 w-6 text-leaf-600"><use :href="icon('sliders-horizontal')"></use></svg>
-        <div><div class="text-lg font-black text-wood-700">设置字段规则 <span class="code text-sm" x-text="fm?.field"></span></div>
+        <img class="pic h-10 w-10" src="/static/icons/rules.png" alt="">
+        <div><div class="text-lg font-black text-wood-700"><span x-text="fm?.isNew ? '添加字段' : '设置字段规则'"></span> <span class="code text-sm" x-show="!fm?.isNew" x-text="fm?.field"></span></div>
           <div class="subtle">点位 <span class="font-mono" x-text="fm?.eventId"></span> · 保存后这个点位以后每次都按此校验</div></div>
         <div class="ml-auto flex items-center gap-2">
           <div class="flex items-center gap-2 rounded-2xl bg-white px-3 py-1.5 text-sm" x-show="Object.keys(fm?.sample || {}).length">本次上报值 <b class="font-mono text-leaf-700" x-text="fmValue === '' ? '(空)' : fmValue"></b></div>
@@ -911,12 +1032,17 @@
       </div>
 
       <div class="min-h-0 flex-1 space-y-4 overflow-y-auto p-6 scroll-soft">
+        <div class="grid grid-cols-1 gap-3 rounded-2xl border-2 border-leaf-200 bg-white/70 p-4 md:grid-cols-2" x-show="fm?.isNew">
+          <div><label class="label">字段名（上报的 key）</label><input class="input font-mono" x-model="fm.field" list="fmkeys" placeholder="例如 source" @change="fm.desc = fm.desc || fmDocDesc(fm.field)">
+            <datalist id="fmkeys"><template x-for="k in fmKeyHints" :key="k"><option :value="k"></option></template></datalist></div>
+          <div class="flex items-end text-xs text-ink-soft">填好 key 后，在下面选它的值从哪来（文档枚举 / 接口 / 数据库 / 固定值），再点「保存规则」。</div>
+        </div>
         <!-- 埋点文档参考 -->
         <div class="rounded-2xl border-2 border-sun-200 bg-sun-50/70 p-3 text-sm" x-show="fmDoc.length">
-          <div class="mb-1 flex items-center gap-2 text-xs font-bold text-sun-700"><svg class="ico h-3.5 w-3.5"><use :href="icon('book-open')"></use></svg>埋点文档里对这个字段的说明</div>
+          <div class="mb-1 flex items-center gap-2 text-xs font-bold text-sun-700"><img class="pic h-5 w-5" src="/static/icons/dict.png" alt="">埋点文档里对这个字段的说明</div>
           <template x-for="r in fmDoc"><div class="flex flex-wrap items-center gap-2 py-0.5">
             <template x-for="[k, v] in Object.entries(r).filter(([k, v]) => v && v !== fm?.field)"><span><span class="text-xs text-ink-faint" x-text="k + '：'"></span><span x-text="v"></span></span></template>
-            <button class="btn-wood btn-xs ml-auto" @click="fillEnumFromDoc(Object.values(r).join('，'))"><svg class="ico h-3 w-3"><use :href="icon('wand-sparkles')"></use></svg>提取为枚举</button>
+            <button class="btn-wood btn-xs ml-auto" @click="fillEnumFromDoc(Object.values(r).join('，'))"><img class="pic h-4 w-4" src="/static/icons/draft.png" alt="">提取为枚举</button>
           </div></template>
         </div>
 
@@ -1011,7 +1137,7 @@
               <textarea class="input h-20 font-mono text-xs" x-model="fm.sql" placeholder="SELECT count(*) FROM history WHERE type = 'novel'"></textarea>
               <div class="mt-1 flex flex-wrap gap-1"><template x-for="k in Object.keys(fm?.sample)"><button class="chip bg-wood-100 font-mono text-wood-600 hover:bg-wood-200" @click="fm.sql += ' :' + k" x-text="':' + k"></button></template></div></div>
           </div>
-          <div class="flex flex-wrap gap-2"><button class="btn-wood btn-xs" @click="runSql()"><svg class="ico h-3.5 w-3.5"><use :href="icon('play')"></use></svg>试运行</button><button class="btn-wood btn-xs" @click="smartSql()"><svg class="ico h-3.5 w-3.5"><use :href="icon('wand-sparkles')"></use></svg>帮我从 DB 里找</button></div>
+          <div class="flex flex-wrap gap-2"><button class="btn-wood btn-xs" @click="runSql()"><img class="pic h-5 w-5" src="/static/icons/live.png" alt="">试运行</button><button class="btn-wood btn-xs" @click="smartSql()"><img class="pic h-5 w-5" src="/static/icons/draft.png" alt="">帮我从 DB 里找</button></div>
           <div x-show="fm?.sqlRes" class="rounded-2xl border-2 border-wood-100 bg-white/80 p-3 text-xs">
             <p x-show="fm?.sqlRes?.error" class="text-berry-600" x-text="fm?.sqlRes?.error"></p>
             <template x-if="fm.sqlRes?.rows">
@@ -1035,7 +1161,7 @@
 
         <!-- 匹配方式 -->
         <div class="rounded-2xl border-2 border-pond-200 bg-pond-50/60 p-4" x-show="['api', 'sql', 'expr', 'eq'].includes(fm?.tab)">
-          <div class="flex items-center gap-2 text-sm font-bold text-pond-700"><svg class="ico h-4 w-4"><use :href="icon('sliders-horizontal')"></use></svg>怎么算对（值会变的字段用）</div>
+          <div class="flex items-center gap-2 text-sm font-bold text-pond-700"><img class="pic h-6 w-6" src="/static/icons/settings.png" alt="">怎么算对（值会变的字段用）</div>
           <div class="mt-2 flex flex-wrap items-center gap-2">
             <template x-for="t in [['eq','完全相等'],['lte','上报 ≤ 期望'],['gte','上报 ≥ 期望']]"><button class="tab" :class="fm?.cmp === t[0] && 'tab-on'" @click="fm.cmp = t[0]" x-text="t[1]"></button></template>
             <span class="ml-3 text-xs font-bold text-ink-soft">容差 ±</span><input class="input !w-20 !py-1" type="number" min="0" x-model="fm.tol" placeholder="0">
@@ -1070,7 +1196,7 @@
           <span class="font-mono text-xs" x-show="fm?.tryRes.expected" x-text="'期望 ' + fm?.tryRes.expected"></span>
           <span class="truncate text-xs text-ink-soft" x-text="fm?.tryRes.reason"></span></div></template>
         <span class="flex-1 text-xs text-ink-faint" x-show="!fm?.tryRes" x-text="Object.keys(fm?.sample || {}).length ? '先点「试一下」看看这条上报能不能通过' : '没有样本数据，保存后在下一次调试时生效'"></span>
-        <button class="btn-wood" x-show="Object.keys(fm?.sample || {}).length" @click="tryField()"><svg class="ico h-4 w-4"><use :href="icon('flask-conical')"></use></svg>试一下</button>
+        <button class="btn-wood" x-show="Object.keys(fm?.sample || {}).length" @click="tryField()"><img class="pic h-6 w-6" src="/static/icons/cases.png" alt="">试一下</button>
         <button class="btn-leaf" @click="saveField()">保存规则</button>
       </div>
     </div>
@@ -1082,7 +1208,7 @@
   <template x-if="ai">
     <div class="pop panel flex max-h-[calc(100vh-3rem)] w-full max-w-3xl flex-col !bg-cream p-0" @click.outside="ai = null">
       <div class="flex shrink-0 items-center gap-2 border-b-2 border-wood-100 px-6 py-4">
-        <svg class="ico h-5 w-5 text-leaf-600"><use :href="icon('bot')"></use></svg><div class="title">给 AI 的提示词</div>
+        <img class="pic h-7 w-7" src="/static/icons/ai.png" alt=""><div class="title">给 AI 的提示词</div>
         <span class="subtle">已复制，粘贴给 AI；它返回的 YAML 放进规则文件的 events: 下即可</span>
         <button class="btn-ghost ml-auto" @click="ai = null"><svg class="ico h-4 w-4"><use :href="icon('x')"></use></svg></button>
       </div>
@@ -1111,22 +1237,28 @@
   </template>
 </div>
 
-<!-- ================= 用例弹窗 ================= -->
-<div x-show="caseEd" x-cloak class="fixed inset-0 z-40 flex items-start justify-center overflow-y-auto bg-wood-700/30 p-6" @keydown.escape.window="caseEd = null">
-  <template x-if="caseEd">
-    <div class="pop panel w-full max-w-3xl !bg-cream p-6" @click.outside="caseEd = null">
-      <div class="title text-lg">测试用例</div>
-      <label class="label mt-4">用例名</label><input class="input" x-model="caseEd.name" placeholder="我的页卡片">
-      <div class="mt-4 overflow-x-auto rounded-2xl border-2 border-wood-100 bg-white/70">
-        <table class="tbl"><thead><tr><th>点位</th><th class="w-20">最少次数</th><th class="w-20">最多次数</th><th>附加条件（key=value）</th><th></th></tr></thead>
-          <tbody><template x-for="(r, i) in caseEd.rows"><tr>
-            <td><select class="input !py-1" x-model="r.id"><option value="">— 选择 —</option><template x-for="e in st.events"><option :value="e.id" :selected="e.id === r.id" x-text="e.id + ' ' + e.name"></option></template></select></td>
-            <td><input class="input !py-1" type="number" x-model="r.min"></td><td><input class="input !py-1" type="number" x-model="r.max"></td>
-            <td><input class="input !py-1 font-mono text-xs" x-model="r.where" placeholder="type=open"></td>
-            <td><button class="btn-ghost btn-xs" @click="caseEd.rows.splice(i, 1)"><svg class="ico h-3.5 w-3.5"><use :href="icon('x')"></use></svg></button></td></tr></template></tbody></table>
+<!-- ================= 规则文件 ================= -->
+<div x-show="yv" x-cloak class="fixed inset-0 z-40 flex items-start justify-center overflow-y-auto bg-wood-700/30 p-6" @keydown.escape.window="yv = null">
+  <template x-if="yv">
+    <div class="pop panel flex max-h-[calc(100vh-3rem)] w-full max-w-5xl flex-col !bg-cream p-0" @click.outside="yv = null">
+      <div class="flex shrink-0 flex-wrap items-center gap-3 border-b-2 border-wood-100 px-6 py-4">
+        <img class="pic h-9 w-9" src="/static/icons/yaml.png" alt="">
+        <div><div class="title">规则文件</div><div class="subtle break-all" x-text="yvFile()?.path"></div></div>
+        <div class="flex gap-1 rounded-2xl bg-wood-50 p-1" x-show="yv.files.length > 1">
+          <template x-for="(f, i) in yv.files"><button class="tab" :class="yv.cur === i && 'tab-on'" @click="yv.cur = i; yv.edit = false" x-text="f.name"></button></template>
+        </div>
+        <div class="ml-auto flex items-center gap-2">
+          <button class="btn-wood btn-xs" @click="copyText(yvFile().text)"><svg class="ico h-3.5 w-3.5"><use :href="icon('copy')"></use></svg>复制</button>
+          <button class="btn-wood btn-xs" x-show="!yv.edit" @click="yv.edit = true; yv.text = yvFile().text"><svg class="ico h-3.5 w-3.5"><use :href="icon('pencil')"></use></svg>直接编辑</button>
+          <button class="btn-ghost" @click="yv = null"><svg class="ico h-4 w-4"><use :href="icon('x')"></use></svg></button>
+        </div>
       </div>
-      <button class="btn-wood btn-xs mt-2" @click="caseEd.rows.push({id: '', min: 1, max: '', where: ''})"><svg class="ico h-3.5 w-3.5"><use :href="icon('plus')"></use></svg>添加点位</button>
-      <div class="mt-5 flex justify-between"><button class="btn-ghost" x-show="caseEd.old" @click="delItem('cases', caseEd.old)"><svg class="ico h-4 w-4"><use :href="icon('trash-2')"></use></svg>删除</button><div class="ml-auto flex gap-2"><button class="btn-wood" @click="caseEd = null">取消</button><button class="btn-leaf" @click="saveCase()">保存</button></div></div>
+      <pre x-show="!yv.edit" class="yaml min-h-0 flex-1 overflow-auto bg-white/70 p-5 font-mono text-[12.5px] leading-relaxed scroll-soft" x-html="yamlHtml(yvFile()?.text || '')"></pre>
+      <textarea x-show="yv.edit" class="min-h-0 flex-1 resize-none bg-white/80 p-5 font-mono text-[12.5px] leading-relaxed outline-none" style="min-height:60vh" x-model="yv.text" spellcheck="false"></textarea>
+      <div class="flex shrink-0 items-center gap-2 border-t-2 border-wood-100 px-6 py-3" x-show="yv.edit">
+        <span class="subtle flex-1">保存前会检查 YAML 格式和规则能否解析，出错会自动撤回；原文件备份为 .bak。适合把 AI 写好的规则直接粘进来。</span>
+        <button class="btn-wood" @click="yv.edit = false">取消</button><button class="btn-leaf" :disabled="busy" @click="saveYaml()">保存</button>
+      </div>
     </div>
   </template>
 </div>
@@ -1136,7 +1268,7 @@
   <template x-for="t in toasts" :key="t.id">
     <div class="pop flex items-start gap-2 rounded-2xl border-2 px-4 py-3 text-sm font-bold shadow-soft"
          :class="{ok: 'border-leaf-200 bg-leaf-50 text-leaf-700', err: 'border-berry-200 bg-berry-50 text-berry-700', warn: 'border-sun-200 bg-sun-50 text-sun-700'}[t.kind]">
-      <svg class="ico mt-0.5 h-4 w-4"><use :href="icon({ok: 'circle-check', err: 'circle-x', warn: 'triangle-alert'}[t.kind])"></use></svg><span x-text="t.msg"></span>
+      <img class="pic h-6 w-6 -my-0.5" :src="pic({ok: 'ok', err: 'fail', warn: 'warn'}[t.kind])" alt=""><span x-text="t.msg"></span>
     </div>
   </template>
 </div>

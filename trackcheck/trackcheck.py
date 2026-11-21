@@ -1081,22 +1081,36 @@ class Checker:
                 if not eval_expr(str(rule["assert"]), env2):
                     problems.append(str(rule.get("msg") or f"断言失败: {rule['assert']}"))
 
+            cw = self._scn.get(f"{ev.id}.{fname}")
+            if not rule.get("ask") and cw not in (None, "", []) and not problems:
+                wants = cw if isinstance(cw, list) else [cw]
+                meaning = label.split(" = ", 1)[1] if " = " in label else ""
+                r["source"] = (r["source"] + " · " if r["source"] else "") + "用例期望"
+                if not r["expected"]:
+                    r["expected"] = " / ".join(str(w) for w in wants)
+                if any(eq_val(raw, w) for w in wants):
+                    label = "与用例期望一致" + (f"（{meaning}）" if meaning else "")
+                else:
+                    problems.append(f"用例期望 {' / '.join(str(w) for w in wants)}，上报的是 {actual}")
+
             if rule.get("ask") and not problems:
                 dec = self._dec.get(fname)
                 want = self._scn.get(f"{ev.id}.{fname}", self._scn.get(fname))
+                wants = want if isinstance(want, list) else [want]
                 meaning = label.split(" = ", 1)[1] if " = " in label else ""
                 if dec in ("ok", "bad"):
                     if dec == "bad":
                         problems.append("人工确认：值不对")
                     else:
                         label = "人工确认 ✓" + (f"（{meaning}）" if meaning else "")
-                elif want not in (None, ""):
-                    r["expected"] = str(want)
-                    r["source"] = "本次操作场景"
-                    if eq_val(raw, want):
-                        label = "与本次操作场景一致" + (f"（{meaning}）" if meaning else "")
+                elif want not in (None, "", []):
+                    shown = " / ".join(str(w) for w in wants)
+                    r["expected"] = shown
+                    r["source"] = "用例期望" if f"{ev.id}.{fname}" in self._scn else "本次操作场景"
+                    if any(eq_val(raw, w) for w in wants):
+                        label = f"与{r['source']}一致" + (f"（{meaning}）" if meaning else "")
                     else:
-                        problems.append(f"本次操作场景是 {want}，上报的是 {actual}")
+                        problems.append(f"{r['source']}是 {shown}，上报的是 {actual}")
                 else:
                     return done("ASK", f"需要你确认：上报 {actual}" + (f"（{meaning}）" if meaning else "") + "，和你刚才的操作一致吗？")
         except LocateError as e:
@@ -1195,6 +1209,18 @@ def coverage(spec, results, case_name=None):
     return rows
 
 
+def case_values(spec, case_name):
+    """用例里给点位字段填的期望值 -> 场景 {点位ID.字段: 值或候选值列表}"""
+    out = {}
+    case = spec.cases.get(case_name) if case_name else None
+    for exp in (case or {}).get("expect") or []:
+        if isinstance(exp, dict):
+            for k, v in (exp.get("values") or {}).items():
+                if v not in (None, "", []):
+                    out[f"{exp['id']}.{k}"] = v
+    return out
+
+
 def build_report(spec, results, case_name=None, meta=None):
     cov = coverage(spec, results, case_name)
     st = Counter(r["status"] for r in results)
@@ -1241,10 +1267,14 @@ details.ev>summary::-webkit-details-marker{display:none}details.ev[open]>summary
 """
 
 _HTML_JS = """
-function apply(){const only=document.getElementById('only').checked,q=document.getElementById('q').value.trim().toLowerCase();
-document.querySelectorAll('details.ev').forEach(d=>{const bad=d.dataset.st==='FAIL'||d.dataset.st==='WARN'||d.dataset.st==='ASK';
-const hit=!q||d.textContent.toLowerCase().includes(q);d.style.display=((!only||bad)&&hit)?'':'none';
-d.querySelectorAll('tr.fr').forEach(tr=>{tr.style.display=(!only||tr.classList.contains('r-FAIL')||tr.classList.contains('r-WARN'))?'':'none'});});}
+function apply(fromUnk){const unk=document.getElementById('unk');
+if(fromUnk&&unk.checked){document.querySelector('input[name=v][value=all]').checked=true;}
+const v=(document.querySelector('input[name=v]:checked')||{}).value||'bad',su=unk.checked,q=document.getElementById('q').value.trim().toLowerCase();
+document.querySelectorAll('details.ev').forEach(d=>{const st=d.dataset.st;
+const ok=v==='bad'?(st==='FAIL'||st==='WARN'||st==='ASK'):v==='pass'?st==='PASS':(su||st!=='UNKNOWN');
+const hit=!q||d.textContent.toLowerCase().includes(q);d.style.display=(ok&&hit)?'':'none';
+d.querySelectorAll('tr.fr').forEach(tr=>{tr.style.display=(v!=='bad'||tr.classList.contains('r-FAIL')||tr.classList.contains('r-WARN')||tr.classList.contains('r-ASK'))?'':'none'});});}
+window.addEventListener('DOMContentLoaded',()=>apply(false));
 """
 
 
@@ -1260,7 +1290,7 @@ def build_html(rep):
     out.append("<div class=cards>" + "".join(
         f"<div class=card><b class={c}>{n}</b>{t}</div>" for n, t, c in [
             (s["total"], "上报事件", ""), (s["pass"], "通过", "PASS"), (s["fail"], "失败", "FAIL"),
-            (s["warn"], "警告", "WARN"), (s["unknown"], "规则外事件", "UNKNOWN"),
+            (s["warn"], "警告", "WARN"), (s.get("ask", 0), "待确认", "ASK"), (s["unknown"], "未配置规则", "UNKNOWN"),
             (s["coverage_fail"], "未触发(用例要求)", "FAIL" if s["coverage_fail"] else "")]) + "</div>")
 
     title = f"用例覆盖：{e(m['case'])}" if m.get("case") else "点位覆盖（规则里定义的点位本次是否触发）"
@@ -1278,8 +1308,12 @@ def build_html(rep):
                        f"<td>{h['count']}</td><td>{e(h['reason'])}</td></tr>")
         out.append("</table></section>")
 
-    out.append("<section><h2>逐条明细</h2><div class=tool><label><input type=checkbox id=only onchange=apply()> 只看有问题的</label>"
-               "<input type=text id=q placeholder='搜索 点位ID / 字段 / 值' oninput=apply()></div>")
+    out.append("<section><h2>逐条明细</h2><div class=tool>"
+               "<label><input type=radio name=v value=bad checked onchange=apply(false)> 有问题</label>"
+               "<label><input type=radio name=v value=pass onchange=apply(false)> 通过</label>"
+               "<label><input type=radio name=v value=all onchange=apply(false)> 全部</label>"
+               f"<label><input type=checkbox id=unk onchange=apply(true)> 显示未配置规则 ({s['unknown']})</label>"
+               "<input type=text id=q placeholder='搜索 点位ID / 字段 / 值' oninput=apply(false)></div>")
     for r in rep["results"]:
         nbad = sum(1 for f in r["fields"] if f["status"] in ("FAIL", "WARN")) + len(r["errors"])
         is_open = " open" if r["status"] in ("FAIL", "WARN") else ""
@@ -1495,7 +1529,7 @@ def cmd_check(a):
         print(color(f"日志里没有匹配到埋点行，检查 log.pattern：{spec.pattern}", "yellow"))
     if a.only:
         events = [e for e in events if e.id in set(a.only)]
-    results = check_all(spec, events, verbose=not a.quiet, scenario=parse_sets(a.set))
+    results = check_all(spec, events, verbose=not a.quiet, scenario={**case_values(spec, a.case), **parse_sets(a.set)})
     rep = build_report(spec, results, a.case, {"log": os.path.abspath(a.log)})
     hp, _ = write_report(rep, a.out)
     print_summary(rep, hp)
@@ -1504,7 +1538,8 @@ def cmd_check(a):
 
 def _live_common(a, runner=None):
     spec = Spec(a.spec)
-    ck = Checker(spec, Sources(spec), scenario=parse_sets(a.set))
+    scn = {**case_values(spec, a.case), **parse_sets(a.set)}
+    ck = Checker(spec, Sources(spec), scenario=scn)
     stamp = _stamp()
     raw = os.path.join(a.out, f"session_{stamp}.log")
     lock = threading.Lock()
@@ -1531,7 +1566,7 @@ def _live_common(a, runner=None):
     if a.pull:
         print(color("拉取手机最新 db / 接口 dump 后重新校验 ...", "cyan"))
         do_pull(spec, a.serial)
-    results = check_all(spec, cap.events, verbose=False, scenario=parse_sets(a.set))
+    results = check_all(spec, cap.events, verbose=False, scenario=scn)
     rep = build_report(spec, results, a.case, {"log": raw})
     hp, _ = write_report(rep, a.out, f"trackcheck_{stamp}")
     print_summary(rep, hp)

@@ -1,14 +1,14 @@
 // 埋点小岛 —— 前端逻辑（Alpine.js）
 const NAV = [
-  { id: 'home', icon: 'house', label: '首页' },
-  { id: 'live', icon: 'radar', label: '实时调试' },
-  { id: 'evdict', icon: 'book-open', label: '埋点字典' },
-  { id: 'rules', icon: 'list-checks', label: '点位规则' },
-  { id: 'infer', icon: 'wand-sparkles', label: '规则草稿' },
-  { id: 'sources', icon: 'database', label: '数据源' },
-  { id: 'cases', icon: 'flask-conical', label: '测试用例' },
-  { id: 'reports', icon: 'chart-column', label: '校验报告' },
-  { id: 'share', icon: 'share-2', label: '导入 / 分享' },
+  { id: 'home', icon: 'home', label: '首页' },
+  { id: 'live', icon: 'live', label: '实时调试' },
+  { id: 'evdict', icon: 'dict', label: '埋点字典' },
+  { id: 'rules', icon: 'rules', label: '点位规则' },
+  { id: 'infer', icon: 'draft', label: '规则草稿' },
+  { id: 'sources', icon: 'data', label: '数据源' },
+  { id: 'cases', icon: 'cases', label: '测试用例' },
+  { id: 'reports', icon: 'report', label: '校验报告' },
+  { id: 'share', icon: 'share', label: '导入 / 分享' },
 ];
 const CARD_TONES = [
   'bg-pond-50 border-pond-200', 'bg-leaf-50 border-leaf-200', 'bg-peach-50 border-peach-200',
@@ -17,8 +17,9 @@ const CARD_TONES = [
 const TIPS = [
   '一个点位只需要配置一次规则，之后每次测试都会自动复用。',
   '会变的计数（如历史记录数）：实时调试时自动在事件前后拍 DB 快照，上报值落在区间内即通过。',
-  '入口、Tab 这类由操作决定的值：开始操作前在「本次操作」里点选，之后的事件自动比对。',
-  '没设置「本次操作」也没关系，这类字段会标成「待确认」，点一下「对 / 不对」即可。',
+  '入口、Tab 这类由操作决定的值：在「测试用例」里给字段点选期望值，实时调试选上用例就自动比对。',
+  '没填期望值也没关系，标了「看操作」的字段会显示「待确认」，点一下「对 / 不对」即可。',
+  '多个点位共用的定位和字段可以做成「模板」，在「点位规则 → 模板」里查看和编辑。',
   '规则可以交给 AI 写：在事件或点位上点「复制 AI 提示词」，粘贴给 AI 就有文档、日志和数据源。',
   '埋点字典支持多次导入不同版本的文档，重复的点位会自动跳过。',
   '数据源不用填路径：把接口 JSON / 数据库放进数据源目录，或者填包名直接从手机拉。',
@@ -50,7 +51,7 @@ function app() {
   return {
     NAV, CARD_TONES, STATUS_TEXT, DRAFT_TEXT, fmtSize,
     page: 'home', st: null, busy: false, toasts: [], tipIdx: 0, devices: [], devErr: '', search: '',
-    live: { serial: '', clear: true, pull: false, snapshot: true, caseName: '', only: '', results: [], running: false, sel: -1, report: null, raw: '', filter: 'all', scn: {}, snapErr: '' },
+    live: { serial: '', clear: true, pull: false, snapshot: true, caseName: '', only: '', results: [], running: false, sel: -1, report: null, raw: '', filter: 'all', scn: {}, snapErr: '', plan: [], addId: '', onlyPlan: false, showUnk: false },
     inf: { mode: 'session', path: '', content: '', fileName: '', drafts: [], dicts: {}, warns: [], log: '', open: 0 },
     ed: null, ruleFilter: '', ruleTab: 'all',
     exp: { mode: 'all', ids: [], q: '', author: '', note: '', sources: true },
@@ -59,13 +60,14 @@ function app() {
     evd: { entries: [], docs: [], q: '', filter: 'all', open: null, loaded: false, overwrite: false, result: null, limit: 100 },
     ds: { files: [], dir: '', pkg: '', dbs: [], devDbs: null, pasteName: '', pasteText: '', showPaste: false, log: '', advanced: false, drag: false },
     srcEd: null, caseEd: null, settingsEd: null, pullLog: '',
-    rep: { list: [], cur: null, onlyBad: true, q: '' },
+    rep: { list: [], cur: null, view: 'bad', showUnk: false, q: '' }, yv: null,
     checkForm: { path: '', content: '', fileName: '', caseName: '' },
 
     async init() {
       await this.refresh();
-      this.loadDevices();
+      this.loadDevices(); this.loadEvdict();
       setInterval(() => this.pollLive(), 1000);
+      setInterval(() => this.loadDevices(), 15000);
       setInterval(() => { this.tipIdx = (this.tipIdx + 1) % TIPS.length; }, 9000);
       const h = location.hash.slice(1); if (NAV.some(n => n.id === h)) this.go(h, true);
       window.addEventListener('hashchange', () => { const x = location.hash.slice(1); if (NAV.some(n => n.id === x) && x !== this.page) this.go(x, true); });
@@ -77,6 +79,7 @@ function app() {
     },
     get tip() { return TIPS[this.tipIdx % TIPS.length]; },
     icon(n) { return '/static/icons.svg#i-' + n; },
+    pic(n) { return '/static/icons/' + n + '.png'; },
 
     // ---------------- 通用 ----------------
     async api(path, body) {
@@ -98,7 +101,20 @@ function app() {
     },
     async refresh() {
       try { this.st = await this.api('/api/state'); } catch (e) { this.toast(e.message, 'err'); }
-      if (this.st?.live) { this.live.running = this.st.live.running; this.live.report = this.st.live.report; }
+      if (this.st?.live) {
+        this.live.running = this.st.live.running; this.live.report = this.st.live.report;
+        if (this.st.live.running && !this.live.plan.length) {
+          if (this.st.live.case) { this.live.caseName = this.st.live.case; this.live.plan = this.caseRows(this.st.cases?.[this.st.live.case]); }
+          const scn = this.st.live.scenario || {};
+          Object.entries(scn).forEach(([k, v]) => {
+            const dot = k.indexOf('.'); if (dot <= 0) return;
+            const id = k.slice(0, dot), f = k.slice(dot + 1);
+            let row = this.live.plan.find(r => r.id === id);
+            if (!row) { row = { key: Math.random(), id, min: 1, max: '', values: {}, showAll: false }; this.live.plan.push(row); }
+            row.values[f] = v;
+          });
+        }
+      }
       if (this.st && !this.ds.pkg) { this.ds.pkg = this.st.device.package || ''; this.ds.dbs = [...(this.st.device.dbs || [])]; }
     },
     async loadDevices() {
@@ -111,6 +127,17 @@ function app() {
     fileName(p) { return String(p || '').split(/[\\/]/).pop(); },
     eventName(id) { id = String(id); return this.st?.events.find(e => e.id === id)?.name || this.st?.catalog.find(c => c.id === id)?.name || ''; },
     get onlineDevice() { return this.devices.find(d => d.state === 'device'); },
+    get onlineCount() { return this.devices.filter(d => d.state === 'device').length; },
+    get devTitle() {
+      const d = this.onlineDevice;
+      return d ? `${d.model || ''} ${d.serial}` + (this.st?.device.package ? ' · 包名 ' + this.st.device.package : '') + '（点击刷新）' : (this.devErr || '没有检测到在线设备，点击刷新');
+    },
+    get evPickList() {
+      const s = this.st; if (!s) return [];
+      const m = new Map(); s.events.forEach(e => m.set(e.id, { id: e.id, name: e.name }));
+      s.catalog.forEach(c => { if (!m.has(c.id)) m.set(c.id, { id: c.id, name: c.name }); });
+      return [...m.values()].slice(0, 1500);
+    },
     get stats() {
       const s = this.st; if (!s) return {};
       const last = s.reports[0];
@@ -127,13 +154,22 @@ function app() {
       const r = s.reports[0];
       return r.hot.map(h => ({ ...h, report: r.name }));
     },
-    fmtRule(r) {
+    fmtRule(r, eid, field) {
+      if (typeof r === 'string') r = { from: r }; else if (Array.isArray(r)) r = { enum: r };
       r = r || {}; const out = [];
       if (r.ignore) return [{ i: 'circle-x', t: '不校验', c: 'bg-wood-100 text-ink-soft' }];
       if (r.from) out.push({ i: 'file-json', t: r.from, c: 'bg-pond-50 text-pond-700' });
       if (r.map) out.push({ i: 'git-compare-arrows', t: typeof r.map === 'object' && !Array.isArray(r.map) ? Object.entries(r.map).map(([k, v]) => k + '→' + v).join(' / ') : [].concat(r.map).join(' → '), c: 'bg-lilac-50 text-lilac-600' });
       if (r.sql) out.push({ i: 'database', t: (r.db ? r.db + ': ' : '') + r.sql, c: 'bg-peach-50 text-peach-600' });
-      if (r.enum) out.push({ i: 'book-open', t: Array.isArray(r.enum) ? r.enum.join(' / ') : typeof r.enum === 'object' ? Object.entries(r.enum).map(([k, v]) => k + '=' + v).join(' / ') : '字典 ' + r.enum, c: 'bg-sun-50 text-sun-700' });
+      if (r.enum) {
+        let t;
+        if (Array.isArray(r.enum)) {
+          const dm = eid ? this.docMeanings(eid, field) : {}, any = r.enum.some(k => dm[String(k)]);
+          t = r.enum.map(k => dm[String(k)] ? `${k} ${dm[String(k)]}` : String(k)).join(' · ') + (any ? '（含义取自埋点文档）' : '（含义未填，点编辑补上）');
+        } else if (typeof r.enum === 'object') t = Object.entries(r.enum).map(([k, v]) => v !== '' && v !== null ? `${k} ${v}` : k).join(' · ');
+        else t = '字典 ' + r.enum;
+        out.push({ i: 'book-open', t, c: 'bg-sun-50 text-sun-700', w: true });
+      }
       if (r.eq !== undefined) out.push({ i: 'equal', t: String(r.eq), c: 'bg-leaf-50 text-leaf-700' });
       if (r.expr) out.push({ i: 'sigma', t: r.expr, c: 'bg-leaf-50 text-leaf-700' });
       if (r.compare && r.compare !== 'eq') out.push({ i: 'sliders-horizontal', t: { lte: '上报 ≤ 期望', gte: '上报 ≥ 期望', lt: '上报 < 期望', gt: '上报 > 期望' }[r.compare], c: 'bg-wood-50 text-wood-600' });
@@ -147,7 +183,12 @@ function app() {
       if (r.required === false) out.push({ i: 'tag', t: '可不上报', c: 'bg-wood-50 text-wood-600' });
       if (r.when) out.push({ i: 'filter', t: '当 ' + r.when, c: 'bg-wood-50 text-wood-600' });
       if (r.assert) out.push({ i: 'circle-check', t: '断言 ' + r.assert, c: 'bg-wood-50 text-wood-600' });
-      if (!out.length) out.push({ i: 'circle-alert', t: '还没设置', c: 'bg-berry-50 text-berry-600' });
+      if (r.len) out.push({ i: 'tag', t: '长度 ' + r.len.join('~'), c: 'bg-wood-50 text-wood-600' });
+      if (r.allow_empty) out.push({ i: 'tag', t: '允许为空', c: 'bg-wood-50 text-wood-600' });
+      if (r.severity === 'warn') out.push({ i: 'tag', t: '不通过只警告', c: 'bg-wood-50 text-wood-600' });
+      const known = ['desc', 'ignore', 'from', 'map', 'sql', 'db', 'enum', 'allow_empty', 'eq', 'expr', 'compare', 'tolerance', 'trend', 'ask', 'type', 'regex', 'range', 'len', 'not_empty', 'required', 'when', 'assert', 'msg', 'severity'];
+      Object.keys(r).filter(k => !known.includes(k)).forEach(k => out.push({ i: 'circle-alert', t: '不认识的写法 ' + k + ': ' + JSON.stringify(r[k]), c: 'bg-berry-50 text-berry-600' }));
+      if (!out.length || (out.length === 1 && r.desc && Object.keys(r).length === 1)) out.push({ i: 'circle-alert', t: '还没设置', c: 'bg-berry-50 text-berry-600' });
       return out;
     },
 
@@ -180,7 +221,8 @@ function app() {
       await this.reloadLive();
     },
     async startLive() {
-      const r = await this.call(() => this.api('/api/live/start', { serial: this.live.serial, clear: this.live.clear, case: this.live.caseName, only: splitList(this.live.only), scenario: this.live.scn, snapshot: this.live.snapshot }));
+      const only = this.live.onlyPlan && this.live.plan.length ? this.live.plan.map(r => r.id) : [];
+      const r = await this.call(() => this.api('/api/live/start', { serial: this.live.serial, clear: this.live.clear, case: this.live.caseName, only, scenario: this.planScenario, snapshot: this.live.snapshot }));
       Object.assign(this.live, { results: [], running: true, sel: -1, report: null, snapErr: r.snap_err || '' });
       this.toast(r.snap_on ? '开始抓取，已开启 DB 快照，去手机上操作吧' : '开始抓取 logcat，去手机上操作吧', 'ok');
       if (r.snap_err) this.toast('DB 快照没开成：' + r.snap_err, 'warn');
@@ -200,14 +242,14 @@ function app() {
         const d = await this.api('/api/live/poll?since=' + this.live.results.length);
         if (d.since === this.live.results.length) this.live.results.push(...d.results);
         this.live.running = d.running; this.live.raw = d.raw || this.live.raw;
-        if (this.live.sel < 0 && this.live.results.length) this.live.sel = this.live.results.length - 1;
+        if (this.live.sel < 0 && this.liveList.length) this.live.sel = this.liveList[0].i;
       } catch (e) { /* 忽略一次轮询错误 */ }
     },
     async reloadLive() { const sel = this.live.sel; this.live.results = []; await this.pollLive(true); this.live.sel = sel; },
     async recheckLive() { await this.api('/api/live/recheck', {}); await this.reloadLive(); },
     get liveList() {
-      const f = this.live.filter;
-      const keep = r => f === 'all' || (f === 'bad' ? (r.status === 'FAIL' || r.status === 'WARN') : f === 'ask' ? r.status === 'ASK' || r.fields.some(x => x.status === 'ASK') : r.status === 'UNKNOWN');
+      const f = this.live.filter, su = this.live.showUnk;
+      const keep = r => (su || r.status !== 'UNKNOWN') && (f === 'all' || (f === 'bad' ? (r.status === 'FAIL' || r.status === 'WARN') : f === 'ask' ? r.status === 'ASK' || r.fields.some(x => x.status === 'ASK') : r.status === 'PASS'));
       return this.live.results.map((r, i) => ({ r, i })).filter(({ r }) => keep(r)).reverse();
     },
     get liveCur() { return this.live.results[this.live.sel] || null; },
@@ -227,6 +269,88 @@ function app() {
       this.go('rules');
     },
     async openEventFromResult(r) { await this.loadEditor(r.id, { fields: r.data, cls: r.cls, line: r.raw }); this.go('rules'); },
+
+    // ---------------- 用例 / 本次清单：点位 + 字段期望值 ----------------
+    docMeanings(eid, field) {
+      const out = {};
+      this.docRowsFor(eid, field).forEach(r => extractPairs(Object.values(r).filter(v => String(v).trim() !== field).join('，'))
+        .forEach(p => { if (!(p.k in out)) out[p.k] = p.v; }));
+      return out;
+    },
+    _rowAll(row) {
+      const ef = this.st?.event_fields?.[row.id] || {};
+      const names = [...new Set([...Object.keys(ef), ...Object.keys(row.values || {})])];
+      return names.map(n => {
+        const f = { name: n, desc: '', options: {}, ask: false, kind: '', ...(ef[n] || {}) };
+        if (Object.values(f.options).some(v => !v)) {   // 枚举没写含义的，去埋点文档里找
+          const dm = this.docMeanings(row.id, n); f.options = Object.fromEntries(Object.entries(f.options).map(([k, v]) => [k, v || dm[k] || '']));
+        }
+        return f;
+      }).filter(f => !f.ignore);
+    },
+    _isMain(row, f) { return f.ask || Object.keys(f.options).length || (row.values || {})[f.name] !== undefined; },
+    rowFields(row) {
+      const all = this._rowAll(row), main = all.filter(f => this._isMain(row, f));
+      return row.showAll ? [...main, ...all.filter(f => !this._isMain(row, f))] : main;
+    },
+    rowHidden(row) { return this._rowAll(row).filter(f => !this._isMain(row, f)).length; },
+    _vals(v) { return v === undefined || v === '' ? [] : (Array.isArray(v) ? v.map(String) : [String(v)]); },
+    _setVals(row, f, list) { const v = { ...(row.values || {}) }; v[f] = list.length === 0 ? '' : list.length === 1 ? list[0] : list; row.values = v; },
+    valOn(row, f, k) { return this._vals((row.values || {})[f]).includes(String(k)); },
+    toggleVal(row, f, k) { const cur = this._vals((row.values || {})[f]); k = String(k); this._setVals(row, f, cur.includes(k) ? cur.filter(x => x !== k) : [...cur, k]); },
+    valText(v) { return this._vals(v).join(' | '); },
+    setValText(row, f, t) { this._setVals(row, f, String(t || '').split('|').map(x => x.trim()).filter(Boolean)); },
+    addRowField(row, key) { key = String(key || '').trim(); if (!key || (row.values || {})[key] !== undefined) return; row.values = { ...(row.values || {}), [key]: '' }; },
+    caseRows(c) {
+      return (c?.expect || []).map(x => { const o = typeof x === 'object' ? x : { id: x };
+        return { key: Math.random(), id: String(o.id), min: o.min ?? 1, max: o.max ?? '', where: o.where || null, values: clone(o.values || {}), showAll: false }; });
+    },
+    rowsToExpect(rows) {
+      return rows.filter(r => r.id).map(r => {
+        const o = { id: r.id };
+        if (r.min !== '' && r.min !== null && Number(r.min) !== 1) o.min = Number(r.min);
+        if (r.max !== '' && r.max !== null && r.max !== undefined) o.max = Number(r.max);
+        if (r.where && Object.keys(r.where).length) o.where = r.where;
+        const v = {}; Object.entries(r.values || {}).forEach(([k, x]) => { if (x !== '' && !(Array.isArray(x) && !x.length)) v[k] = x; });
+        if (Object.keys(v).length) o.values = v;
+        return Object.keys(o).length === 1 ? r.id : o;
+      });
+    },
+    pickId(t) {
+      t = String(t || '').trim(); if (!t) return '';
+      if (this.evPickList.some(x => x.id === t) || /^\d+$/.test(t)) return t;
+      const m = t.match(/\d{6,}/); if (m) return m[0];
+      const e = this.evPickList.find(x => (x.name || '') === t) || this.evPickList.find(x => (x.name || '').includes(t));
+      return e ? e.id : '';
+    },
+    loadPlanFromCase() { this.live.plan = this.caseRows(this.st?.cases?.[this.live.caseName]); this.pushPlan(); },
+    addPlanRow() {
+      const id = this.pickId(this.live.addId); if (!id) return;
+      if (!this.live.plan.some(r => r.id === id)) this.live.plan.push({ key: Math.random(), id, min: 1, max: '', values: {}, showAll: false });
+      this.live.addId = '';
+    },
+    get planScenario() {
+      const o = {};
+      this.live.plan.forEach(r => Object.entries(r.values || {}).forEach(([k, v]) => { if (v !== '' && !(Array.isArray(v) && !v.length)) o[r.id + '.' + k] = v; }));
+      return o;
+    },
+    pushPlan() {
+      clearTimeout(this._planT);
+      this._planT = setTimeout(async () => {
+        if (!this.live.running && !this.live.results.length) return;
+        await this.api('/api/live/scenario', { scenario: this.planScenario, apply_pending: 'all' }).catch(e => this.toast(e.message, 'err'));
+        await this.reloadLive();
+      }, 350);
+    },
+    liveHits(id) { return this.live.results.filter(r => r.id === id).length; },
+    async savePlanToCase() {
+      let name = this.live.caseName, isNew = !name;
+      if (isNew) { const d = new Date(), p = n => String(n).padStart(2, '0'); name = `调试清单_${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}`; }
+      const old = this.st.cases[name] || {}, value = {};
+      if (old.desc) value.desc = old.desc; value.expect = this.rowsToExpect(this.live.plan);
+      await this.call(() => this.api('/api/case/save', { name, old_name: isNew ? '' : name, value }), isNew ? `已存为用例「${name}」，可以去「测试用例」改名` : `已保存回用例「${name}」`);
+      await this.refresh(); this.live.caseName = name;
+    },
 
     // ---------------- 埋点字典 ----------------
     async loadEvdict() {
@@ -265,6 +389,10 @@ function app() {
       });
     },
     evdEntry(id) { return this.evd.entries.find(e => e.id === String(id)); },
+    async loadEvdSamples() {
+      const r = await this.call(() => this.api('/api/evdict/samples', {}));
+      this.toast(`已导入示例文档 ${r.docs.join('、')}：新增 ${r.added} 个点位`, 'ok'); await this.loadEvdict(); this.refresh();
+    },
     async delEvd(id) {
       if (!confirm(id ? `从埋点字典删除 ${id}？` : '清空整个埋点字典？')) return;
       await this.call(() => this.api('/api/evdict/delete', id ? { id } : { all: true }), '已删除');
@@ -287,7 +415,7 @@ function app() {
     },
 
     // ---------------- 字段编辑弹窗 ----------------
-    openField({ field, rule, sample, eventId, raw, target }) {
+    openField({ field, rule, sample, eventId, raw, target, isNew }) {
       rule = clone(rule) || {};
       if (typeof rule === 'string') rule = { from: rule }; else if (Array.isArray(rule)) rule = { enum: rule };
       let tab = 'none';
@@ -301,7 +429,7 @@ function app() {
       const dbs = Object.entries(this.st.sources).filter(([, v]) => v.type === 'sqlite').map(([k]) => k);
       if (!this.evd.loaded) this.loadEvdict();
       this.fm = {
-        field, eventId, raw: clone(raw) || {}, target, sample: sample || {}, tab,
+        field, eventId, raw: clone(raw) || {}, target, sample: sample || {}, tab, isNew: !!isNew,
         desc: rule.desc || '', from: rule.from || '',
         mapMode: !rule.map ? 'none' : mapInline ? 'inline' : 'shared',
         map: mapInline ? [] : [].concat(rule.map || []).filter(x => typeof x === 'string'),
@@ -322,7 +450,22 @@ function app() {
       if (tab === 'sql') this.loadSchema();
     },
     get fmValue() { return this.fm ? norm(this.fm.sample[this.fm.field]) : ''; },
-    get fmDoc() { return this.fm ? this.docRowsFor(this.fm.eventId, this.fm.field) : []; },
+    get fmDoc() { return this.fm && this.fm.field ? this.docRowsFor(this.fm.eventId, this.fm.field) : []; },
+    get fmKeyHints() {
+      const m = this.fm; if (!m) return [];
+      const out = new Set(Object.keys(m.sample || {})), e = this.evdEntry(m.eventId);
+      if (e) {
+        const pcs = this.evdParamCols(e), pc = pcs.find(k => /参数|字段|key|param/i.test(k)) || pcs[0];
+        (e.rows || []).forEach(r => { const k = String(r[pc] || '').trim(); if (/^[A-Za-z_][\w.]*$/.test(k)) out.add(k); });
+      }
+      const have = new Set(Object.keys(this.ed?.raw.fields || {}));
+      return [...out].filter(k => !have.has(k));
+    },
+    fmDocDesc(field) {
+      const r = this.docRowsFor(this.fm?.eventId, field)[0]; if (!r) return '';
+      const k = Object.keys(r).find(c => /含义|说明|名称|描述|中文/.test(c) && String(r[c]).trim() && String(r[c]).trim() !== field);
+      return k ? String(r[k]).trim().split(/[，,；;\n]/)[0].slice(0, 30) : '';
+    },
     fillEnumFromDoc(text) {
       const pairs = extractPairs(text); if (!pairs.length) return this.toast('这段说明里没认出「值 含义」对，手动填吧', 'err');
       const m = this.fm; m.tab = 'enum'; m.enumMode = 'inline';
@@ -436,7 +579,7 @@ function app() {
       return r;
     },
     async tryField() {
-      const m = this.fm; if (!m || !Object.keys(m.sample).length) return;
+      const m = this.fm; if (!m || !m.field || !Object.keys(m.sample).length) return;
       const raw = this.fmRawWithCtx(); raw.fields = { ...(raw.fields || {}), [m.field]: this.buildRule() };
       try {
         const res = await this.api('/api/try', { id: m.eventId, fields: m.sample, raw });
@@ -445,6 +588,9 @@ function app() {
     },
     async saveField() {
       const m = this.fm, rule = this.buildRule(), t = m.target;
+      m.field = String(m.field || '').trim();
+      if (!m.field) return this.toast('先填字段名（上报的 key）', 'err');
+      if (m.isNew && t.kind === 'editor' && (this.ed.raw.fields || {})[m.field] !== undefined && !confirm(`字段 ${m.field} 已经有规则了，覆盖它？`)) return;
       if (t.kind === 'editor') {
         this.ed.raw.fields = { ...(this.ed.raw.fields || {}), [m.field]: rule };
         if (Object.keys(m.newCtx).length) this.ed.raw.context = { ...(this.ed.raw.context || {}), ...m.newCtx };
@@ -496,6 +642,8 @@ function app() {
     get ruleList() {
       const q = (this.ruleFilter || this.search).trim().toLowerCase();
       const s = this.st; if (!s) return [];
+      if (this.ruleTab === 'tpl') return Object.keys(s.templates || {}).filter(n => !q || n.toLowerCase().includes(q))
+        .map(n => ({ id: n, name: n, isTpl: true, refs: (s.tpl_refs?.[n] || []).length }));
       const conf = new Set(s.events.map(e => e.id));
       let list = [];
       if (this.ruleTab !== 'todo') list = list.concat(s.events);
@@ -503,14 +651,26 @@ function app() {
       return list.filter(e => !q || e.id.includes(q) || (e.name || '').toLowerCase().includes(q)).slice(0, 500);
     },
     openRuleItem(e) {
+      if (e.isTpl) return this.openTemplate(e.id);
       if (e.unconfigured) { const d = this.evdEntry(e.id); d ? this.configFromDict(d) : this.openEditor({ id: e.id, isNew: true, raw: { name: e.name, fields: {} } }); }
       else this.loadEditor(e.id);
     },
-    openEditor({ id, isNew, raw, resolved, file, sample }) {
+    openTemplate(name) {
+      const raw = clone(this.st.templates[name]) || {};
+      this.openEditor({ id: name, raw, resolved: raw, kind: 'template' });
+      if (this.page !== 'rules') this.go('rules');
+    },
+    newTemplate() { this.openEditor({ id: '', isNew: true, raw: { context: {}, fields: {} }, kind: 'template' }); },
+    async deleteTemplate() {
+      const e = this.ed, refs = this.st.tpl_refs?.[e.oldId] || [];
+      if (!confirm(refs.length ? `模板 ${e.oldId} 还被 ${refs.length} 个点位继承，删除后这些点位会报错。确定删除？` : `删除模板 ${e.oldId}？`)) return;
+      await this.call(() => this.api('/api/item/delete', { section: 'templates', name: e.oldId }), '已删除'); this.ed = null; this.refresh();
+    },
+    openEditor({ id, isNew, raw, resolved, file, sample, kind }) {
       raw = clone(raw) || {};
       if (!this.evd.loaded) this.loadEvdict();
       this.ed = {
-        id, oldId: isNew ? '' : id, isNew, raw, resolved: resolved || {}, file: file || '',
+        id, oldId: isNew ? '' : id, isNew, raw, resolved: resolved || {}, file: file || '', kind: kind || 'event',
         sampleText: sample?.line || '', sample: sample || null, tryRes: null, dirty: !!isNew, showDoc: true,
         dedupe: (raw.dedupe ? [].concat(raw.dedupe) : []).join(', '),
         asserts: (raw.asserts || []).map(a => typeof a === 'string' ? { expr: a, msg: '' } : { expr: a.expr || '', msg: a.msg || '' }),
@@ -551,7 +711,10 @@ function app() {
       this.openField({ field: f.name, rule: f.rule, sample: e.sample?.fields || {}, eventId: e.id || 'new', raw: this.edRaw(), target: { kind: 'editor' } });
     },
     delEdField(name) { const e = this.ed, f = { ...(e.raw.fields || {}) }; delete f[name]; e.raw.fields = f; e.dirty = true; },
-    addEdField() { const n = prompt('字段名（上报 key）'); if (!n) return; this.ed.raw.fields = { ...(this.ed.raw.fields || {}), [n.trim()]: {} }; this.ed.dirty = true; },
+    addEdField() {
+      const e = this.ed;
+      this.openField({ field: '', rule: {}, sample: e.sample?.fields || {}, eventId: e.id || 'new', raw: this.edRaw(), target: { kind: 'editor' }, isNew: true });
+    },
     addSumAssert() {
       const e = this.ed, names = Object.keys({ ...(e.resolved.fields || {}), ...(e.raw.fields || {}) });
       const total = prompt('总数字段（如 allNums）', names.find(n => /^all|total/i.test(n)) || '');
@@ -574,7 +737,7 @@ function app() {
       const r = await this.call(() => this.api('/api/parse', { text: e.sampleText, id: e.id }));
       if (!r.events.length) return this.toast('没解析出埋点，检查格式（需要包含 Event: id: ... data: ...）', 'err');
       const ev = r.events.find(x => !e.id || x.id === e.id) || r.events[0];
-      if (!e.id) e.id = ev.id;
+      if (!e.id && e.kind !== 'template') e.id = ev.id;
       if (!e.raw.name) e.raw.name = this.eventName(ev.id) || ev.cls || ev.id;
       e.sample = { fields: ev.fields, cls: ev.cls, line: ev.raw };
       this.tryEditor();
@@ -586,6 +749,15 @@ function app() {
     },
     async saveEditor() {
       const e = this.ed;
+      if (e.kind === 'template') {
+        if (!e.id) return this.toast('先填模板名', 'err');
+        const raw = this.edRaw(); delete raw.name; delete raw.extends;
+        await this.call(() => this.api('/api/template/save', { name: e.id, old_name: e.oldId, value: raw }), '模板已保存，继承它的点位都会用新规则');
+        e.isNew = false; e.oldId = e.id; e.dirty = false; await this.refresh();
+        e.resolved = clone(this.st.templates[e.id]) || {};
+        if (this.live.results.length) this.recheckLive();
+        return;
+      }
       if (!e.id) return this.toast('先填点位ID', 'err');
       await this.call(() => this.api('/api/event/save', { id: e.id, old_id: e.oldId, raw: this.edRaw() }), '保存成功，以后测试这个点位自动复用');
       e.isNew = false; e.oldId = e.id; e.dirty = false;
@@ -705,31 +877,61 @@ function app() {
     // ---------------- 用例 ----------------
     openCase(name) {
       const c = name ? clone(this.st.cases[name]) : { expect: [] };
-      this.caseEd = {
-        name: name || '', old: name || '',
-        rows: (c.expect || []).map(x => typeof x === 'object' ? { id: String(x.id), min: x.min ?? 1, max: x.max ?? '', where: whereText(x.where) } : { id: String(x), min: 1, max: '', where: '' }),
-      };
+      this.caseEd = { name: name || '', old: name || '', desc: c.desc || '', addId: '', rows: this.caseRows(c) };
+      if (this.page !== 'cases') this.go('cases');
+    },
+    addCaseRow() {
+      const c = this.caseEd, id = this.pickId(c.addId); if (!id) return this.toast('没找到这个点位，输入完整的点位 ID 试试', 'err');
+      if (c.rows.some(r => r.id === id)) { c.addId = ''; return this.toast('这个点位已经在用例里了，多个期望值可以直接多选', 'warn'); }
+      c.rows.push({ key: Math.random(), id, min: 1, max: '', values: {}, showAll: false }); c.addId = '';
     },
     async saveCase() {
-      const c = this.caseEd;
-      const expect = c.rows.filter(r => r.id).map(r => {
-        const o = { id: r.id }; if (Number(r.min) !== 1) o.min = Number(r.min); if (r.max !== '' && r.max !== null) o.max = Number(r.max);
-        const w = parseWhere(r.where); if (Object.keys(w).length) o.where = w;
-        return Object.keys(o).length === 1 ? r.id : o;
-      });
-      await this.call(() => this.api('/api/case/save', { name: c.name, old_name: c.old, value: { expect } }), '用例已保存');
-      this.caseEd = null; this.refresh();
+      const c = this.caseEd, name = c.name.trim();
+      if (!name) return this.toast('先填用例名', 'err');
+      const value = {}; if (c.desc) value.desc = c.desc; value.expect = this.rowsToExpect(c.rows);
+      await this.call(() => this.api('/api/case/save', { name, old_name: c.old, value }), '用例已保存');
+      if (this.live.caseName === c.old) this.live.caseName = name;
+      c.old = name; await this.refresh();
     },
+    useCaseInLive(name) { this.live.caseName = name; this.loadPlanFromCase(); this.go('live'); },
 
     // ---------------- 报告 ----------------
     async openReport(name) {
       this.rep.cur = await this.call(() => this.api('/api/report?name=' + encodeURIComponent(name)));
       this.rep.cur.name = name; this.go('reports');
     },
+    repKeep(x, view) {
+      if (view === 'bad') return ['FAIL', 'WARN', 'ASK'].includes(x.status);
+      if (view === 'pass') return x.status === 'PASS';
+      return this.rep.showUnk || x.status !== 'UNKNOWN';
+    },
+    repCount(view) { return (this.rep.cur?.results || []).filter(x => this.repKeep(x, view)).length; },
     get repResults() {
       const r = this.rep.cur; if (!r) return [];
       const q = this.rep.q.trim().toLowerCase();
-      return r.results.filter(x => (!this.rep.onlyBad || ['FAIL', 'WARN', 'ASK'].includes(x.status)) && (!q || JSON.stringify(x).toLowerCase().includes(q)));
+      return r.results.filter(x => this.repKeep(x, this.rep.view) && (!q || JSON.stringify(x).toLowerCase().includes(q)));
+    },
+
+    // ---------------- 规则文件 ----------------
+    async openYaml() { const d = await this.call(() => this.api('/api/spec_text')); this.yv = { files: d.files, cur: 0, edit: false, text: '' }; },
+    yvFile() { return this.yv ? this.yv.files[this.yv.cur] : null; },
+    async saveYaml() {
+      const f = this.yvFile();
+      await this.call(() => this.api('/api/spec_text/save', { name: f.name, text: this.yv.text }), '规则文件已保存');
+      f.text = this.yv.text; this.yv.edit = false; await this.refresh();
+      if (this.ed && !this.ed.dirty && !this.ed.isNew) { this.ed.kind === 'template' ? this.openTemplate(this.ed.id) : this.loadEditor(this.ed.id, this.ed.sample); }
+    },
+    async copyText(t) { try { await navigator.clipboard.writeText(t); this.toast('已复制', 'ok'); } catch (e) { this.toast('复制失败，请手动选择复制', 'err'); } },
+    yamlHtml(t) {
+      const esc = x => x.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      return String(t).split('\n').map(line => {
+        let code = line, cm = '';
+        const ci = line.search(/(^|\s)#/);
+        if (ci >= 0 && (line.slice(0, ci).split("'").length % 2 === 1) && (line.slice(0, ci).split('"').length % 2 === 1)) { code = line.slice(0, ci); cm = line.slice(ci); }
+        let h = esc(code).replace(/^(\s*-?\s*)([^\s:#'"{\[][^:#{}]*?)(:)(\s|$)/, '$1<span class="yk">$2</span>$3$4');
+        h = h.replace(/([{,]\s*)([\w.\u4e00-\u9fa5]+)(:\s)/g, '$1<span class="yk2">$2</span>$3');
+        return h + (cm ? `<span class="yc">${esc(cm)}</span>` : '');
+      }).join('\n');
     },
     async checkLog() {
       const c = this.checkForm;
