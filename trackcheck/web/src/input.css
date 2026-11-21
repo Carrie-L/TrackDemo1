@@ -3,31 +3,32 @@
 @tailwind utilities;
 
 @layer base {
-  body { @apply font-sans text-ink antialiased; }
+  html { font-size: 14px; }
+  body { @apply font-sans text-sm text-ink antialiased; }
   ::selection { background: #E2F1D4; }
   [x-cloak] { display: none !important; }
 }
 
 @layer components {
   .panel { @apply rounded-3xl border-2 border-wood-200 bg-cream/95 shadow-wood; box-shadow: inset 0 2px 0 rgba(255,255,255,.7), 0 4px 0 0 #E5D4B3, 0 10px 24px -10px rgba(107,76,49,.20); }
-  .panel-pad { @apply panel p-5; }
+  .panel-pad { @apply panel p-4; }
   .title { @apply flex items-center gap-2 text-base font-extrabold text-wood-700; }
   .subtle { @apply text-xs text-ink-soft; }
-  .btn { @apply inline-flex select-none items-center justify-center gap-1.5 whitespace-nowrap rounded-2xl px-4 py-2 text-sm font-bold transition active:translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-50; }
+  .btn { @apply inline-flex select-none items-center justify-center gap-1.5 whitespace-nowrap rounded-2xl px-3.5 py-1.5 text-sm font-bold transition active:translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-50; }
   .btn-leaf { @apply btn bg-leaf-500 text-white shadow-leafbtn hover:bg-leaf-600 active:shadow-none; }
   .btn-wood { @apply btn border-2 border-wood-200 bg-wood-50 text-wood-700 shadow-woodbtn hover:bg-wood-100 active:shadow-none; }
   .btn-berry { @apply btn bg-berry-500 text-white shadow-[0_3px_0_0_#A04840] hover:bg-berry-600 active:shadow-none; }
   .btn-ghost { @apply btn px-2.5 py-1.5 text-ink-soft hover:bg-wood-100 hover:text-wood-700; }
   .btn-xs { @apply rounded-xl px-2.5 py-1 text-xs; }
-  .input { @apply w-full rounded-xl border-2 border-wood-200 bg-white/80 px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-leaf-400 focus:outline-none focus:ring-4 focus:ring-leaf-100; }
+  .input { @apply w-full rounded-xl border-2 border-wood-200 bg-white/80 px-2.5 py-1.5 text-sm text-ink placeholder:text-ink-faint focus:border-leaf-400 focus:outline-none focus:ring-4 focus:ring-leaf-100; }
   .label { @apply mb-1 block text-xs font-bold text-wood-600; }
   .chip { @apply inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-bold; }
-  .navitem { @apply flex w-full items-center gap-3 rounded-2xl px-3 py-2 text-sm font-bold text-ink-soft transition hover:translate-x-0.5 hover:bg-wood-100 hover:text-wood-700; }
+  .navitem { @apply flex w-full items-center gap-2.5 rounded-2xl px-3 py-1.5 text-sm font-bold text-ink-soft transition hover:translate-x-0.5 hover:bg-wood-100 hover:text-wood-700; }
   .navitem-on { @apply bg-leaf-500 text-white shadow-leafbtn hover:bg-leaf-500 hover:text-white; }
   .tbl { @apply w-full border-separate border-spacing-0 text-sm; }
   .tbl th { @apply sticky top-0 z-[1] whitespace-nowrap border-b-2 border-wood-200 bg-cream-2 px-3 py-2 text-left text-xs font-extrabold text-wood-600; }
   .tbl td { @apply border-b border-wood-100 px-3 py-2 align-top; }
-  .code { @apply rounded-lg bg-wood-50 px-1.5 py-0.5 font-mono text-[12px] text-wood-700; }
+  .code { @apply rounded-lg bg-wood-50 px-1.5 py-0.5 font-mono text-[11.5px] text-wood-700; }
   .tab { @apply rounded-xl px-3 py-1.5 text-xs font-bold text-ink-soft transition hover:bg-wood-100; }
   .tab-on { @apply bg-white text-leaf-700 shadow-sm ring-2 ring-leaf-200 hover:bg-white; }
   .path-link { @apply inline-flex items-center gap-1 rounded-lg px-1.5 py-0.5 text-left transition hover:bg-leaf-50 hover:text-leaf-700 hover:underline cursor-pointer; }
@@ -64,7 +65,8 @@ body {
 }
 .wood-sign-wrap { filter: drop-shadow(0 6px 10px rgba(107,76,49,.26)); }
 .wood-sign-wrap:hover { filter: drop-shadow(0 8px 14px rgba(107,76,49,.34)); }
-.wood-title { text-shadow: 0 2px 0 #7C4E24, 0 0 2px #6B411C, 0 3px 6px rgba(92,53,20,.35); }
+.wood-title { color: #6B401B; text-shadow: 0 1px 0 rgba(255,248,225,.85), 0 -1px 0 rgba(88,48,16,.25); }
+.wood-sub { color: #FFFDF5; text-shadow: 0 1px 2px rgba(82,42,14,.65); }
 .scroll-soft::-webkit-scrollbar { width: 8px; height: 8px; }
 .scroll-soft::-webkit-scrollbar-thumb { background: #E8D4B3; border-radius: 99px; }
 .scroll-soft::-webkit-scrollbar-track { background: transparent; }

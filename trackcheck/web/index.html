@@ -16,10 +16,8 @@
   <aside class="sticky top-5 flex h-[calc(100vh-40px)] w-56 shrink-0 flex-col gap-4">
     <button @click="go('home')" title="回到首页" class="wood-sign-wrap relative block w-full select-none text-center transition hover:-translate-y-0.5 active:translate-y-0">
       <img src="/static/wood_sign.png" class="pointer-events-none block w-full" alt="">
-      <div class="absolute inset-0 flex flex-col items-center justify-center pt-1.5">
-        <h1 class="wood-title text-[25px] font-black leading-none tracking-[0.14em] text-[#FFFDF5]">埋点小岛</h1>
-        <p class="mt-1.5 rounded-full bg-cream/95 px-2.5 py-0.5 text-[10.5px] font-extrabold text-wood-700 shadow-sm">Android 埋点调试与校验</p>
-      </div>
+      <span class="wood-title pointer-events-none absolute inset-x-4 top-[37%] -translate-y-1/2 text-[22px] font-black leading-none tracking-[0.14em]">埋点小岛</span>
+      <span class="wood-sub pointer-events-none absolute inset-x-4 top-[83%] -translate-y-1/2 truncate text-[10.5px] font-bold leading-none tracking-wide">Android 埋点调试与校验</span>
     </button>
     <nav class="panel flex flex-col gap-1 p-3">
       <template x-for="n in NAV" :key="n.id">
@@ -108,7 +106,7 @@
       <!-- ========== 首页 ========== -->
       <section x-show="page === 'home'" x-cloak class="grid grid-cols-1 gap-5 xl:grid-cols-[1fr_300px]">
         <div class="flex min-w-0 flex-col gap-5">
-          <div class="panel relative h-56 overflow-hidden !p-0">
+          <div class="panel relative h-48 overflow-hidden !p-0">
             <img src="/static/hero.jpg" class="absolute inset-0 h-full w-full object-cover object-[center_62%]" alt="">
             <div class="absolute inset-0 bg-gradient-to-r from-cream/75 via-cream/10 to-transparent"></div>
             <div class="relative flex h-full max-w-md flex-col justify-center gap-3 p-8">
@@ -252,38 +250,62 @@
             </div>
           </div>
 
-          <!-- 本次要测的点位 & 期望值 -->
-          <div class="mt-4 rounded-2xl border-2 border-lilac-200 bg-lilac-50/60 p-3">
+          <!-- 本次要测的点位 & 期望值（紧凑胶囊条 + 单点位按需展开，20+ 点位也不占屏） -->
+          <div class="mt-3 rounded-2xl border-2 border-lilac-200 bg-lilac-50/60 px-3 py-2.5">
             <div class="flex flex-wrap items-center gap-2">
-              <img class="pic h-7 w-7" src="/static/icons/cases.png" alt="">
+              <img class="pic h-6 w-6" src="/static/icons/cases.png" alt="">
               <span class="text-sm font-bold text-lilac-600">本次要测的点位</span>
-              <span class="subtle" x-text="live.caseName ? '来自用例「' + live.caseName + '」，期望值可以随手改，改完已收到的事件自动重新判定' : '选一个用例，或直接添加点位；给字段点选期望值，上报时自动比对，不填的字段只按规则校验'"></span>
-              <div class="ml-auto flex items-center gap-2">
-                <input class="input !w-60 !py-1 text-xs" list="evlist" placeholder="＋ 添加点位：输入 ID 或名称" x-model="live.addId" @change="addPlanRow()" @keydown.enter="addPlanRow()">
+              <span class="chip" x-show="live.plan.length" :class="livePlanHitCount === live.plan.length ? 'st-PASS' : 'bg-white text-lilac-600'" x-text="'已触发 ' + livePlanHitCount + ' / ' + live.plan.length"></span>
+              <span class="subtle" x-show="!live.plan.length">选一个用例或添加点位；点击点位胶囊就能随时改期望值</span>
+              <div class="ml-auto flex flex-wrap items-center gap-1.5">
+                <input x-show="live.plan.length > 6 && live.planOpen" class="input !w-36 !py-1 text-xs" placeholder="筛选清单…" x-model="live.planQ">
+                <input class="input !w-52 !py-1 text-xs" list="evlist" placeholder="＋ 添加点位：ID 或名称" x-model="live.addId" @change="addPlanRow()" @keydown.enter="addPlanRow()">
                 <button class="btn-wood btn-xs" x-show="live.plan.length" @click="savePlanToCase()"><img class="pic h-4 w-4" src="/static/icons/cases.png" alt=""><span x-text="live.caseName ? '保存回用例' : '存为用例'"></span></button>
+                <button class="btn-ghost btn-xs" x-show="live.plan.length" @click="live.planOpen = !live.planOpen"><span x-text="live.planOpen ? '收起' : '展开'"></span><svg class="ico h-3.5 w-3.5 transition" :class="live.planOpen && 'rotate-90'"><use :href="icon('chevron-right')"></use></svg></button>
               </div>
             </div>
-            <div class="mt-3 grid grid-cols-1 gap-2 2xl:grid-cols-2" x-show="live.plan.length">
-              <template x-for="(row, ri) in live.plan" :key="row.id">
-                <div class="rounded-2xl border-2 border-white bg-white/85 p-3">
-                  <div class="flex items-center gap-2">
-                    <span class="truncate text-sm font-bold text-wood-700" x-text="eventName(row.id) || '未命名点位'"></span>
-                    <span class="font-mono text-[11px] text-ink-faint" x-text="row.id"></span>
-                    <span class="chip ml-auto" :class="liveHits(row.id) ? 'st-PASS' : 'st-SKIP'" x-text="liveHits(row.id) ? '已上报 ' + liveHits(row.id) + ' 次' : '还没上报'"></span>
-                    <button class="btn-ghost btn-xs !px-1.5 hover:!bg-berry-50 hover:!text-berry-600" title="移出清单" @click="removePlanRow(ri)"><svg class="ico h-3.5 w-3.5"><use :href="icon('trash-2')"></use></svg></button>
+
+            <div x-show="live.planOpen && live.plan.length" class="mt-2">
+              <div class="flex max-h-24 flex-wrap gap-1.5 overflow-y-auto pr-1 scroll-soft">
+                <template x-for="row in livePlanFiltered" :key="row.id">
+                  <button class="chip border transition"
+                          :class="live.planSel === row.id ? 'border-lilac-500 bg-lilac-500 text-white shadow-sm' : (liveHits(row.id) ? 'border-leaf-200 bg-leaf-50 text-leaf-700 hover:bg-leaf-100' : 'border-wood-200 bg-white text-wood-700 hover:bg-wood-50')"
+                          :title="row.id + ' · 点击修改该点位的期望值'"
+                          @click="live.planSel = live.planSel === row.id ? '' : row.id">
+                    <span class="h-2 w-2 rounded-full" :class="live.planSel === row.id ? 'bg-white' : (liveHits(row.id) ? 'bg-leaf-500' : 'bg-wood-300')"></span>
+                    <span class="max-w-[140px] truncate" x-text="eventName(row.id) || row.id"></span>
+                    <span class="font-mono text-[10.5px] opacity-80" x-show="liveHits(row.id)" x-text="'×' + liveHits(row.id)"></span>
+                    <span class="max-w-[110px] truncate rounded-full px-1.5 text-[10.5px] font-normal"
+                          :class="live.planSel === row.id ? 'bg-white/25 text-white' : 'bg-lilac-100 text-lilac-600'"
+                          x-show="rowValSummary(row)" x-text="rowValSummary(row)"></span>
+                  </button>
+                </template>
+              </div>
+              <div class="subtle mt-1.5" x-show="!livePlanCur">点上面任意点位胶囊可展开修改它的期望值（上方列表最多占 3 行，不遮挡下方调试记录）。</div>
+
+              <template x-if="livePlanCur">
+                <div class="pop mt-2 rounded-2xl border-2 border-white bg-white/90 p-3">
+                  <div class="flex flex-wrap items-center gap-2">
+                    <span class="text-sm font-bold text-wood-700" x-text="eventName(livePlanCur.id) || '未命名点位'"></span>
+                    <span class="code" x-text="livePlanCur.id"></span>
+                    <span class="chip" :class="liveHits(livePlanCur.id) ? 'st-PASS' : 'st-SKIP'" x-text="liveHits(livePlanCur.id) ? '已上报 ' + liveHits(livePlanCur.id) + ' 次' : '还没上报'"></span>
+                    <div class="ml-auto flex items-center gap-1">
+                      <button class="btn-ghost btn-xs hover:!bg-berry-50 hover:!text-berry-600" title="移出清单" @click="removePlanRow(live.plan.findIndex(x => x.id === livePlanCur.id))"><svg class="ico h-3.5 w-3.5"><use :href="icon('trash-2')"></use></svg>移出</button>
+                      <button class="btn-ghost btn-xs" @click="live.planSel = ''">收起</button>
+                    </div>
                   </div>
                   <div class="mt-2 space-y-1.5">
-                    <template x-for="f in rowFields(row)" :key="f.name">
+                    <template x-for="f in rowFields(livePlanCur)" :key="f.name">
                       <div class="flex flex-wrap items-center gap-1.5">
                         <span class="w-24 shrink-0 truncate text-xs font-bold" :class="f.ask ? 'text-lilac-600' : 'text-wood-600'" :title="f.name + (f.ask ? '（由用户操作决定）' : '')" x-text="f.desc || f.name"></span>
                         <template x-for="[k, v] in Object.entries(f.options)" :key="k">
-                          <button class="chip border transition" :class="valOn(row, f.name, k) ? 'border-lilac-500 bg-lilac-500 text-white' : 'border-lilac-200 bg-white text-lilac-600 hover:bg-lilac-100'" @click="toggleVal(row, f.name, k); pushPlan()"><span class="font-mono" x-text="k"></span><span class="font-normal" x-show="v" x-text="v"></span></button>
+                          <button class="chip border transition" :class="valOn(livePlanCur, f.name, k) ? 'border-lilac-500 bg-lilac-500 text-white' : 'border-lilac-200 bg-white text-lilac-600 hover:bg-lilac-100'" @click="toggleVal(livePlanCur, f.name, k); pushPlan()"><span class="font-mono" x-text="k"></span><span class="font-normal" x-show="v" x-text="v"></span></button>
                         </template>
-                        <input x-show="!Object.keys(f.options).length" class="input !w-52 !py-0.5 font-mono text-xs" :value="valText(row.values[f.name])" @change="setValText(row, f.name, $event.target.value); pushPlan()" placeholder="不填不比对；多个候选用 | 分隔">
+                        <input x-show="!Object.keys(f.options).length" class="input !w-52 !py-0.5 font-mono text-xs" :value="valText(livePlanCur.values[f.name])" @change="setValText(livePlanCur, f.name, $event.target.value); pushPlan()" placeholder="不填不比对；多个候选用 | 分隔">
                       </div>
                     </template>
-                    <p x-show="!st?.event_fields?.[row.id]" class="text-xs text-ink-faint">这个点位还没配置规则，上报后会显示为「未配置」。</p>
-                    <button class="text-xs font-bold text-lilac-600 hover:underline" x-show="rowHidden(row)" @click="row.showAll = !row.showAll" x-text="row.showAll ? '收起其他字段' : '展开其他字段（' + rowHidden(row) + '）'"></button>
+                    <p x-show="!st?.event_fields?.[livePlanCur.id]" class="text-xs text-ink-faint">这个点位还没配置规则，上报后会显示为「未配置」。</p>
+                    <button class="text-xs font-bold text-lilac-600 hover:underline" x-show="rowHidden(livePlanCur)" @click="livePlanCur.showAll = !livePlanCur.showAll" x-text="livePlanCur.showAll ? '收起其他字段' : '展开其他字段（' + rowHidden(livePlanCur) + '）'"></button>
                   </div>
                 </div>
               </template>
@@ -345,8 +367,9 @@
                   <h3 class="text-lg font-black text-wood-700" x-text="liveCur.name || liveCur.cls || '未知点位'"></h3>
                   <span class="code" x-text="liveCur.id"></span><span class="subtle" x-text="liveCur.cls"></span>
                   <div class="ml-auto flex gap-2">
-                    <button class="btn-wood btn-xs" @click="copyPrompt(liveCur.id, liveCur.raw)"><img class="pic h-5 w-5" src="/static/icons/ai.png" alt="">复制 AI 提示词</button>
-                    <button class="btn-wood btn-xs" x-show="liveCur.status !== 'UNKNOWN'" @click="openEventFromResult(liveCur)"><img class="pic h-5 w-5" src="/static/icons/rules.png" alt="">打开点位规则</button>
+                    <button class="btn-wood btn-xs" x-show="liveCur.status !== 'UNKNOWN'" @click="focusPlanEvent(liveCur.id)"><img class="pic h-4 w-4" src="/static/icons/cases.png" alt="">改期望值</button>
+                    <button class="btn-wood btn-xs" @click="copyPrompt(liveCur.id, liveCur.raw)"><img class="pic h-4 w-4" src="/static/icons/ai.png" alt="">复制 AI 提示词</button>
+                    <button class="btn-wood btn-xs" x-show="liveCur.status !== 'UNKNOWN'" @click="openEventFromResult(liveCur)"><img class="pic h-4 w-4" src="/static/icons/rules.png" alt="">打开点位规则</button>
                   </div>
                 </div>
 

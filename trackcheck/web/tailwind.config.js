@@ -14,6 +14,14 @@ module.exports = {
         lilac: { 50: "#F7F3FC", 100: "#EEE6F9", 200: "#DCCCF1", 500: "#9A7FD0", 600: "#7F63B8" },
         sun: { 50: "#FFFAEA", 100: "#FDF1C9", 200: "#F8E094", 500: "#DDA92C", 600: "#B98914", 700: "#8F6A0E" },
       },
+      fontSize: {
+        xs: ["11.5px", "1.45"],
+        sm: ["12.5px", "1.5"],
+        base: ["13.5px", "1.55"],
+        lg: ["15px", "1.4"],
+        xl: ["17px", "1.35"],
+        "2xl": ["20px", "1.25"],
+      },
       fontFamily: {
         sans: ['"Nunito"', '"Quicksand"', '"PingFang SC"', '"HarmonyOS Sans SC"', '"Microsoft YaHei UI"', '"Microsoft YaHei"', "sans-serif"],
         mono: ['"JetBrains Mono"', '"Cascadia Code"', "Consolas", "monospace"],

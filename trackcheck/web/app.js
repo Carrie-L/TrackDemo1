@@ -51,7 +51,7 @@ function app() {
   return {
     NAV, CARD_TONES, STATUS_TEXT, DRAFT_TEXT, fmtSize,
     page: 'home', st: null, busy: false, toasts: [], tipIdx: 0, devices: [], devErr: '', search: '', searchOpen: false,
-    live: { serial: '', clear: true, pull: false, snapshot: true, caseName: '', only: '', results: [], running: false, sel: -1, report: null, raw: '', filter: 'all', scn: {}, snapErr: '', plan: [], addId: '', onlyPlan: false, showUnk: false },
+    live: { serial: '', clear: true, pull: false, snapshot: true, caseName: '', only: '', results: [], running: false, sel: -1, report: null, raw: '', filter: 'all', scn: {}, snapErr: '', plan: [], addId: '', onlyPlan: false, showUnk: false, planOpen: true, planSel: '', planQ: '' },
     inf: { mode: 'session', path: '', content: '', fileName: '', drafts: [], dicts: {}, warns: [], log: '', open: 0 },
     ed: null, ruleFilter: '', ruleTab: 'all',
     exp: { mode: 'all', ids: [], q: '', author: '', note: '', sources: true },
@@ -262,6 +262,7 @@ function app() {
       const only = this.live.onlyPlan && this.live.plan.length ? this.live.plan.map(r => r.id) : [];
       const r = await this.call(() => this.api('/api/live/start', { serial: this.live.serial, clear: this.live.clear, case: this.live.caseName, only, scenario: this.planScenario, snapshot: this.live.snapshot }));
       Object.assign(this.live, { results: [], running: true, sel: -1, report: null, snapErr: r.snap_err || '' });
+      if (this.live.plan.length > 3) this.live.planSel = '';
       this.toast(r.snap_on ? '开始抓取，已开启 DB 快照，去手机上操作吧' : '开始抓取 logcat，去手机上操作吧', 'ok');
       if (r.snap_err) this.toast('DB 快照没开成：' + r.snap_err, 'warn');
       this.refresh();
@@ -361,17 +362,42 @@ function app() {
       const e = this.evPickList.find(x => (x.name || '') === t) || this.evPickList.find(x => (x.name || '').includes(t));
       return e ? e.id : '';
     },
-    loadPlanFromCase() { this.live.plan = this.caseRows(this.st?.cases?.[this.live.caseName]); this.pushPlan(); },
+    loadPlanFromCase() {
+      this.live.plan = this.caseRows(this.st?.cases?.[this.live.caseName]);
+      this.live.planOpen = true; this.live.planQ = '';
+      this.live.planSel = this.live.plan.length > 0 && this.live.plan.length <= 2 ? this.live.plan[0].id : '';
+      this.pushPlan();
+    },
+    get livePlanFiltered() {
+      const q = this.live.planQ.trim().toLowerCase();
+      return !q ? this.live.plan : this.live.plan.filter(r => r.id.includes(q) || (this.eventName(r.id) || '').toLowerCase().includes(q));
+    },
+    get livePlanCur() { return this.live.plan.find(r => r.id === this.live.planSel) || null; },
+    get livePlanHitCount() { return this.live.plan.filter(r => this.liveHits(r.id) > 0).length; },
+    rowValSummary(row) {
+      const entries = Object.entries(row.values || {}).filter(([, v]) => v !== '' && !(Array.isArray(v) && !v.length));
+      if (!entries.length) return '';
+      if (entries.length === 1) { const [k, v] = entries[0]; return `${k}=${Array.isArray(v) ? v.join('/') : v}`; }
+      return entries.length + ' 项期望';
+    },
+    focusPlanEvent(id) {
+      id = String(id);
+      if (!this.live.plan.some(r => r.id === id)) this.live.plan.push({ key: Math.random(), id, min: 1, max: '', values: {}, showAll: false });
+      this.live.planOpen = true; this.live.planSel = id;
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    },
     addPlanRow() {
       const id = this.pickId(this.live.addId); if (!id) return;
       if (!this.live.plan.some(r => r.id === id)) this.live.plan.push({ key: Math.random(), id, min: 1, max: '', values: {}, showAll: false });
+      this.live.planOpen = true; this.live.planSel = id;
       this.live.addId = '';
     },
     removePlanRow(ri) {
       const removed = this.live.plan.splice(ri, 1)[0]; if (!removed) return;
+      if (this.live.planSel === removed.id) this.live.planSel = '';
       this.pushPlan();
       this.toast(`已移出点位 ${this.eventName(removed.id) || removed.id}`, 'warn', {
-        label: '撤销', fn: () => { this.live.plan.splice(Math.min(ri, this.live.plan.length), 0, removed); this.pushPlan(); }
+        label: '撤销', fn: () => { this.live.plan.splice(Math.min(ri, this.live.plan.length), 0, removed); this.live.planSel = removed.id; this.pushPlan(); }
       });
     },
     get planScenario() {
