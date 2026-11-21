@@ -9,7 +9,7 @@
 }
 
 @layer components {
-  .panel { @apply rounded-3xl border-2 border-wood-200 bg-cream/95 shadow-wood; }
+  .panel { @apply rounded-3xl border-2 border-wood-200 bg-cream/95 shadow-wood; box-shadow: inset 0 2px 0 rgba(255,255,255,.7), 0 4px 0 0 #E5D4B3, 0 10px 24px -10px rgba(107,76,49,.20); }
   .panel-pad { @apply panel p-5; }
   .title { @apply flex items-center gap-2 text-base font-extrabold text-wood-700; }
   .subtle { @apply text-xs text-ink-soft; }
@@ -22,7 +22,7 @@
   .input { @apply w-full rounded-xl border-2 border-wood-200 bg-white/80 px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-leaf-400 focus:outline-none focus:ring-4 focus:ring-leaf-100; }
   .label { @apply mb-1 block text-xs font-bold text-wood-600; }
   .chip { @apply inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-bold; }
-  .navitem { @apply flex w-full items-center gap-3 rounded-2xl px-3 py-2 text-sm font-bold text-ink-soft hover:bg-wood-100 hover:text-wood-700; }
+  .navitem { @apply flex w-full items-center gap-3 rounded-2xl px-3 py-2 text-sm font-bold text-ink-soft transition hover:translate-x-0.5 hover:bg-wood-100 hover:text-wood-700; }
   .navitem-on { @apply bg-leaf-500 text-white shadow-leafbtn hover:bg-leaf-500 hover:text-white; }
   .tbl { @apply w-full border-separate border-spacing-0 text-sm; }
   .tbl th { @apply sticky top-0 z-[1] whitespace-nowrap border-b-2 border-wood-200 bg-cream-2 px-3 py-2 text-left text-xs font-extrabold text-wood-600; }
@@ -30,6 +30,7 @@
   .code { @apply rounded-lg bg-wood-50 px-1.5 py-0.5 font-mono text-[12px] text-wood-700; }
   .tab { @apply rounded-xl px-3 py-1.5 text-xs font-bold text-ink-soft transition hover:bg-wood-100; }
   .tab-on { @apply bg-white text-leaf-700 shadow-sm ring-2 ring-leaf-200 hover:bg-white; }
+  .path-link { @apply inline-flex items-center gap-1 rounded-lg px-1.5 py-0.5 text-left transition hover:bg-leaf-50 hover:text-leaf-700 hover:underline cursor-pointer; }
 }
 
 /* status colors: classes built dynamically in JS, kept outside layers */
@@ -61,11 +62,9 @@ body {
     linear-gradient(180deg, #DDEFF8 0%, #E9F4E1 45%, #EEF5E2 100%);
   background-attachment: fixed;
 }
-.wood-sign {
-  background: linear-gradient(180deg, #D9B07C 0%, #C3925E 55%, #A97B4F 100%);
-  box-shadow: inset 0 2px 0 rgba(255,255,255,.35), inset 0 -3px 0 rgba(0,0,0,.12), 0 5px 0 #8A633F, 0 10px 18px -8px rgba(107,76,49,.6);
-}
-.wood-sign h1 { text-shadow: 0 2px 0 #8A633F, 0 0 1px #6B4C31; }
+.wood-sign-wrap { filter: drop-shadow(0 6px 10px rgba(107,76,49,.26)); }
+.wood-sign-wrap:hover { filter: drop-shadow(0 8px 14px rgba(107,76,49,.34)); }
+.wood-title { text-shadow: 0 2px 0 #7C4E24, 0 0 2px #6B411C, 0 3px 6px rgba(92,53,20,.35); }
 .scroll-soft::-webkit-scrollbar { width: 8px; height: 8px; }
 .scroll-soft::-webkit-scrollbar-thumb { background: #E8D4B3; border-radius: 99px; }
 .scroll-soft::-webkit-scrollbar-track { background: transparent; }

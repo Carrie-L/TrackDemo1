@@ -50,7 +50,7 @@ const fmtSize = n => n > 1048576 ? (n / 1048576).toFixed(1) + ' MB' : n > 1024 ?
 function app() {
   return {
     NAV, CARD_TONES, STATUS_TEXT, DRAFT_TEXT, fmtSize,
-    page: 'home', st: null, busy: false, toasts: [], tipIdx: 0, devices: [], devErr: '', search: '',
+    page: 'home', st: null, busy: false, toasts: [], tipIdx: 0, devices: [], devErr: '', search: '', searchOpen: false,
     live: { serial: '', clear: true, pull: false, snapshot: true, caseName: '', only: '', results: [], running: false, sel: -1, report: null, raw: '', filter: 'all', scn: {}, snapErr: '', plan: [], addId: '', onlyPlan: false, showUnk: false },
     inf: { mode: 'session', path: '', content: '', fileName: '', drafts: [], dicts: {}, warns: [], log: '', open: 0 },
     ed: null, ruleFilter: '', ruleTab: 'all',
@@ -64,6 +64,8 @@ function app() {
     checkForm: { path: '', content: '', fileName: '', caseName: '' },
 
     async init() {
+      if (this._inited) return;
+      this._inited = true;
       await this.refresh();
       this.loadDevices(); this.loadEvdict();
       setInterval(() => this.pollLive(), 1000);
@@ -71,6 +73,19 @@ function app() {
       setInterval(() => { this.tipIdx = (this.tipIdx + 1) % TIPS.length; }, 9000);
       const h = location.hash.slice(1); if (NAV.some(n => n.id === h)) this.go(h, true);
       window.addEventListener('hashchange', () => { const x = location.hash.slice(1); if (NAV.some(n => n.id === x) && x !== this.page) this.go(x, true); });
+      window.addEventListener('keydown', e => {
+        const tag = (e.target?.tagName || '').toLowerCase();
+        const editing = tag === 'input' || tag === 'textarea' || tag === 'select' || e.target?.isContentEditable;
+        if (e.key === '/' && !editing && !e.ctrlKey && !e.metaKey && !e.altKey) {
+          e.preventDefault(); this.$refs.gsearch?.focus(); this.searchOpen = true;
+        } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+          if (this.busy || e.repeat) { e.preventDefault(); return; }
+          if (this.yv?.edit) { e.preventDefault(); this.saveYaml(); }
+          else if (this.fm) { e.preventDefault(); this.saveField(); }
+          else if (this.page === 'rules' && this.ed) { e.preventDefault(); this.saveEditor(); }
+          else if (this.page === 'cases' && this.caseEd) { e.preventDefault(); this.saveCase(); }
+        }
+      });
     },
     go(p, quiet) {
       this.page = p; if (!quiet) location.hash = p; window.scrollTo({ top: 0 });
@@ -95,10 +110,33 @@ function app() {
       catch (e) { this.toast(e.message, 'err'); throw e; }
       finally { this.busy = false; }
     },
-    toast(msg, kind = 'ok') {
-      const id = Math.random(); this.toasts.push({ id, msg, kind });
-      setTimeout(() => { this.toasts = this.toasts.filter(t => t.id !== id); }, kind === 'err' ? 6000 : 3200);
+    toast(msg, kind = 'ok', action = null) {
+      const id = Math.random(); this.toasts.push({ id, msg, kind, action });
+      setTimeout(() => { this.toasts = this.toasts.filter(t => t.id !== id); }, action ? 6500 : (kind === 'err' ? 6000 : 3200));
     },
+    runToastAction(t) {
+      if (t.action?.fn) t.action.fn();
+      this.toasts = this.toasts.filter(x => x.id !== t.id);
+    },
+    async openPath(arg) {
+      const body = typeof arg === 'string' ? { path: arg } : (arg || {});
+      try {
+        const r = await this.api('/api/open_path', body);
+        this.toast('已在文件管理器打开：' + this.fileName(r.path), 'ok');
+      } catch (e) { this.toast(e.message, 'err'); }
+    },
+    get quickHits() {
+      const q = this.search.trim().toLowerCase();
+      if (!q) return { events: [], dict: [], cases: [], total: 0 };
+      const events = (this.st?.events || []).filter(e => e.id.includes(q) || (e.name || '').toLowerCase().includes(q)).slice(0, 6);
+      const evIds = new Set(events.map(e => e.id));
+      const dict = (this.evd.entries || []).filter(e => !evIds.has(e.id) && (e.id.includes(q) || (e.name || '').toLowerCase().includes(q) || JSON.stringify(e.rows || []).toLowerCase().includes(q))).slice(0, 6);
+      const cases = Object.entries(this.st?.cases || {}).filter(([n, c]) => n.toLowerCase().includes(q) || (c.desc || '').toLowerCase().includes(q)).map(([name, c]) => ({ name, desc: c.desc || '' })).slice(0, 4);
+      return { events, dict, cases, total: events.length + dict.length + cases.length };
+    },
+    pickQuickEvent(id) { this.searchOpen = false; this.loadEditor(id); this.go('rules'); },
+    pickQuickDict(e) { this.searchOpen = false; this.evd.q = e.id; this.evd.open = e.id; this.evd.filter = 'all'; this.go('evdict'); },
+    pickQuickCase(name) { this.searchOpen = false; this.openCase(name); },
     async refresh() {
       try { this.st = await this.api('/api/state'); } catch (e) { this.toast(e.message, 'err'); }
       if (this.st?.live) {
@@ -328,6 +366,13 @@ function app() {
       const id = this.pickId(this.live.addId); if (!id) return;
       if (!this.live.plan.some(r => r.id === id)) this.live.plan.push({ key: Math.random(), id, min: 1, max: '', values: {}, showAll: false });
       this.live.addId = '';
+    },
+    removePlanRow(ri) {
+      const removed = this.live.plan.splice(ri, 1)[0]; if (!removed) return;
+      this.pushPlan();
+      this.toast(`已移出点位 ${this.eventName(removed.id) || removed.id}`, 'warn', {
+        label: '撤销', fn: () => { this.live.plan.splice(Math.min(ri, this.live.plan.length), 0, removed); this.pushPlan(); }
+      });
     },
     get planScenario() {
       const o = {};
@@ -877,21 +922,29 @@ function app() {
     // ---------------- 用例 ----------------
     openCase(name) {
       const c = name ? clone(this.st.cases[name]) : { expect: [] };
-      this.caseEd = { name: name || '', old: name || '', desc: c.desc || '', addId: '', rows: this.caseRows(c) };
+      this.caseEd = { name: name || '', old: name || '', desc: c.desc || '', addId: '', rows: this.caseRows(c), dirty: !name };
       if (this.page !== 'cases') this.go('cases');
     },
     addCaseRow() {
       const c = this.caseEd, id = this.pickId(c.addId); if (!id) return this.toast('没找到这个点位，输入完整的点位 ID 试试', 'err');
       if (c.rows.some(r => r.id === id)) { c.addId = ''; return this.toast('这个点位已经在用例里了，多个期望值可以直接多选', 'warn'); }
-      c.rows.push({ key: Math.random(), id, min: 1, max: '', values: {}, showAll: false }); c.addId = '';
+      c.rows.push({ key: Math.random(), id, min: 1, max: '', values: {}, showAll: false }); c.addId = ''; c.dirty = true;
     },
+    removeCaseRow(ri) {
+      const c = this.caseEd, removed = c.rows.splice(ri, 1)[0]; if (!removed) return;
+      c.dirty = true;
+      this.toast(`已从用例移除 ${this.eventName(removed.id) || removed.id}`, 'warn', {
+        label: '撤销', fn: () => { if (this.caseEd) { this.caseEd.rows.splice(Math.min(ri, this.caseEd.rows.length), 0, removed); this.caseEd.dirty = true; } }
+      });
+    },
+    eventLast(id) { return this.st?.events.find(e => e.id === String(id))?.last || null; },
     async saveCase() {
       const c = this.caseEd, name = c.name.trim();
       if (!name) return this.toast('先填用例名', 'err');
       const value = {}; if (c.desc) value.desc = c.desc; value.expect = this.rowsToExpect(c.rows);
       await this.call(() => this.api('/api/case/save', { name, old_name: c.old, value }), '用例已保存');
       if (this.live.caseName === c.old) this.live.caseName = name;
-      c.old = name; await this.refresh();
+      c.old = name; c.dirty = false; await this.refresh();
     },
     useCaseInLive(name) { this.live.caseName = name; this.loadPlanFromCase(); this.go('live'); },
 

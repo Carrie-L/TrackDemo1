@@ -19,6 +19,7 @@ import re
 import shutil
 import sqlite3
 import subprocess
+import sys
 import threading
 import time
 import traceback
@@ -1206,13 +1207,29 @@ class App:
         with open(p, "w", encoding="utf-8") as f:
             json.dump(d, f, ensure_ascii=False, indent=1)
 
+    def _docs_dir(self):
+        return os.path.join(os.path.dirname(self.store.path), "docs")
+
+    def _doc_path(self, name, stored_path=None):
+        if stored_path and os.path.exists(stored_path):
+            return stored_path
+        cand = os.path.join(self._docs_dir(), os.path.basename(str(name or "")))
+        return cand if os.path.isfile(cand) else ""
+
     def api_evdict(self, q):
         d = tc.load_event_dict(self.spec.event_dict_path)
         conf = set(self.spec.events)
         ents = sorted(d["entries"].values(), key=lambda e: e["id"])
         for e in ents:
             e["configured"] = e["id"] in conf
-        return {"entries": ents, "docs": d.get("docs", []), "columns": d.get("columns", [])}
+        docs = []
+        for x in d.get("docs", []):
+            item = dict(x)
+            p = self._doc_path(item.get("name"), item.get("path"))
+            if p:
+                item["path"] = p
+            docs.append(item)
+        return {"entries": ents, "docs": docs, "columns": d.get("columns", [])}
 
     def api_evdict_import(self, b):
         text, fn = b.get("content") or "", os.path.basename(str(b.get("filename") or "埋点文档"))
@@ -1224,12 +1241,23 @@ class App:
         if not entries:
             n = len(tc.parse_doc_tables(text, fn))
             raise ApiError(f"没解析出点位：找到 {n} 个表格，但没有认出「点位ID」列。确认是 Markdown 表格（| 列 | 列 |，第二行 |---|），且有一列是点位 ID")
+        # 保存副本到 docs/ 目录，方便后续点击直接在文件管理器打开
+        doc_name = b.get("doc_name") or fn
+        docs_dir = self._docs_dir()
+        os.makedirs(docs_dir, exist_ok=True)
+        safe_fn = re.sub(r'[<>:"/\\|?*]+', "_", fn) or "埋点文档.md"
+        saved = os.path.join(docs_dir, safe_fn)
+        with open(saved, "w", encoding="utf-8") as fh:
+            fh.write(text)
         d = tc.load_event_dict(self.spec.event_dict_path)
-        added, skipped, updated = tc.merge_event_dict(d, entries, b.get("doc_name") or fn, bool(b.get("overwrite")))
+        added, skipped, updated = tc.merge_event_dict(d, entries, doc_name, bool(b.get("overwrite")))
+        for item in d.get("docs", []):
+            if item.get("name") == doc_name:
+                item["path"] = saved
         self._save_evdict(d)
         self.reload()
         return {"parsed": len(entries), "added": len(added), "skipped": len(skipped), "updated": len(updated),
-                "added_ids": added[:200], "total": len(d["entries"])}
+                "added_ids": added[:200], "total": len(d["entries"]), "path": saved}
 
     def api_evdict_delete(self, b):
         d = tc.load_event_dict(self.spec.event_dict_path)
@@ -1353,13 +1381,69 @@ class App:
         d = tc.load_event_dict(self.spec.event_dict_path)
         tot = 0
         for p in docs:
+            bn = os.path.basename(p)
             with open(p, encoding="utf-8") as f:
-                entries = tc.doc_to_event_entries(f.read(), os.path.basename(p))
-            added, _, _ = tc.merge_event_dict(d, entries, os.path.basename(p), False)
+                entries = tc.doc_to_event_entries(f.read(), bn)
+            added, _, _ = tc.merge_event_dict(d, entries, bn, False)
+            for item in d.get("docs", []):
+                if item.get("name") == bn:
+                    item["path"] = p
             tot += len(added)
         self._save_evdict(d)
         self.reload()
         return {"added": tot, "total": len(d["entries"]), "docs": [os.path.basename(x) for x in docs]}
+
+    def _open_in_fm(self, rp):
+        if os.name == "nt":
+            if os.path.isfile(rp):
+                subprocess.Popen(["explorer", "/select,", os.path.normpath(rp)])
+            else:
+                os.startfile(os.path.normpath(rp))
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", "-R", rp] if os.path.isfile(rp) else ["open", rp])
+        else:
+            subprocess.Popen(["xdg-open", os.path.dirname(rp) if os.path.isfile(rp) else rp])
+
+    def api_open_path(self, b):
+        base = os.path.dirname(self.store.path)
+        target = ""
+        if b.get("doc"):
+            dn = str(b["doc"])
+            evd = tc.load_event_dict(self.spec.event_dict_path)
+            doc = next((x for x in evd.get("docs", []) if x.get("name") == dn), None)
+            target = self._doc_path(dn, (doc or {}).get("path"))
+            if not target and os.path.isdir(self._docs_dir()):
+                target = self._docs_dir()
+            if not target:
+                raise ApiError(f"本地还没有保存「{dn}」的副本，重新拖入导入一次即可点击打开")
+        elif b.get("spec_file"):
+            sf = str(b["spec_file"])
+            target = next((f for f in self.store.files if os.path.relpath(f, base) == sf), os.path.join(base, sf))
+        elif b.get("ds_file"):
+            target = os.path.join(self._ds_dir(), os.path.basename(str(b["ds_file"])))
+        elif b.get("report"):
+            nm = os.path.basename(str(b["report"]))
+            for ext in (".html", ".json"):
+                cand = os.path.join(self.out, nm + ext)
+                if os.path.isfile(cand):
+                    target = cand
+                    break
+            target = target or self.out
+        elif b.get("path"):
+            p = str(b["path"]).strip()
+            target = p if os.path.isabs(p) else os.path.join(base, p)
+        if not target or not os.path.exists(target):
+            raise ApiError("文件或目录不存在：" + (target or "空路径"))
+        rp = os.path.realpath(target)
+        roots = [os.path.realpath(x) for x in (base, self._ds_dir(), self.out, self._docs_dir()) if x]
+        allowed_exact = {os.path.realpath(f) for f in self.store.files}
+        allowed_exact |= {os.path.realpath(s["path"]) for s in self.sessions() if s.get("path")}
+        ok = rp in allowed_exact or any(rp == r or rp.startswith(r + os.sep) for r in roots)
+        if not ok:
+            raise ApiError("安全限制：只能打开项目、数据源或报告目录下的路径")
+        if not b.get("dry_run"):
+            self._open_in_fm(rp)
+        return {"ok": True, "path": rp, "kind": "file" if os.path.isfile(rp) else "dir"}
 
     def api_reload(self, b):
         self.reload()
@@ -1389,6 +1473,7 @@ ROUTES = {
     ("POST", "/api/ai_prompt"): "api_ai_prompt", ("GET", "/api/spec_text"): "api_spec_text",
     ("POST", "/api/spec_text/save"): "api_spec_text_save", ("POST", "/api/evdict/samples"): "api_evdict_samples",
     ("POST", "/api/import/preview"): "api_import_preview", ("POST", "/api/import/apply"): "api_import_apply",
+    ("POST", "/api/open_path"): "api_open_path",
 }
 
 MIME = {".html": "text/html; charset=utf-8", ".js": "application/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
