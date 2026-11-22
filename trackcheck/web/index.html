@@ -29,9 +29,36 @@
         </button>
       </template>
     </nav>
-    <div class="panel mt-auto flex items-center gap-3 p-3 text-xs">
-      <img src="/static/mascot.jpg" class="bob h-12 w-12 rounded-full object-cover ring-2 ring-leaf-200" alt="">
-      <div class="min-w-0"><div class="font-bold text-wood-700">小芽陪你测埋点</div><div class="truncate text-ink-faint" x-text="(stats.events || 0) + ' 个点位已配置规则'"></div></div>
+    <div class="panel mt-auto flex flex-col gap-2.5 p-3 text-xs">
+      <div class="flex items-center gap-3">
+        <div class="relative shrink-0">
+          <img src="/static/mascot.jpg" class="bob h-12 w-12 rounded-full object-cover ring-2 ring-leaf-200" alt="">
+          <span class="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full ring-2 ring-white"
+                :class="srvErrCount > 0 ? 'bg-berry-500 animate-pulse' : 'bg-[#63A950]'"
+                :title="srvErrCount > 0 ? '后台有 ' + srvErrCount + ' 条异常日志' : '小岛后台服务运行中'"></span>
+        </div>
+        <div class="min-w-0">
+          <div class="font-bold text-wood-700">小芽陪你测埋点</div>
+          <div class="truncate text-ink-faint" x-text="(stats.events || 0) + ' 个点位已配置规则'"></div>
+        </div>
+      </div>
+      <div class="flex items-center gap-1.5 border-t border-[#EBF5FC] pt-2">
+        <button type="button"
+                class="relative inline-flex flex-1 items-center justify-center gap-1.5 rounded-full border px-2.5 py-1 text-[11.5px] font-bold transition"
+                :class="srvErrCount > 0 ? 'border-berry-200 bg-berry-50 text-berry-700 hover:bg-berry-100' : 'border-[#D5ECFA] bg-[#F4FAFF] text-wood-700 hover:border-[#B6DFF8] hover:bg-[#E7F5FE]'"
+                title="查看小岛后台运行与报错日志（server.log）"
+                @click="openServerLog()">
+          <svg class="ico h-3.5 w-3.5" :class="srvErrCount > 0 ? 'text-berry-600' : 'text-wood-500'"><use :href="icon('scroll-text')"></use></svg>
+          <span x-text="srvErrCount > 0 ? '异常日志 ' + srvErrCount : '运行日志'"></span>
+        </button>
+        <button type="button"
+                class="inline-flex items-center justify-center gap-1 rounded-full border border-[#FAD6E2] bg-[#FFF4F8] px-2.5 py-1 text-[11.5px] font-bold text-wood-700 transition hover:border-[#F7BFD2] hover:bg-[#FCDCE6]"
+                title="关闭埋点小岛后台服务"
+                @click="quitAsk = true">
+          <svg class="ico h-3.5 w-3.5 text-berry-600"><use :href="icon('power')"></use></svg>
+          <span>休息</span>
+        </button>
+      </div>
     </div>
   </aside>
 
@@ -1878,6 +1905,104 @@
       </div>
     </div>
   </template>
+</div>
+
+<!-- ================= 小岛运行与报错日志弹窗 ================= -->
+<div x-show="srvLog" x-cloak class="fixed inset-0 z-40 flex items-start justify-center overflow-y-auto bg-wood-700/30 p-6" @keydown.escape.window="srvLog = null">
+  <template x-if="srvLog">
+    <div class="pop panel flex max-h-[calc(100vh-3rem)] w-full max-w-4xl flex-col !bg-cream p-0" @click.outside="srvLog = null">
+      <div class="flex shrink-0 flex-wrap items-center gap-2.5 border-b-2 border-[#DFF0FA] px-6 py-4">
+        <img class="pic h-8 w-8" src="/static/icons/shell.png" alt="">
+        <div class="min-w-0">
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="title">小岛运行日志</span>
+            <span class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-bold"
+                  :class="srvLogHasErr ? 'bg-[#FCDCE6] text-berry-700' : 'bg-[#EAF8E6] text-[#4E8F3D]'">
+              <span class="h-1.5 w-1.5 rounded-full" :class="srvLogHasErr ? 'bg-berry-600' : 'bg-[#63A950]'"></span>
+              <span x-text="srvLogHasErr ? '含异常记录 ' + srvLogErrTotal + ' 条' : '服务运行正常'"></span>
+            </span>
+          </div>
+          <button x-show="srvLog.path" class="path-link -ml-1.5 font-mono text-xs text-ink-soft" title="点击定位或复制日志文件地址" @click="openPath(srvLog.path)">
+            <svg class="ico h-3.5 w-3.5 shrink-0 text-wood-500"><use :href="icon('folder-open')"></use></svg>
+            <span class="break-all" x-text="srvLog.path"></span>
+          </button>
+        </div>
+        <div class="ml-auto flex flex-wrap items-center gap-2">
+          <div class="flex rounded-full bg-[#EBF7FE] p-0.5 text-xs font-bold">
+            <button type="button" class="rounded-full px-3 py-1 transition"
+                    :class="srvLog.onlyErr ? 'text-ink-soft hover:text-wood-700' : 'bg-white text-wood-700 shadow-sm'"
+                    @click="srvLog.onlyErr = false">全部</button>
+            <button type="button" class="rounded-full px-3 py-1 transition"
+                    :class="srvLog.onlyErr ? 'bg-[#FCDCE6] text-wood-700 shadow-sm' : 'text-ink-soft hover:text-wood-700'"
+                    @click="srvLog.onlyErr = true">只看异常</button>
+          </div>
+          <button class="btn-wood btn-xs" @click="reloadServerLog()"><svg class="ico h-3.5 w-3.5"><use :href="icon('refresh-cw')"></use></svg>刷新</button>
+          <button class="btn-wood btn-xs" @click="copyText(srvLogText)"><svg class="ico h-3.5 w-3.5"><use :href="icon('copy')"></use></svg>复制</button>
+          <button class="btn-ghost btn-xs hover:!bg-berry-50 hover:!text-berry-600" x-show="srvLog.lines?.length" @click="clearServerLog()"><svg class="ico h-3.5 w-3.5"><use :href="icon('trash-2')"></use></svg>清空面板</button>
+          <button class="btn-ghost" @click="srvLog = null"><svg class="ico h-4 w-4"><use :href="icon('x')"></use></svg></button>
+        </div>
+      </div>
+      <div class="min-h-0 flex-1 overflow-y-auto bg-white/85 p-4 font-mono text-xs leading-relaxed scroll-soft" style="min-height:42vh">
+        <template x-if="!srvLogLines.length">
+          <div class="grid place-items-center gap-2 py-16 font-sans text-sm text-ink-faint">
+            <img class="pic h-12 w-12 opacity-80" src="/static/icons/sprout.png" alt="">
+            <span x-text="srvLog.onlyErr ? '太棒啦，目前没有任何报错或异常记录～' : '暂无日志记录'"></span>
+          </div>
+        </template>
+        <div class="space-y-1">
+          <template x-for="(ln, idx) in srvLogLines" :key="idx">
+            <div class="flex items-start gap-2 rounded-xl px-2.5 py-1"
+                 :class="ln.level === 'ERROR' ? 'bg-[#FFF2F6] text-berry-700' : 'text-wood-700 hover:bg-[#F4FAFF]'">
+              <span class="shrink-0 select-none text-[11px] text-ink-faint tabular-nums" x-text="ln.time"></span>
+              <span class="shrink-0 select-none rounded-full px-1.5 py-0.2 text-[10px] font-bold"
+                    :class="ln.level === 'ERROR' ? 'bg-[#FCDCE6] text-berry-700' : 'bg-[#EBF7FE] text-ink-soft'"
+                    x-text="ln.level === 'ERROR' ? '异常' : '信息'"></span>
+              <span class="min-w-0 flex-1 whitespace-pre-wrap break-all" x-text="ln.text"></span>
+            </div>
+          </template>
+        </div>
+      </div>
+      <div class="flex shrink-0 items-center justify-between border-t border-[#E6F3FC] px-6 py-3 text-xs text-ink-soft">
+        <span>无黑框模式下，所有后台输出与报错都会自动保存在 <span class="code">reports/server.log</span>，启动失败也会弹窗提示。</span>
+        <button class="btn-leaf btn-xs" @click="srvLog = null">知道啦</button>
+      </div>
+    </div>
+  </template>
+</div>
+
+<!-- ================= 退出后台服务确认弹窗 ================= -->
+<div x-show="quitAsk && !srvOff" x-cloak class="fixed inset-0 z-40 grid place-items-center bg-wood-700/30 p-6" @keydown.escape.window="quitAsk = false">
+  <div class="pop panel w-full max-w-md !bg-cream p-6 text-center" @click.outside="quitAsk = false">
+    <img src="/static/mascot.jpg" class="mx-auto h-16 w-16 rounded-full object-cover ring-4 ring-[#E5F4FE] shadow-soft" alt="">
+    <div class="mt-3 text-lg font-black text-wood-700">让埋点小岛休息一下吗？</div>
+    <p class="mt-1.5 text-sm leading-relaxed text-ink-soft">
+      退出后会关闭本机后台服务，释放端口与 adb 连接。<br>下次想继续测埋点时，双击 <span class="code">埋点小岛.exe</span> 就能随时回来～
+    </p>
+    <div x-show="live.running" class="mt-3 rounded-2xl border border-[#FAD0E2] bg-[#FFF4F8] px-3.5 py-2 text-xs font-bold text-berry-700">
+      提示：当前正在「实时调试」抓日志，直接休息不会自动生成本轮报告哦（建议先点结束并出报告）。
+    </div>
+    <div class="mt-5 flex justify-center gap-2.5">
+      <button class="btn-wood px-5" @click="quitAsk = false">再待一会儿</button>
+      <button class="inline-flex items-center gap-1.5 rounded-full border-2 border-[#F5B8CE] bg-[#FCDCE6] px-5 py-2 text-sm font-black text-wood-700 shadow-[0_3px_0_#E6AFC3] transition hover:brightness-[0.98] active:translate-y-0.5"
+              :disabled="busy" @click="shutdownServer()">
+        <svg class="ico h-4 w-4 text-berry-600"><use :href="icon('power')"></use></svg>安心退出服务
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ================= 小岛已休息全屏欢送页 ================= -->
+<div x-show="srvOff" x-cloak class="fixed inset-0 z-50 grid place-items-center bg-gradient-to-b from-[#DDF2FE] via-[#EFF9FF] to-[#FFFDF8] p-6">
+  <div class="panel max-w-md !border-white !bg-white/95 p-8 text-center shadow-[0_18px_42px_-14px_rgba(72,158,214,0.28)]">
+    <div class="relative mx-auto w-fit">
+      <img src="/static/mascot.jpg" class="h-20 w-20 rounded-full object-cover ring-4 ring-[#EBF7FE]" alt="">
+      <img src="/static/icons/shell.png" class="pic absolute -bottom-1 -right-2 h-8 w-8" alt="">
+    </div>
+    <h2 class="mt-4 text-xl font-black text-wood-700">小岛已经安心休息啦</h2>
+    <p class="mt-2 text-sm leading-relaxed text-ink-soft">
+      后台服务已干净退出，不会占用任何内存或端口。<br>现在可以直接关掉这个浏览器标签页；下次双击 <span class="code">埋点小岛.exe</span> 我们海边再见！
+    </p>
+  </div>
 </div>
 
 <!-- ================= 提示 ================= -->

@@ -87,13 +87,25 @@ def main():
     ico = make_icon(os.path.join(HERE, "web", "static", "mascot.jpg"),
                     os.path.join(work_dir, "icon.ico"))
 
-    # 3. 打包单文件 exe
+    # 3. 打包单文件无黑框 exe（--windowed：静默后台启动，通过网页查看日志与退出）
+    dist_exe_dir = out_dir
+    target_exe = os.path.join(out_dir, f"{APP_NAME}.exe")
+    if os.path.isfile(target_exe):
+        try:
+            os.remove(target_exe)
+        except PermissionError:
+            print(f"提示：{target_exe} 正在运行被占用，改在临时目录生成最新 exe 并更新压缩包…")
+            dist_exe_dir = os.path.join(work_dir, "dist_fresh")
+            if os.path.isdir(dist_exe_dir):
+                shutil.rmtree(dist_exe_dir)
+            os.makedirs(dist_exe_dir, exist_ok=True)
+
     sep = ";" if os.name == "nt" else ":"
     cmd = [
         sys.executable, "-m", "PyInstaller",
-        "--noconfirm", "--clean", "--onefile", "--console",
+        "--noconfirm", "--clean", "--onefile", "--windowed",
         "--name", APP_NAME,
-        "--distpath", out_dir,
+        "--distpath", dist_exe_dir,
         "--workpath", os.path.join(work_dir, "pyi"),
         "--specpath", work_dir,
         "--paths", HERE,
@@ -109,12 +121,12 @@ def main():
         cmd += ["--icon", ico]
     cmd.append(os.path.join(HERE, "trackcheck_web.py"))
 
-    print("正在打包 exe ...")
+    print("正在打包无黑框 exe ...")
     r = subprocess.run(cmd, cwd=HERE)
     if r.returncode != 0:
         sys.exit(r.returncode)
 
-    exe_path = os.path.join(out_dir, f"{APP_NAME}.exe")
+    exe_path = os.path.join(dist_exe_dir, f"{APP_NAME}.exe")
     if not os.path.isfile(exe_path):
         print("未找到生成的 exe:", exe_path)
         sys.exit(1)

@@ -31,13 +31,19 @@ try:
 except ImportError:  # pragma: no cover
     sys.exit("缺少 PyYAML，请先执行: pip install pyyaml")
 
-if os.name == "nt":
+if os.name == "nt" and sys.stdout is not None:
     os.system("")  # 打开 Windows 终端 ANSI 颜色
 for _s in (sys.stdout, sys.stderr):
-    try:
-        _s.reconfigure(encoding="utf-8")
-    except Exception:
-        pass
+    if _s is not None:
+        try:
+            _s.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
+
+
+def popen_kw():
+    """Windows 无黑框打包（--windowed）时禁止子进程（如 adb）弹出黑色控制台闪烁。"""
+    return {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)} if os.name == "nt" else {}
 
 _C = dict(red="\033[31m", green="\033[32m", yellow="\033[33m", cyan="\033[36m",
           gray="\033[90m", bold="\033[1m", reset="\033[0m")
@@ -541,7 +547,7 @@ def list_app_dbs(adb, pkg):
     for cmd in (adb + ["shell", f"su -c 'ls /data/data/{pkg}/databases'"], adb + ["shell", "run-as", pkg, "ls", "databases"],
                 adb + ["shell", f"su 0 ls /data/data/{pkg}/databases"], adb + ["shell", f"ls /data/data/{pkg}/databases"]):
         try:
-            p = subprocess.run(cmd, capture_output=True, timeout=20)
+            p = subprocess.run(cmd, capture_output=True, timeout=20, **popen_kw())
         except (OSError, subprocess.TimeoutExpired):
             continue
         out = p.stdout.decode("utf-8", "replace")
@@ -559,7 +565,7 @@ def pull_app_db(adb, pkg, db, local):
         for cmd in (adb + ["exec-out", f"su -c 'cat {remote}{suffix}'"], adb + ["exec-out", "run-as", pkg, "cat", f"databases/{db}{suffix}"],
                     adb + ["exec-out", f"su 0 cat {remote}{suffix}"], adb + ["exec-out", f"cat {remote}{suffix}"]):
             try:
-                p = subprocess.run(cmd, capture_output=True, timeout=120)
+                p = subprocess.run(cmd, capture_output=True, timeout=120, **popen_kw())
             except (OSError, subprocess.TimeoutExpired):
                 continue
             if p.returncode == 0 and p.stdout and not _shell_err(p.stdout):
@@ -1675,7 +1681,7 @@ def do_pull(spec, serial=None):
         if remote.startswith("/"):
             if remote.endswith("/.") or local.endswith(("/", "\\")):
                 os.makedirs(local, exist_ok=True)
-            p = subprocess.run(adb + ["pull", remote, local], capture_output=True, text=True, errors="replace")
+            p = subprocess.run(adb + ["pull", remote, local], capture_output=True, text=True, errors="replace", **popen_kw())
             msg = (p.stdout + p.stderr).strip().splitlines()
             print((color("  ✓ ", "green") if p.returncode == 0 else color("  ✗ ", "red"))
                   + f"{remote} -> {local}  " + (msg[-1] if msg else ""))
@@ -1688,7 +1694,7 @@ def do_pull(spec, serial=None):
             files += [remote + "-wal", remote + "-shm"]
         for i, rf in enumerate(files):
             lf = local + rf[len(remote):]
-            chk = subprocess.run(adb + ["shell", "run-as", pkg, "ls", rf], capture_output=True, text=True, errors="replace")
+            chk = subprocess.run(adb + ["shell", "run-as", pkg, "ls", rf], capture_output=True, text=True, errors="replace", **popen_kw())
             if chk.returncode != 0 or "No such file" in chk.stdout + chk.stderr:
                 if i == 0:
                     print(color(f"  ✗ {rf}: {(chk.stdout + chk.stderr).strip()}", "red"))
@@ -1697,7 +1703,7 @@ def do_pull(spec, serial=None):
                     os.remove(lf)  # 手机上没有 wal 了，删掉本地旧的，避免读到脏数据
                 continue
             with open(lf, "wb") as f:
-                p = subprocess.run(adb + ["exec-out", "run-as", pkg, "cat", rf], stdout=f)
+                p = subprocess.run(adb + ["exec-out", "run-as", pkg, "cat", rf], stdout=f, **popen_kw())
             print((color("  ✓ ", "green") if p.returncode == 0 else color("  ✗ ", "red")) + f"{pkg}/{rf} -> {lf}")
 
 
@@ -1712,10 +1718,10 @@ class Capture:
     def start(self, clear=False):
         adb = adb_base(self.spec, self.serial)
         if clear:
-            subprocess.run(adb + ["logcat", "-c"])
+            subprocess.run(adb + ["logcat", "-c"], capture_output=True, **popen_kw())
         os.makedirs(os.path.dirname(self.raw_path) or ".", exist_ok=True)
         self.proc = subprocess.Popen(adb + ["logcat", "-v", "threadtime"] + self.spec.logcat_args,
-                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **popen_kw())
         self.thread = threading.Thread(target=self._loop, daemon=True)
         self.thread.start()
 

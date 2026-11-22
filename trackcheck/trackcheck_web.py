@@ -28,7 +28,7 @@ import threading
 import time
 import traceback
 import webbrowser
-from collections import Counter, OrderedDict, defaultdict
+from collections import Counter, OrderedDict, defaultdict, deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
@@ -44,6 +44,138 @@ APP_DIR = os.path.dirname(os.path.abspath(sys.executable)) if FROZEN else HERE
 DATA_DIRNAME = "埋点小岛数据"
 SAMPLE_DB_LIMIT = 3 * 1024 * 1024                      # 分享时附带的数据库样本上限
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
+HTTP_SERVER = None
+
+
+class ServerLogger:
+    """无黑框运行时的服务日志收集器：同时写入内存环形缓冲与 server.log，并追踪未读异常数。"""
+    MAX_LINES = 500
+    MAX_BYTES = 512 * 1024
+
+    def __init__(self):
+        self.lock = threading.RLock()
+        self.lines = deque(maxlen=self.MAX_LINES)
+        self.err_count = 0
+        self.path = ""
+        self._buf = {"INFO": "", "ERROR": ""}
+        self._orig_out = sys.stdout
+        self._orig_err = sys.stderr
+
+    def install(self):
+        sys.stdout = _LogStream(self, "INFO", self._orig_out)
+        sys.stderr = _LogStream(self, "ERROR", self._orig_err)
+
+    def bind_file(self, path):
+        with self.lock:
+            self.path = os.path.abspath(path)
+            os.makedirs(os.path.dirname(self.path), exist_ok=True)
+            try:
+                if os.path.isfile(self.path) and os.path.getsize(self.path) > self.MAX_BYTES:
+                    with open(self.path, "rb") as f:
+                        f.seek(-self.MAX_BYTES // 2, os.SEEK_END)
+                        tail = f.read().decode("utf-8", "replace")
+                    nl = tail.find("\n")
+                    if nl >= 0:
+                        tail = tail[nl + 1:]
+                    with open(self.path, "w", encoding="utf-8") as f:
+                        f.write(tail)
+                with open(self.path, "a", encoding="utf-8") as f:
+                    f.write(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} 埋点小岛启动 (PID {os.getpid()}) =====\n")
+                    for e in self.lines:
+                        f.write(f"[{e['time']}] [{e['level']}] {e['text']}\n")
+            except Exception:
+                pass
+
+    def emit(self, level, text):
+        clean = ANSI.sub("", text).rstrip("\r\n")
+        if not clean.strip():
+            return
+        ts = time.strftime("%H:%M:%S")
+        is_err = level == "ERROR" or "[error]" in clean.lower() or clean.lstrip().startswith("Traceback ")
+        lvl = "ERROR" if is_err else level
+        entry = {"time": ts, "level": lvl, "text": clean}
+        with self.lock:
+            self.lines.append(entry)
+            if is_err and not clean.lstrip().startswith(('File "', "During handling")):
+                # 同一段 Traceback 只计一次异常提醒，避免刷几十个红点
+                prev_err = len(self.lines) >= 2 and self.lines[-2]["level"] == "ERROR" and (self.lines[-2]["time"] == ts)
+                if not prev_err:
+                    self.err_count += 1
+            if self.path:
+                try:
+                    with open(self.path, "a", encoding="utf-8") as f:
+                        f.write(f"[{ts}] [{lvl}] {clean}\n")
+                except Exception:
+                    pass
+
+    def write_chunk(self, level, s):
+        if not s:
+            return
+        with self.lock:
+            buf = self._buf.get(level, "") + s
+            parts = buf.split("\n")
+            self._buf[level] = parts[-1]
+            for line in parts[:-1]:
+                self.emit(level, line)
+
+    def flush_partial(self):
+        with self.lock:
+            for lvl in ("INFO", "ERROR"):
+                rem = self._buf.get(lvl, "")
+                if rem.strip():
+                    self.emit(lvl, rem)
+                self._buf[lvl] = ""
+
+    def snapshot(self, mark_seen=False):
+        self.flush_partial()
+        with self.lock:
+            if mark_seen:
+                self.err_count = 0
+            return {
+                "lines": list(self.lines),
+                "err_count": self.err_count,
+                "path": self.path,
+            }
+
+    def clear(self):
+        with self.lock:
+            self.lines.clear()
+            self.err_count = 0
+            self._buf = {"INFO": "", "ERROR": ""}
+
+
+class _LogStream(io.TextIOBase):
+    encoding = "utf-8"
+
+    def __init__(self, logger, level, orig):
+        self._logger = logger
+        self._level = level
+        self._orig = orig
+
+    def write(self, s):
+        if not isinstance(s, str):
+            s = str(s)
+        if self._orig is not None:
+            try:
+                self._orig.write(s)
+                self._orig.flush()
+            except Exception:
+                pass
+        self._logger.write_chunk(self._level, s)
+        return len(s)
+
+    def flush(self):
+        if self._orig is not None:
+            try:
+                self._orig.flush()
+            except Exception:
+                pass
+
+    def isatty(self):
+        return False
+
+
+SERVER_LOG = ServerLogger()
 
 SKELETON = {
     "options": {"null_equals_empty": True, "strict_fields": False},
@@ -251,7 +383,7 @@ class LiveSession:
             adb = tc.adb_base(self.app.spec, self.serial)
             self._api_proc = subprocess.Popen(
                 adb + ["logcat", "-v", "threadtime", "-T", "1"],
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **tc.popen_kw(),
             )
             self._api_thread = threading.Thread(target=self._api_stream_loop, daemon=True)
             self._api_thread.start()
@@ -673,10 +805,10 @@ class ApiCaptureSession:
     def _start(self, clear=True):
         adb = tc.adb_base(self.app.spec, self.serial)
         if clear:
-            subprocess.run(adb + ["logcat", "-c"], capture_output=True, timeout=10)
+            subprocess.run(adb + ["logcat", "-c"], capture_output=True, timeout=10, **tc.popen_kw())
         cmd = adb + ["logcat", "-v", "threadtime"]
         self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                     text=True, encoding="utf-8", errors="replace", bufsize=1)
+                                     text=True, encoding="utf-8", errors="replace", bufsize=1, **tc.popen_kw())
         threading.Thread(target=self._reader, daemon=True).start()
 
     def _reader(self):
@@ -792,7 +924,8 @@ class App:
 
     def sessions(self):
         files = glob.glob(os.path.join(self.out, "*.log")) + glob.glob(os.path.join(os.path.dirname(self.store.path), "*.log"))
-        files = sorted(set(map(os.path.abspath, files)), key=os.path.getmtime, reverse=True)
+        files = [p for p in sorted(set(map(os.path.abspath, files)), key=os.path.getmtime, reverse=True)
+                 if os.path.basename(p).lower() != "server.log"]
         return [{"path": p, "name": os.path.basename(p), **file_info(p)} for p in files[:40]]
 
     def source_status(self):
@@ -976,6 +1109,7 @@ class App:
             "reports": reps, "sessions": self.sessions(), "live": live, "ask_fields": ask,
             "event_fields": ev_fields, "tpl_refs": tpl_refs, "all_apis": self.resolve_event_apis(),
             "evdict": {"count": len(evd.get("entries", {})), "docs": evd.get("docs", [])},
+            "server": {"frozen": FROZEN, "pid": os.getpid(), "err_count": SERVER_LOG.err_count, "log_path": SERVER_LOG.path},
         }
 
     def api_event(self, q):
@@ -1164,7 +1298,7 @@ class App:
 
     def api_devices(self, q):
         try:
-            p = subprocess.run([tc.find_adb(), "devices", "-l"], capture_output=True, text=True, timeout=8, errors="replace")
+            p = subprocess.run([tc.find_adb(), "devices", "-l"], capture_output=True, text=True, timeout=8, errors="replace", **tc.popen_kw())
         except FileNotFoundError:
             return {"devices": [], "error": "找不到 adb：装 Android Studio，或把 platform-tools 文件夹放到埋点小岛同目录"}
         except subprocess.TimeoutExpired:
@@ -1187,7 +1321,7 @@ class App:
             hits = list(self.live.api_hits)
             ver = self.live.version
         return {"running": self.live.running, "results": res, "count": n, "since": since,
-                "report": self.live.report, "raw": self.live.raw,
+                "report": self.live.report, "raw": self.live.raw, "err_count": SERVER_LOG.err_count,
                 "api_targets": self.live.api_targets, "api_hits": hits, "api_err": self.live.api_err, "version": ver}
 
     @staticmethod
@@ -2251,7 +2385,7 @@ class App:
         adb = tc.adb_base(self.spec, b.get("serial"))
         remote = f"/sdcard/Android/data/{pkg}/files/api_dump/."
         try:
-            p = subprocess.run(adb + ["pull", remote, self._ds_dir()], capture_output=True, text=True, errors="replace", timeout=120)
+            p = subprocess.run(adb + ["pull", remote, self._ds_dir()], capture_output=True, text=True, errors="replace", timeout=120, **tc.popen_kw())
         except FileNotFoundError:
             raise ApiError("找不到 adb")
         if p.returncode != 0:
@@ -2601,11 +2735,47 @@ class App:
         self.reload()
         return {"ok": True, "error": self.spec_error}
 
+    def api_server_log(self, q):
+        mark = str(q.get("seen", "1")) != "0"
+        return SERVER_LOG.snapshot(mark_seen=mark)
+
+    def api_server_log_clear(self, b):
+        SERVER_LOG.clear()
+        return {"ok": True}
+
+    def api_shutdown(self, b):
+        print("收到网页端退出请求，正在关闭埋点小岛后台服务…")
+        try:
+            if self.live and self.live.running:
+                self.live.running = False
+                self.live.cap.stop(linger=0)
+                if self.live._api_proc and self.live._api_proc.poll() is None:
+                    self.live._api_proc.terminate()
+            if self.api_cap and self.api_cap.running:
+                self.api_cap.stop()
+        except Exception:
+            pass
+        SERVER_LOG.flush_partial()
+
+        def _bye():
+            time.sleep(0.35)
+            try:
+                if HTTP_SERVER is not None:
+                    HTTP_SERVER.shutdown()
+            except Exception:
+                pass
+            os._exit(0)
+
+        threading.Thread(target=_bye, daemon=True).start()
+        return {"ok": True}
+
 
 ROUTES = {
     ("GET", "/api/state"): "api_state", ("GET", "/api/event"): "api_event", ("GET", "/api/report"): "api_report",
     ("GET", "/api/source_json"): "api_source_json", ("GET", "/api/db_schema"): "api_db_schema",
     ("GET", "/api/devices"): "api_devices", ("GET", "/api/live/poll"): "api_live_poll",
+    ("GET", "/api/server_log"): "api_server_log", ("POST", "/api/server_log/clear"): "api_server_log_clear",
+    ("POST", "/api/shutdown"): "api_shutdown",
     ("POST", "/api/event/save"): "api_event_save", ("POST", "/api/event/delete"): "api_event_delete",
     ("POST", "/api/dict/save"): "api_dict_save", ("POST", "/api/source/save"): "api_source_save",
     ("POST", "/api/case/save"): "api_case_save", ("POST", "/api/template/save"): "api_template_save",
@@ -2639,6 +2809,9 @@ MIME = {".html": "text/html; charset=utf-8", ".js": "application/javascript; cha
         ".json": "application/json; charset=utf-8"}
 
 
+_CLIENT_DISCONNECT = (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)
+
+
 def make_handler(app):
     lock = threading.RLock()
 
@@ -2646,14 +2819,23 @@ def make_handler(app):
         def log_message(self, *a):
             pass
 
+        def handle(self):
+            try:
+                super().handle()
+            except _CLIENT_DISCONNECT:
+                pass
+
         def _send(self, code, body, ctype="application/json; charset=utf-8"):
             data = body if isinstance(body, bytes) else json.dumps(body, ensure_ascii=False, default=str).encode("utf-8")
-            self.send_response(code)
-            self.send_header("Content-Type", ctype)
-            self.send_header("Content-Length", str(len(data)))
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            self.wfile.write(data)
+            try:
+                self.send_response(code)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(data)
+            except _CLIENT_DISCONNECT:
+                pass
 
         def do_GET(self):
             self._route("GET")
@@ -2679,18 +2861,24 @@ def make_handler(app):
                         with lock:
                             res = getattr(app, fn)(arg)
                     if isinstance(res, FileResponse):
-                        self.send_response(200)
-                        self.send_header("Content-Type", res.ctype)
-                        self.send_header("Content-Disposition", f'attachment; filename="{res.filename}"')
-                        self.send_header("Content-Length", str(len(res.data)))
-                        self.end_headers()
-                        self.wfile.write(res.data)
+                        try:
+                            self.send_response(200)
+                            self.send_header("Content-Type", res.ctype)
+                            self.send_header("Content-Disposition", f'attachment; filename="{res.filename}"')
+                            self.send_header("Content-Length", str(len(res.data)))
+                            self.end_headers()
+                            self.wfile.write(res.data)
+                        except _CLIENT_DISCONNECT:
+                            pass
                         return
                     self._send(200, res)
+                except _CLIENT_DISCONNECT:
+                    return
                 except ApiError as e:
                     self._send(400, {"error": str(e)})
                 except Exception as e:
-                    traceback.print_exc()
+                    tb = traceback.format_exc().rstrip()
+                    SERVER_LOG.emit("ERROR", f"API 异常 {method} {u.path}: {type(e).__name__}: {e}\n{tb}")
                     self._send(500, {"error": f"{type(e).__name__}: {e}"})
                 return
             if u.path.startswith("/report_html/"):
@@ -2722,6 +2910,12 @@ class Server(ThreadingHTTPServer):
     allow_reuse_address = False  # Windows 上 SO_REUSEADDR 会"抢"已被占用的端口，关掉才能正确检测冲突
     daemon_threads = True
 
+    def handle_error(self, request, client_address):
+        exc = sys.exc_info()[1]
+        if isinstance(exc, _CLIENT_DISCONNECT):
+            return
+        super().handle_error(request, client_address)
+
 
 def _find_running(spec_path, start_port):
     """已有埋点小岛在跑同一份规则文件 → 返回它的地址（双击 exe 第二次时直接打开浏览器，不重复启动）"""
@@ -2741,20 +2935,41 @@ def _find_running(spec_path, start_port):
 
 def _prepare_console():
     for s in (sys.stdout, sys.stderr):
-        try:
-            s.reconfigure(encoding="utf-8", errors="replace")
-        except Exception:
-            pass
-    if os.name == "nt":
+        if s is not None:
+            try:
+                s.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+    if os.name == "nt" and sys.stdout is not None and not FROZEN:
         try:
             import ctypes
             ctypes.windll.kernel32.SetConsoleTitleW("埋点小岛 —— 关闭这个窗口即退出")
             os.system("")   # 打开 Windows 终端的颜色支持
         except Exception:
             pass
+    SERVER_LOG.install()
+
+
+def _notify_fatal_error(msg):
+    """无黑框（FROZEN）启动发生致命异常时：写入 server.log 并弹出原生提示框，绝不静默消失。"""
+    log_path = SERVER_LOG.path or os.path.join(APP_DIR, DATA_DIRNAME, "reports", "server.log")
+    try:
+        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] [FATAL]\n{msg}\n")
+    except Exception:
+        pass
+    if FROZEN and os.name == "nt":
+        try:
+            import ctypes
+            body = f"{msg}\n\n详细日志已保存至：\n{log_path}"
+            ctypes.windll.user32.MessageBoxW(0, body[:1600], "埋点小岛 · 启动遇到问题", 0x10)
+        except Exception:
+            pass
 
 
 def main():
+    global HTTP_SERVER
     _prepare_console()
     default_spec = os.path.join(APP_DIR, DATA_DIRNAME, "trackcheck.yaml") if FROZEN else "trackcheck.yaml"
     ap = argparse.ArgumentParser(description="埋点小岛 —— trackcheck 本地可视化网站")
@@ -2771,6 +2986,7 @@ def main():
         return
     first_run = not os.path.exists(a.spec)
     app = App(a.spec, a.out)
+    SERVER_LOG.bind_file(os.path.join(app.out, "server.log"))
     os.makedirs(app.spec.datasource_dir, exist_ok=True)
     srv = None
     for port in range(a.port, a.port + 20):  # 端口被占用就顺延
@@ -2780,16 +2996,21 @@ def main():
         except OSError:
             continue
     if srv is None:
-        raise SystemExit(f"端口 {a.port}~{a.port + 19} 都被占用了，用 --port 指定一个")
+        raise SystemExit(f"端口 {a.port}~{a.port + 19} 都被占用了，请先在网页左下角退出旧实例或用 --port 指定端口")
+    HTTP_SERVER = srv
     url = f"http://127.0.0.1:{port}/"
     print(tc.color("🌱 埋点小岛已开张: ", "green") + tc.color(url, "bold"))
     if first_run:
         print("   第一次运行，已创建空白规则文件。去「导入 / 分享」页导入同事的规则包即可开始。")
     adb = tc.find_adb()
     print(f"   adb: {adb if adb != 'adb' else '没找到（装 Android Studio，或把 platform-tools 放到程序同目录）'}")
-    print(f"   规则文件: {app.store.path}\n   报告目录: {app.out}\n   关闭这个窗口（或 Ctrl+C）即退出")
+    print(f"   规则文件: {app.store.path}")
+    print(f"   报告目录: {app.out}")
+    print(f"   运行日志: {SERVER_LOG.path}")
+    print("   提示: 可在网页左下角查看运行日志或点击「休息退出」关闭后台服务")
+    SERVER_LOG.flush_partial()
     if not a.no_browser:
-        threading.Timer(0.8, lambda: webbrowser.open(url)).start()
+        threading.Timer(0.6, lambda: webbrowser.open(url)).start()
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
@@ -2797,15 +3018,23 @@ def main():
     finally:
         if app.live and app.live.running:
             app.live.cap.stop(0)
+        SERVER_LOG.flush_partial()
 
 
 if __name__ == "__main__":
     try:
         main()
-    except SystemExit:
+    except SystemExit as e:
+        if e.code not in (None, 0):
+            _notify_fatal_error(str(e))
         raise
     except Exception:
-        traceback.print_exc()
-        if FROZEN:   # 双击运行时窗口会一闪而过，先停住让人看到报错
-            input("\n埋点小岛启动失败（错误信息见上方），按回车关闭…")
+        tb = traceback.format_exc()
+        try:
+            sys.stderr.write(tb)
+        except Exception:
+            pass
+        _notify_fatal_error(tb)
+        if not FROZEN and sys.stdin is not None and getattr(sys.stdin, "isatty", lambda: False)():
+            pass
         raise

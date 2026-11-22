@@ -66,6 +66,7 @@ function app() {
     dsPreview: null,
     srcEd: null, caseEd: null, caseFilter: '', copiedRow: null, settingsEd: null, pullLog: '',
     rep: { list: [], cur: null, view: 'bad', showUnk: false, q: '', expandAll: false, listFilter: 'all', listQ: '' }, rv: null, yv: null,
+    srvLog: null, quitAsk: false, srvOff: false,
     checkForm: { path: '', content: '', fileName: '', caseName: '' },
 
     async init() {
@@ -73,9 +74,9 @@ function app() {
       this._inited = true;
       await this.refresh();
       this.loadDevices(); this.loadEvdict();
-      setInterval(() => this.pollLive(), 1000);
-      setInterval(() => this.pollApiCap(), 1000);
-      setInterval(() => this.loadDevices(), 15000);
+      setInterval(() => { if (!this.srvOff) this.pollLive(); }, 1000);
+      setInterval(() => { if (!this.srvOff) this.pollApiCap(); }, 1000);
+      setInterval(() => { if (!this.srvOff) this.loadDevices(); }, 15000);
       setInterval(() => { this.tipIdx = (this.tipIdx + 1) % TIPS.length; }, 9000);
       try { const saved = localStorage.getItem('tc_copied_row'); if (saved) this.copiedRow = JSON.parse(saved); } catch (e) {}
       const h = location.hash.slice(1); if (NAV.some(n => n.id === h)) this.go(h, true);
@@ -108,13 +109,22 @@ function app() {
       const opt = body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
       const r = await fetch(path, opt);
       const d = await r.json().catch(() => ({ error: '服务器返回异常' }));
-      if (!r.ok) throw new Error(d.error || r.statusText);
+      if (!r.ok) {
+        const err = new Error(d.error || r.statusText);
+        err.status = r.status;
+        if (r.status >= 500 && this.st?.server) this.st.server.err_count = (this.st.server.err_count || 0) + 1;
+        throw err;
+      }
       return d;
     },
     async call(fn, okMsg) {
       this.busy = true;
       try { const r = await fn(); if (okMsg) this.toast(okMsg, 'ok'); return r; }
-      catch (e) { this.toast(e.message, 'err'); throw e; }
+      catch (e) {
+        const act = e?.status >= 500 ? { label: '查看日志', fn: () => this.openServerLog() } : null;
+        this.toast(e.message, 'err', act);
+        throw e;
+      }
       finally { this.busy = false; }
     },
     toast(msg, kind = 'ok', action = null) {
@@ -351,6 +361,7 @@ function app() {
           this.live.ver = d.version || 0;
         }
         this.live.raw = d.raw || this.live.raw;
+        if (d.err_count !== undefined && this.st?.server) this.st.server.err_count = d.err_count;
         if (this.live.apiHits.length > prevHits && !force) {
           const lastHit = this.live.apiHits[this.live.apiHits.length - 1];
           this.toast(`已自动捕获接口「${lastHit.source}」并更新数据源`, 'ok');
@@ -1474,6 +1485,43 @@ function app() {
       const r = await this.call(() => this.api('/api/check_log', { ...this.logBody(c), case: c.caseName }));
       this.toast(r.summary.ok ? '校验通过' : `校验完成：失败 ${r.summary.fail} 条`, r.summary.ok ? 'ok' : 'warn');
       await this.refresh(); this.openReport(r.report);
+    },
+
+    // ---------------- 小岛后台服务日志与优雅退出 ----------------
+    get srvErrCount() { return this.st?.server?.err_count || 0; },
+    get srvLogErrTotal() { return (this.srvLog?.lines || []).filter(x => x.level === 'ERROR').length; },
+    get srvLogHasErr() { return this.srvLogErrTotal > 0; },
+    get srvLogLines() {
+      const ls = this.srvLog?.lines || [];
+      return this.srvLog?.onlyErr ? ls.filter(x => x.level === 'ERROR') : ls;
+    },
+    get srvLogText() {
+      return this.srvLogLines.map(x => `[${x.time}] [${x.level}] ${x.text}`).join('\n');
+    },
+    async openServerLog() {
+      const hadUnread = this.srvErrCount > 0;
+      const d = await this.call(() => this.api('/api/server_log?seen=1'));
+      if (this.st?.server) this.st.server.err_count = 0;
+      this.srvLog = { ...d, onlyErr: hadUnread && (d.lines || []).some(x => x.level === 'ERROR') };
+    },
+    async reloadServerLog() {
+      const onlyErr = !!this.srvLog?.onlyErr;
+      const d = await this.call(() => this.api('/api/server_log?seen=1'));
+      if (this.st?.server) this.st.server.err_count = 0;
+      this.srvLog = { ...d, onlyErr };
+    },
+    async clearServerLog() {
+      await this.call(() => this.api('/api/server_log/clear', {}), '已清空当前面板日志');
+      if (this.st?.server) this.st.server.err_count = 0;
+      if (this.srvLog) this.srvLog.lines = [];
+    },
+    async shutdownServer() {
+      this.busy = true;
+      try { await this.api('/api/shutdown', {}); } catch (_) {}
+      this.busy = false;
+      this.quitAsk = false;
+      this.srvLog = null;
+      this.srvOff = true;
     },
   };
 }
