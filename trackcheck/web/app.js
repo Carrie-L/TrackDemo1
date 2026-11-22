@@ -11,18 +11,21 @@ const NAV = [
   { id: 'share', icon: 'share', label: '导入 / 分享' },
 ];
 const CARD_TONES = [
-  'bg-pond-50/90 border-pond-200', 'bg-leaf-50/85 border-leaf-200', 'bg-sakura-50/90 border-sakura-200',
-  'bg-peach-50/85 border-peach-200', 'bg-wood-50/85 border-wood-200', 'bg-sun-50/85 border-sun-200',
+  'bg-gradient-to-br from-[#EAF7FF] to-white border-[#BEE4FA]',
+  'bg-gradient-to-br from-[#EEFAEE] to-white border-[#C4E8C4]',
+  'bg-gradient-to-br from-[#FFF0F6] to-white border-[#FAD0E2]',
+  'bg-gradient-to-br from-[#F4F0FF] to-white border-[#DDD0FA]',
+  'bg-gradient-to-br from-[#FFF4EE] to-white border-[#FBD6C2]',
+  'bg-gradient-to-br from-[#FFFCEB] to-white border-[#F8E6A8]',
 ];
 const TIPS = [
-  '一个点位只需要配置一次规则，之后每次测试都会自动复用。',
-  '会变的计数（如历史记录数）：实时调试时自动在事件前后拍 DB 快照，上报值落在区间内即通过。',
+  '一个点位只需配置一次规则，之后每次测试都会自动复用。',
+  '多个点位共用同一个接口时，可以在「模板」里绑定接口地址，实时调试会自动从 OkHttp 日志抓取最新接口 JSON。',
+  '接口某模块下发空数组 res:[] 代表走默认兜底时，用「合并 / 兜底 JSON」特殊数据源就能按顺序合成真实展示数据。',
+  '会变的计数（如历史记录数）：实时调试自动在事件前后拍 DB 快照，上报值落在区间内即通过。',
   '入口、Tab 这类由操作决定的值：在「测试用例」里给字段点选期望值，实时调试选上用例就自动比对。',
-  '没填期望值也没关系，标了「看操作」的字段会显示「待确认」，点一下「对 / 不对」即可。',
-  '多个点位共用的定位和字段可以做成「模板」，在「点位规则 → 模板」里查看和编辑。',
-  '规则可以交给 AI 写：在事件或点位上点「复制 AI 提示词」，粘贴给 AI 就有文档、日志和数据源。',
-  '埋点字典支持多次导入不同版本的文档，重复的点位会自动跳过。',
-  '数据源不用填路径：把接口 JSON / 数据库放进数据源目录，或者填包名直接从手机拉。',
+  '规则可以交给 AI 写：在点位上点「复制 AI 提示词」，会自动附带埋点文档、数据源路径、已有模板和公共字典。',
+  '分享给同事时勾选「附带数据源样本」，同事没连手机也能先用样本跑通规则和预览数据。',
 ];
 const STATUS_TEXT = { PASS: '通过', FAIL: '失败', WARN: '警告', ASK: '待确认', SKIP: '跳过', INFO: '未定义', UNKNOWN: '无规则', MISS: '未触发' };
 const DRAFT_TEXT = { ok: '已推断', confirm: '请确认', todo: '待补全' };
@@ -51,7 +54,7 @@ function app() {
   return {
     NAV, CARD_TONES, STATUS_TEXT, DRAFT_TEXT, fmtSize,
     page: 'home', st: null, busy: false, toasts: [], tipIdx: 0, devices: [], devErr: '', search: '', searchOpen: false,
-    live: { serial: '', clear: true, pull: false, snapshot: true, caseName: '', only: '', results: [], running: false, sel: -1, report: null, raw: '', filter: 'all', scn: {}, snapErr: '', plan: [], addId: '', onlyPlan: false, showUnk: false, planOpen: true, planSel: '', planQ: '' },
+    live: { serial: '', clear: true, pull: false, snapshot: true, autoApi: true, apiTargets: [], apiHits: [], ver: 0, caseName: '', only: '', results: [], running: false, sel: -1, report: null, raw: '', filter: 'all', scn: {}, snapErr: '', plan: [], addId: '', onlyPlan: false, showUnk: false, planOpen: true, planSel: '', planQ: '' },
     inf: { mode: 'session', path: '', content: '', fileName: '', drafts: [], dicts: {}, warns: [], log: '', open: 0 },
     ed: null, ruleFilter: '', ruleTab: 'all',
     exp: { mode: 'all', ids: [], q: '', author: '', note: '', sources: true, samples: true },
@@ -61,8 +64,8 @@ function app() {
     ds: { files: [], dir: '', pkg: '', dbs: [], devDbs: null, pasteName: '', pasteText: '', showPaste: false, log: '', advanced: false, drag: false, presets: [], histOpen: {} },
     apiCap: { running: false, endpoint: '', name: '', tag: '', clear: true, lines: 0, captured: [], error: '', showText: false, rawLog: '' },
     dsPreview: null,
-    srcEd: null, caseEd: null, copiedRow: null, settingsEd: null, pullLog: '',
-    rep: { list: [], cur: null, view: 'bad', showUnk: false, q: '', expandAll: false }, rv: null, yv: null,
+    srcEd: null, caseEd: null, caseFilter: '', copiedRow: null, settingsEd: null, pullLog: '',
+    rep: { list: [], cur: null, view: 'bad', showUnk: false, q: '', expandAll: false, listFilter: 'all', listQ: '' }, rv: null, yv: null,
     checkForm: { path: '', content: '', fileName: '', caseName: '' },
 
     async init() {
@@ -127,8 +130,19 @@ function app() {
       try {
         const r = await this.api('/api/open_path', body);
         if (r.sandbox) {
-          try { await navigator.clipboard.writeText(r.path); } catch (e) {}
-          this.toast('当前服务运行在后台沙箱中无法弹窗，已复制路径到剪贴板；双击「启动埋点小岛.bat」在本机启动后即可直接打开资源管理器', 'warn');
+          let copied = false;
+          try { await navigator.clipboard.writeText(r.path); copied = true; } catch (e) {
+            try {
+              const ta = document.createElement('textarea');
+              ta.value = r.path;
+              ta.style.cssText = 'position:fixed;opacity:0;pointer-events:none';
+              document.body.appendChild(ta);
+              ta.select();
+              copied = document.execCommand('copy');
+              ta.remove();
+            } catch (_) {}
+          }
+          this.toast(copied ? '已复制路径：' + r.path : '文件路径：' + r.path, 'ok');
         } else {
           this.toast('已在文件管理器打开：' + this.fileName(r.path), 'ok');
         }
@@ -250,6 +264,26 @@ function app() {
     async copyAiAgain() { try { await navigator.clipboard.writeText(this.ai.text); this.toast('已复制', 'ok'); } catch (e) { this.toast('复制失败，请手动全选复制', 'err'); } },
 
     // ---------------- 实时调试 ----------------
+    get liveBoundApis() {
+      const s = this.st; if (!s) return [];
+      const planIds = (this.live.plan || []).map(r => String(r.id));
+      if (!planIds.length) return s.all_apis || [];
+      const seen = new Set(), out = [];
+      const add = (a, via) => {
+        if (!a) return;
+        const arr = Array.isArray(a) ? a : [a];
+        arr.forEach(it => {
+          const ep = typeof it === 'string' ? it.trim() : String(it?.endpoint || '').trim();
+          if (!ep) return;
+          const src = (typeof it === 'object' && it?.source ? String(it.source).trim() : '') || this.inferApiName(ep);
+          const k = ep.toLowerCase() + '|' + src;
+          if (!seen.has(k)) { seen.add(k); out.push({ endpoint: ep, source: src, tag: it?.tag || '', via: via ? [via] : [] }); }
+        });
+      };
+      const evMap = Object.fromEntries((s.events || []).map(e => [String(e.id), e]));
+      planIds.forEach(id => { const ev = evMap[id]; if (ev?.api) add(ev.api, ev.name || id); });
+      return out;
+    },
     get askFields() {
       const a = this.st?.ask_fields || {}, only = splitList(this.live.only);
       return Object.entries(a).filter(([, v]) => !only.length || v.events.some(e => only.includes(e))).map(([k, v]) => ({ field: k, ...v }));
@@ -271,11 +305,21 @@ function app() {
     },
     async startLive() {
       const only = this.live.onlyPlan && this.live.plan.length ? this.live.plan.map(r => r.id) : [];
-      const r = await this.call(() => this.api('/api/live/start', { serial: this.live.serial, clear: this.live.clear, case: this.live.caseName, only, scenario: this.planScenario, snapshot: this.live.snapshot }));
-      Object.assign(this.live, { results: [], running: true, sel: -1, report: null, snapErr: r.snap_err || '' });
+      const r = await this.call(() => this.api('/api/live/start', {
+        serial: this.live.serial, clear: this.live.clear, case: this.live.caseName, only,
+        scenario: this.planScenario, snapshot: this.live.snapshot, auto_api: this.live.autoApi,
+      }));
+      Object.assign(this.live, {
+        results: [], running: true, sel: -1, report: null, snapErr: r.snap_err || '',
+        apiTargets: r.api_targets || [], apiHits: [], ver: 0,
+      });
       if (this.live.plan.length > 3) this.live.planSel = '';
-      this.toast(r.snap_on ? '开始抓取，已开启 DB 快照，去手机上操作吧' : '开始抓取 logcat，去手机上操作吧', 'ok');
+      const extras = [];
+      if (r.snap_on) extras.push('DB 快照');
+      if (r.api_targets?.length) extras.push('接口自动抓取（' + r.api_targets.map(x => x.source).join('、') + '）');
+      this.toast(extras.length ? '开始抓取，已开启 ' + extras.join(' + ') + '，去手机上操作吧' : '开始抓取 logcat，去手机上操作吧', 'ok');
       if (r.snap_err) this.toast('DB 快照没开成：' + r.snap_err, 'warn');
+      if (r.api_err) this.toast('接口自动抓取异常：' + r.api_err, 'warn');
       this.refresh();
     },
     async stopLive() {
@@ -289,9 +333,29 @@ function app() {
     async pollLive(force) {
       if (!force && !this.live.running) return;
       try {
+        const prevHits = (this.live.apiHits || []).length;
         const d = await this.api('/api/live/poll?since=' + this.live.results.length);
-        if (d.since === this.live.results.length) this.live.results.push(...d.results);
-        this.live.running = d.running; this.live.raw = d.raw || this.live.raw;
+        const verChanged = (d.version || 0) !== (this.live.ver || 0);
+        if (verChanged && this.live.results.length) {
+          this.live.ver = d.version || 0;
+          const all = await this.api('/api/live/poll?since=0');
+          this.live.results = all.results || [];
+          this.live.running = all.running;
+          this.live.apiTargets = all.api_targets || [];
+          this.live.apiHits = all.api_hits || [];
+        } else {
+          if (d.since === this.live.results.length) this.live.results.push(...d.results);
+          this.live.running = d.running;
+          this.live.apiTargets = d.api_targets || [];
+          this.live.apiHits = d.api_hits || [];
+          this.live.ver = d.version || 0;
+        }
+        this.live.raw = d.raw || this.live.raw;
+        if (this.live.apiHits.length > prevHits && !force) {
+          const lastHit = this.live.apiHits[this.live.apiHits.length - 1];
+          this.toast(`已自动捕获接口「${lastHit.source}」并更新数据源`, 'ok');
+          this.refresh();
+        }
         if (this.live.sel < 0 && this.liveList.length) this.live.sel = this.liveList[0].i;
       } catch (e) { /* 忽略一次轮询错误 */ }
     },
@@ -306,8 +370,14 @@ function app() {
     get liveCounts() {
       const c = { PASS: 0, FAIL: 0, WARN: 0, ASK: 0, UNKNOWN: 0 }; this.live.results.forEach(r => { c[r.status] = (c[r.status] || 0) + 1; }); return c;
     },
-    badCount(r) { return r.fields.filter(f => f.status === 'FAIL' || f.status === 'WARN').length + r.errors.length; },
-    askCount(r) { return r.fields.filter(f => f.status === 'ASK').length; },
+    badCount(r) {
+      return (r.fields || []).filter(f => f.status === 'FAIL' || f.status === 'WARN').length
+           + (r.errors || []).filter(e => e.status === 'FAIL' || e.status === 'WARN').length;
+    },
+    askCount(r) {
+      return (r.fields || []).filter(f => f.status === 'ASK').length
+           + (r.errors || []).filter(e => e.status === 'ASK').length;
+    },
     async editFieldFromResult(r, f) {
       const ev = await this.api('/api/event?id=' + r.id);
       const rule = (ev.raw.fields || {})[f.field] ?? (ev.resolved.fields || {})[f.field] ?? {};
@@ -366,7 +436,7 @@ function app() {
     },
     caseRows(c) {
       return (c?.expect || []).map(x => { const o = typeof x === 'object' ? x : { id: x };
-        return { key: Math.random(), id: String(o.id), min: o.min ?? 1, max: o.max ?? '', where: o.where || null, values: clone(o.values || {}), showAll: false }; });
+        return { key: Math.random(), id: String(o.id), min: o.min ?? 1, max: o.max ?? '', where: o.where || null, values: clone(o.values || {}), showAll: false, collapsed: false }; });
     },
     rowsToExpect(rows) {
       return rows.filter(r => r.id).map(r => {
@@ -756,7 +826,7 @@ function app() {
       const q = (this.ruleFilter || this.search).trim().toLowerCase();
       const s = this.st; if (!s) return [];
       if (this.ruleTab === 'tpl') return Object.keys(s.templates || {}).filter(n => !q || n.toLowerCase().includes(q))
-        .map(n => ({ id: n, name: n, isTpl: true, refs: (s.tpl_refs?.[n] || []).length }));
+        .map(n => ({ id: n, name: n, isTpl: true, refs: (s.tpl_refs?.[n] || []).length, api: s.templates?.[n]?.api || null }));
       const inYaml = new Set(s.events.map(e => e.id));
       const real = s.events.filter(e => !e.stub), stubs = s.events.filter(e => e.stub);
       const catOnly = s.catalog.filter(c => !inYaml.has(c.id)).map(c => ({ id: c.id, name: c.name, nfields: 0, unconfigured: true }));
@@ -785,13 +855,61 @@ function app() {
     openEditor({ id, isNew, raw, resolved, file, sample, kind }) {
       raw = clone(raw) || {};
       if (!this.evd.loaded) this.loadEvdict();
+      const ownApi = typeof raw.api === 'string' ? { endpoint: raw.api } : (raw.api || {});
       this.ed = {
         id, oldId: isNew ? '' : id, isNew, raw, resolved: resolved || {}, file: file || '', kind: kind || 'event',
         sampleText: sample?.line || '', sample: sample || null, tryRes: null, dirty: !!isNew, showDoc: true,
         dedupe: (raw.dedupe ? [].concat(raw.dedupe) : []).join(', '),
         asserts: (raw.asserts || []).map(a => typeof a === 'string' ? { expr: a, msg: '' } : { expr: a.expr || '', msg: a.msg || '' }),
+        apiEndpoint: ownApi.endpoint || '',
+        apiSource: ownApi.source || '',
+        apiTag: ownApi.tag || '',
+        apiOverride: !!ownApi.endpoint,
+        apiOpen: false,
       };
       if (sample) this.tryEditor();
+    },
+    get edInheritedApi() {
+      const e = this.ed;
+      if (!e || e.kind === 'template' || !e.raw.extends || e.apiOverride) return null;
+      const tpl = this.st?.templates?.[e.raw.extends];
+      const a = (tpl && tpl.api) || e.resolved?.api;
+      if (!a) return null;
+      const ep = typeof a === 'string' ? a : a.endpoint;
+      if (!ep) return null;
+      return { endpoint: ep, source: (typeof a === 'object' && a.source) || this.inferApiName(ep), tag: (typeof a === 'object' && a.tag) || '', from: e.raw.extends };
+    },
+    get edOwnApi() {
+      const e = this.ed;
+      if (!e) return null;
+      const ep = String(e.apiEndpoint || '').trim();
+      if (!ep) return null;
+      return { endpoint: ep, source: String(e.apiSource || '').trim() || this.inferApiName(ep), tag: String(e.apiTag || '').trim() };
+    },
+    openApiEdit(prefill) {
+      const e = this.ed; if (!e) return;
+      if (prefill) {
+        e.apiEndpoint = prefill.endpoint || '';
+        e.apiSource = prefill.source || '';
+        e.apiTag = prefill.tag || '';
+      }
+      e.apiOverride = true;
+      e.apiOpen = true;
+    },
+    collapseApiEdit() {
+      const e = this.ed; if (!e) return;
+      e.apiOpen = false;
+      if (!String(e.apiEndpoint || '').trim()) e.apiOverride = false;
+    },
+    removeBoundApi() {
+      const e = this.ed; if (!e) return;
+      const had = !!String(e.apiEndpoint || '').trim();
+      e.apiEndpoint = ''; e.apiSource = ''; e.apiTag = ''; e.apiOverride = false; e.apiOpen = false;
+      if (had) { e.dirty = true; this.toast('已移除关联接口（点击右上角「保存规则」生效）', 'ok'); }
+    },
+    clearApiOverride() {
+      const e = this.ed; if (!e) return;
+      e.apiEndpoint = ''; e.apiSource = ''; e.apiTag = ''; e.apiOverride = false; e.apiOpen = false; e.dirty = true;
     },
     async loadEditor(id, sample) {
       const ev = await this.call(() => this.api('/api/event?id=' + id));
@@ -846,6 +964,15 @@ function app() {
       const as = (e.asserts || []).filter(a => a.expr.trim()).map(a => a.msg ? { expr: a.expr, msg: a.msg } : a.expr);
       if (as.length) raw.asserts = as; else delete raw.asserts;
       if (raw.extends === '') delete raw.extends;
+      const ep = (e.apiEndpoint || '').trim();
+      if (ep) {
+        const api = { endpoint: ep };
+        if ((e.apiSource || '').trim()) api.source = e.apiSource.trim();
+        if ((e.apiTag || '').trim()) api.tag = e.apiTag.trim();
+        raw.api = api;
+      } else {
+        delete raw.api;
+      }
       return raw;
     },
     async parseSample() {
@@ -977,7 +1104,16 @@ function app() {
     },
     async previewDsJson(name, sub) {
       const d = await this.call(() => this.api('/api/source_json?name=' + encodeURIComponent(name)));
-      this.dsPreview = { title: name, sub: sub || '当前生效数据', text: JSON.stringify(d.data, null, 2) };
+      let subtitle = sub || '当前生效数据';
+      if (d.merge_info) {
+        const m = d.merge_info, parts = [];
+        parts.push(m.primary_used ? ('主源：' + m.primary_used) : '主源不可用，已全量使用兜底');
+        if (m.replaced_keys?.length) parts.push('兜底替换：' + m.replaced_keys.join(', '));
+        if (m.appended_keys?.length) parts.push('兜底补入：' + m.appended_keys.join(', '));
+        if (m.kept_keys?.length) parts.push('云侧下发：' + m.kept_keys.join(', '));
+        subtitle = parts.join(' · ');
+      }
+      this.dsPreview = { title: name, sub: subtitle, text: JSON.stringify(d.data, null, 2) };
     },
     async previewHistJson(hist, sub) {
       const d = await this.call(() => this.api('/api/ds/history/json?hist=' + encodeURIComponent(hist)));
@@ -1015,13 +1151,59 @@ function app() {
       const r = await this.call(() => this.api('/api/pull/apidump', { package: this.ds.pkg, serial: this.live.serial }), '已拉取接口 dump');
       this.ds.log = r.log; await this.loadDs(); this.refresh();
     },
+    get jsonSourceNames() {
+      const cur = this.srcEd?.name || '';
+      return Object.entries(this.st?.sources || {})
+        .filter(([k, v]) => v.type !== 'sqlite' && k !== cur)
+        .map(([k]) => k);
+    },
+    srcBadge(s) {
+      return s.type === 'sqlite_json' ? 'DB 缓存' : s.type === 'merged_json' ? '合并兜底' : s.type === 'sqlite' ? '特殊 · DB' : '特殊 · JSON';
+    },
+    srcSummary(s) {
+      if (s.type === 'sqlite_json') return (s.db || '') + ' · ' + (s.sql || '');
+      if (s.type === 'merged_json') {
+        const pr = Array.isArray(s.primary) ? s.primary.join(' → ') : (s.primary || '');
+        const fb = s.fallback ? (' + 兜底 ' + s.fallback) : '';
+        const fk = Array.isArray(s.fallback_keys) && s.fallback_keys.length ? (' [' + s.fallback_keys.join(', ') + ']') : '';
+        return (pr || '未设主源') + fb + (s.path ? (' · ' + s.path) : '') + fk;
+      }
+      return s.path || '';
+    },
+    togglePrimarySrc(name) {
+      if (!this.srcEd) return;
+      const list = splitList(this.srcEd.primary);
+      const i = list.indexOf(name);
+      if (i >= 0) list.splice(i, 1); else list.push(name);
+      this.srcEd.primary = list.join(', ');
+    },
     openSrc(name) {
-      const s = name ? clone(this.st.sources_explicit[name]) : { type: 'sqlite_json' };
-      this.srcEd = { name: name || '', old: name || '', type: s.type || 'json_file', path: s.path || '', db: s.db || '', sql: s.sql || '', root: s.root || '' };
+      const s = name ? clone(this.st.sources_explicit[name]) : { type: 'merged_json', key: 'key', empty_field: 'res' };
+      const pr = Array.isArray(s.primary) ? s.primary.join(', ') : (s.primary || '');
+      const fks = Array.isArray(s.fallback_keys) ? s.fallback_keys.join(', ') : (s.fallback_keys || '');
+      this.srcEd = {
+        name: name || '', old: name || '', type: s.type || 'json_file',
+        path: s.path || '', db: s.db || '', sql: s.sql || '', root: s.root || '',
+        primary: pr, fallback: s.fallback || '', fallback_path: s.fallback_path || '',
+        key: s.key || 'key', empty_field: s.empty_field ?? 'res', fallback_keys: fks,
+      };
     },
     async saveSrc() {
       const s = this.srcEd, v = { type: s.type };
-      if (s.type !== 'sqlite_json') v.path = s.path; else { v.db = s.db; v.sql = s.sql; }
+      if (s.type === 'sqlite_json') {
+        v.db = s.db; v.sql = s.sql;
+      } else if (s.type === 'merged_json') {
+        v.primary = splitList(s.primary);
+        if (s.fallback.trim()) v.fallback = s.fallback.trim();
+        if (s.path.trim()) v.path = s.path.trim();
+        if (s.fallback_path.trim()) v.fallback_path = s.fallback_path.trim();
+        if (s.key.trim()) v.key = s.key.trim();
+        if (s.empty_field.trim()) v.empty_field = s.empty_field.trim();
+        const fks = splitList(s.fallback_keys);
+        if (fks.length) v.fallback_keys = fks;
+      } else {
+        v.path = s.path;
+      }
       if (s.root) v.root = s.root;
       await this.call(() => this.api('/api/source/save', { name: s.name, old_name: s.old, value: v }), '数据源已保存');
       this.srcEd = null; this.refresh();
@@ -1087,6 +1269,24 @@ function app() {
     },
 
     // ---------------- 用例 ----------------
+    get filteredCases() {
+      const q = (this.caseFilter || '').trim().toLowerCase();
+      return Object.entries(this.st?.cases || {}).filter(([name, c]) => !q || name.toLowerCase().includes(q) || String(c?.desc || '').toLowerCase().includes(q));
+    },
+    get allCaseRowsCollapsed() {
+      const rows = this.caseEd?.rows || [];
+      return rows.length > 0 && rows.every(r => r.collapsed);
+    },
+    toggleAllCaseRows() {
+      const rows = this.caseEd?.rows || [];
+      const next = !this.allCaseRowsCollapsed;
+      rows.forEach(r => { r.collapsed = next; });
+    },
+    caseRowPairs(row) {
+      return Object.entries(row.values || {})
+        .filter(([, v]) => v !== '' && !(Array.isArray(v) && !v.length))
+        .map(([k, v]) => `${k}=${Array.isArray(v) ? v.join('/') : v}`);
+    },
     openCase(name) {
       const c = name ? clone(this.st.cases[name]) : { expect: [] };
       this.caseEd = { name: name || '', old: name || '', desc: c.desc || '', addId: '', rows: this.caseRows(c), dirty: !name };
@@ -1156,6 +1356,37 @@ function app() {
     useCaseInLive(name) { this.live.caseName = name; this.loadPlanFromCase(); this.go('live'); },
 
     // ---------------- 报告 ----------------
+    get filteredReports() {
+      const list = this.st?.reports || [];
+      const f = this.rep.listFilter || 'all';
+      const q = (this.rep.listQ || '').trim().toLowerCase();
+      return list.filter(r => {
+        const isPurePass = r.summary.ok && !r.summary.ask && !r.summary.warn;
+        if (f === 'bad' && isPurePass) return false;
+        if (f === 'pass' && !isPurePass) return false;
+        if (q) {
+          const hay = ((r.time || '') + ' ' + (r.case || '') + ' ' + (r.name || '')).toLowerCase();
+          if (!hay.includes(q)) return false;
+        }
+        return true;
+      });
+    },
+    get groupedReports() {
+      const groups = [];
+      let cur = null;
+      for (const r of this.filteredReports) {
+        const raw = String(r.time || '');
+        const m = raw.match(/^(\d{4}-\d{2}-\d{2})\s+(.+)$/);
+        const date = m ? m[1] : '其他';
+        const clock = m ? m[2] : raw;
+        if (!cur || cur.date !== date) {
+          cur = { date, items: [] };
+          groups.push(cur);
+        }
+        cur.items.push({ ...r, clock });
+      }
+      return groups;
+    },
     statusIcon(s) { return { PASS: 'sprout', FAIL: 'bug', ASK: 'bud', WARN: 'warn' }[s] || ''; },
     async openReport(name) {
       this.rep.cur = await this.call(() => this.api('/api/report?name=' + encodeURIComponent(name)));

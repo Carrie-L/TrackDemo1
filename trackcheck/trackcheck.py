@@ -12,6 +12,7 @@ trackcheck —— Android 埋点调试 / 自动校验工具
 依赖：Python 3.8+，PyYAML（pip install pyyaml）
 """
 import argparse
+import copy
 import datetime as dt
 import glob
 import html
@@ -587,6 +588,9 @@ def merge_spec(a, b):
             out[k] = m
         elif k == "asserts":
             out[k] = list(out.get(k) or []) + list(v or [])
+        elif k == "api":
+            if v:
+                out[k] = copy.deepcopy(v)
         else:
             out[k] = v
     return out
@@ -676,9 +680,181 @@ class Sources:
         self.spec = spec
         self._json = {}
         self._db = {}
+        self._merge_meta = {}
 
     def has(self, name):
         return name in self.spec.sources
+
+    def merge_info(self, name):
+        return self._merge_meta.get(name)
+
+    @staticmethod
+    def _str_list(v):
+        if not v:
+            return []
+        if isinstance(v, str):
+            return [x.strip() for x in re.split(r"[,，\s]+", v) if x.strip()]
+        return [str(x).strip() for x in v if str(x).strip()]
+
+    @staticmethod
+    def _is_empty_val(v):
+        return v is None or v == "" or v == [] or v == {}
+
+    @staticmethod
+    def _nav_path(root, path):
+        """按点分路径定位 (parent, last_key, node)；空路径返回 (None, None, root)"""
+        if not path:
+            return None, None, root
+        parts = [p for p in str(path).split(".") if p]
+        cur, parent, last_k = root, None, None
+        for p in parts:
+            parent, last_k = cur, p
+            if isinstance(cur, dict) and p in cur:
+                cur = cur[p]
+            else:
+                return None, None, None
+        return parent, last_k, cur
+
+    def _merge_json(self, name, cfg, seen):
+        primaries = self._str_list(cfg.get("primary") or cfg.get("sources"))
+        fb_name = str(cfg.get("fallback") or "").strip()
+        if not primaries and not fb_name:
+            raise SourceError(f"{name}: merged_json 至少要配置 primary 或 fallback 数据源")
+        p_used, p_data, p_errs = None, None, []
+        for pn in primaries:
+            if not self.has(pn):
+                p_errs.append(f"{pn} 未定义")
+                continue
+            try:
+                p_data = self.json(pn, seen)
+                p_used = pn
+                break
+            except SourceError as e:
+                p_errs.append(str(e))
+        fb_data, fb_err = None, None
+        if fb_name:
+            if not self.has(fb_name):
+                fb_err = f"{fb_name} 未定义"
+            else:
+                try:
+                    fb_data = self.json(fb_name, seen)
+                except SourceError as e:
+                    fb_err = str(e)
+        if p_data is None:
+            if fb_data is not None:
+                ck = ("fb_only", fb_name, id(fb_data))
+                c = self._json.get(name)
+                if c and c[0] == ck:
+                    return c[1]
+                out = copy.deepcopy(fb_data)
+                self._merge_meta[name] = {
+                    "primary_used": None, "fallback": fb_name, "mode": "fallback_all",
+                    "primary_errors": p_errs, "replaced_keys": [], "appended_keys": [], "kept_keys": [],
+                }
+                self._json[name] = (ck, out)
+                return out
+            detail = "；".join(p_errs + ([f"兜底 {fb_err}"] if fb_err else []))
+            raise SourceError(f"{name}: 主源和兜底源均不可用（{detail}）")
+        if fb_data is None:
+            ck = ("p_only", p_used, id(p_data), fb_err)
+            c = self._json.get(name)
+            if c and c[0] == ck:
+                return c[1]
+            out = copy.deepcopy(p_data)
+            self._merge_meta[name] = {
+                "primary_used": p_used, "fallback": fb_name or None, "mode": "primary_only",
+                "fallback_error": fb_err, "replaced_keys": [], "appended_keys": [], "kept_keys": [],
+            }
+            self._json[name] = (ck, out)
+            return out
+
+        ck = ("merged", p_used, id(p_data), fb_name, id(fb_data))
+        c = self._json.get(name)
+        if c and c[0] == ck:
+            return c[1]
+
+        out = copy.deepcopy(p_data)
+        path = str(cfg.get("path") or "").strip()
+        fb_path = str(cfg.get("fallback_path") or path).strip()
+        key_field = str(cfg.get("key") or "key").strip()
+        empty_field = str(cfg.get("empty_field") if cfg.get("empty_field") is not None else "res").strip()
+        fb_keys_cfg = self._str_list(cfg.get("fallback_keys"))
+
+        p_parent, p_last, p_target = self._nav_path(out, path)
+        _, _, fb_target = self._nav_path(fb_data, fb_path)
+        if fb_target is None and fb_path:
+            # 兜底 JSON 可能直接就是数组或对象（没包外层 data.myPage）
+            if isinstance(fb_data, (list, dict)):
+                fb_target = fb_data
+
+        replaced, appended, kept = [], [], []
+        if isinstance(p_target, list) and isinstance(fb_target, (list, dict)):
+            fb_map = OrderedDict()
+            if isinstance(fb_target, list):
+                for item in fb_target:
+                    if isinstance(item, dict) and item.get(key_field) is not None:
+                        fb_map[str(item[key_field])] = item
+            else:
+                for k, v in fb_target.items():
+                    ks = str(k)
+                    if isinstance(v, dict):
+                        fb_map[ks] = {key_field: ks, **v} if key_field not in v else v
+                    elif isinstance(v, list) and empty_field:
+                        fb_map[ks] = {key_field: ks, empty_field: v}
+            allowed = set(fb_keys_cfg) if fb_keys_cfg else set(fb_map.keys())
+            seen_keys = set()
+            merged_list = []
+            for item in p_target:
+                k = str(item[key_field]) if isinstance(item, dict) and item.get(key_field) is not None else None
+                if k is not None:
+                    seen_keys.add(k)
+                if k is not None and k in allowed and k in fb_map:
+                    need_fb = bool(empty_field) and self._is_empty_val(item.get(empty_field))
+                    if need_fb:
+                        fb_item = copy.deepcopy(fb_map[k])
+                        for mk, mv in item.items():
+                            if mk != empty_field and mk not in fb_item and not self._is_empty_val(mv):
+                                fb_item[mk] = copy.deepcopy(mv)
+                        merged_list.append(fb_item)
+                        replaced.append(k)
+                    else:
+                        merged_list.append(item)
+                        kept.append(k)
+                else:
+                    merged_list.append(item)
+            for k in (fb_keys_cfg or list(fb_map.keys())):
+                if k not in seen_keys and k in fb_map:
+                    merged_list.append(copy.deepcopy(fb_map[k]))
+                    appended.append(k)
+            if p_parent is None:
+                out = merged_list
+            else:
+                p_parent[p_last] = merged_list
+        elif isinstance(p_target, dict) and isinstance(fb_target, dict):
+            allowed = set(fb_keys_cfg) if fb_keys_cfg else set(fb_target.keys())
+            for k in (fb_keys_cfg or list(fb_target.keys())):
+                if k not in allowed or k not in fb_target:
+                    continue
+                if k not in p_target:
+                    p_target[k] = copy.deepcopy(fb_target[k])
+                    appended.append(k)
+                else:
+                    cur_v = p_target[k]
+                    is_empty = self._is_empty_val(cur_v) or (
+                        bool(empty_field) and isinstance(cur_v, dict) and self._is_empty_val(cur_v.get(empty_field))
+                    )
+                    if is_empty:
+                        p_target[k] = copy.deepcopy(fb_target[k])
+                        replaced.append(k)
+                    else:
+                        kept.append(k)
+
+        self._merge_meta[name] = {
+            "primary_used": p_used, "fallback": fb_name, "mode": "merged",
+            "replaced_keys": replaced, "appended_keys": appended, "kept_keys": kept,
+        }
+        self._json[name] = (ck, out)
+        return out
 
     def _file(self, pattern):
         p = self.spec.abspath(pattern)
@@ -691,9 +867,17 @@ class Sources:
             raise SourceError(f"文件不存在: {p}")
         return p
 
-    def json(self, name):
-        cfg = self.spec.sources[name]
+    def json(self, name, _seen=None):
+        seen = set(_seen or ())
+        if name in seen:
+            raise SourceError(f"数据源存在循环引用: {name}")
+        seen.add(name)
+        cfg = self.spec.sources.get(name)
+        if not cfg:
+            raise SourceError(f"未定义的数据源: {name}")
         t = cfg.get("type", "json_file")
+        if t == "merged_json":
+            return self._merge_json(name, cfg, seen)
         if t == "json_file":
             path = self._file(cfg["path"])
             key = (path, os.path.getmtime(path))
@@ -858,41 +1042,51 @@ class Checker:
         ctx, meta, err = {}, {}, {}
         for name, c in (es.get("context") or {}).items():
             c = c or {}
-            frm = str(c.get("from", ""))
-            try:
-                if frm in ctx:
-                    base, base_path = ctx[frm], meta[frm]["path"]
-                elif frm in err:
-                    err[name] = f"依赖的上下文 {frm} 定位失败"
-                    continue
-                elif self.sources.has(frm):
-                    base, base_path = self.sources.json(frm), f"{frm}:"
-                else:
-                    err[name] = f"from 指向未知的数据源/上下文: {frm!r}"
-                    continue
-                path = subst(c.get("path", ""), ev.fields)
-                cands = resolve(base, path, base_path) if path else [(base, base_path)]
-                where = c.get("where") or {}
-                wdesc = ", ".join(f"{k}={subst(v, ev.fields)}" for k, v in where.items())
-                if where:
-                    def ok(node):
-                        for k, want in where.items():
-                            wants = want if isinstance(want, list) else [want]
-                            wants = [subst(w, ev.fields) for w in wants]
-                            if not any(eq_val(v, w) for v, _ in resolve(node, k) for w in wants):
-                                return False
-                        return True
-                    cands = [x for x in cands if ok(x[0])]
-                if not cands:
-                    err[name] = f"在 {frm} 的 {path or '<根>'} 中找不到" + (f" {wdesc}" if wdesc else "")
-                    continue
-                pick = c.get("pick", "first")
-                v, p = cands[-1] if pick == "last" else cands[0]
-                idx = re.findall(r"\[(\d+)\]", p)
-                ctx[name] = v
-                meta[name] = {"path": p, "index": int(idx[-1]) if idx else None, "count": len(cands)}
-            except SourceError as e:
-                err[name] = f"数据源错误: {e}"
+            raw_from = c.get("from", "")
+            frms = [str(x).strip() for x in raw_from if str(x).strip()] if isinstance(raw_from, list) else [str(raw_from)]
+            path = subst(c.get("path", ""), ev.fields)
+            where = c.get("where") or {}
+            wdesc = ", ".join(f"{k}={subst(v, ev.fields)}" for k, v in where.items())
+
+            def _match_where(node):
+                for k, want in where.items():
+                    wants = want if isinstance(want, list) else [want]
+                    wants = [subst(w, ev.fields) for w in wants]
+                    if not any(eq_val(v, w) for v, _ in resolve(node, k) for w in wants):
+                        return False
+                return True
+
+            found = None
+            last_err = ""
+            for frm in frms:
+                try:
+                    if frm in ctx:
+                        base, base_path = ctx[frm], meta[frm]["path"]
+                    elif frm in err:
+                        last_err = f"依赖的上下文 {frm} 定位失败"
+                        continue
+                    elif self.sources.has(frm):
+                        base, base_path = self.sources.json(frm), f"{frm}:"
+                    else:
+                        last_err = f"from 指向未知的数据源/上下文: {frm!r}"
+                        continue
+                    cands = resolve(base, path, base_path) if path else [(base, base_path)]
+                    if where:
+                        cands = [x for x in cands if _match_where(x[0])]
+                    if cands:
+                        found = cands
+                        break
+                    last_err = f"在 {frm} 的 {path or '<根>'} 中找不到" + (f" {wdesc}" if wdesc else "")
+                except SourceError as e:
+                    last_err = f"数据源错误: {e}"
+            if not found:
+                err[name] = last_err or f"上下文 {name} 定位失败"
+                continue
+            pick = c.get("pick", "first")
+            v, p = found[-1] if pick == "last" else found[0]
+            idx = re.findall(r"\[(\d+)\]", p)
+            ctx[name] = v
+            meta[name] = {"path": p, "index": int(idx[-1]) if idx else None, "count": len(found)}
         return ctx, meta, err
 
     def env(self, ev, ctx, meta):
@@ -1274,19 +1468,30 @@ details.ev{border:1px solid #e5e7eb;border-radius:6px;margin:8px 0;background:#f
 details.ev>summary::-webkit-details-marker{display:none}details.ev[open]>summary{border-bottom:1px solid #eee}.evb{padding:8px 12px}
 .ev-FAIL{border-left:4px solid #dc2626!important}.ev-WARN{border-left:4px solid #d97706!important}.ev-PASS{border-left:4px solid #16a34a!important}
 .mono{font-family:Consolas,Menlo,monospace;font-size:12px}pre{background:#f3f4f6;padding:8px;white-space:pre-wrap;word-break:break-all;margin:6px 0}
-.tool{position:sticky;top:0;background:#f5f6f8;padding:8px 0;z-index:2;display:flex;gap:16px;align-items:center}
-.tool input[type=text]{padding:6px 10px;width:320px;border:1px solid #ccc;border-radius:6px}.ctx{font-size:12px;color:#555}.ctx .bad{color:#b91c1c}
-.err{color:#b91c1c;margin:4px 0}.err.WARN{color:#b45309}
+.tool{position:sticky;top:0;background:#f5f6f8;padding:8px 0;z-index:2;display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+.tool label{display:inline-flex;align-items:center;gap:5px;cursor:pointer;user-select:none;font-weight:600;color:#444}
+.tool input[type=text]{padding:6px 10px;width:280px;border:1px solid #d5dde5;border-radius:8px;background:#fff}
+.ctx{font-size:12px;color:#555}.ctx .bad{color:#b91c1c}
+.err{color:#b91c1c;margin:4px 0}.err.WARN{color:#b45309}.err.PASS,.err.INFO{color:#15803d}
 """
 
 _HTML_JS = """
-function apply(fromUnk){const unk=document.getElementById('unk');
-if(fromUnk&&unk.checked){document.querySelector('input[name=v][value=all]').checked=true;}
-const v=(document.querySelector('input[name=v]:checked')||{}).value||'bad',su=unk.checked,q=document.getElementById('q').value.trim().toLowerCase();
-document.querySelectorAll('details.ev').forEach(d=>{const st=d.dataset.st;
-const ok=v==='bad'?(st==='FAIL'||st==='WARN'||st==='ASK'):v==='pass'?st==='PASS':(su||st!=='UNKNOWN');
-const hit=!q||d.textContent.toLowerCase().includes(q);d.style.display=(ok&&hit)?'':'none';
-d.querySelectorAll('tr.fr').forEach(tr=>{tr.style.display=(v!=='bad'||tr.classList.contains('r-FAIL')||tr.classList.contains('r-WARN')||tr.classList.contains('r-ASK'))?'':'none'});});}
+function apply(fromChk){
+  const hideUnk=document.getElementById('hideUnk');
+  const hideU=hideUnk?hideUnk.checked:true;
+  if(fromChk&&!hideU){document.querySelector('input[name=v][value=all]').checked=true;}
+  const v=(document.querySelector('input[name=v]:checked')||{}).value||'bad';
+  const q=document.getElementById('q').value.trim().toLowerCase();
+  document.querySelectorAll('details.ev').forEach(d=>{
+    const st=d.dataset.st;
+    const ok=v==='bad'?(st==='FAIL'||st==='WARN'||st==='ASK'):v==='pass'?(st==='PASS'):(!hideU||st!=='UNKNOWN');
+    const hit=!q||d.textContent.toLowerCase().includes(q);
+    d.style.display=(ok&&hit)?'':'none';
+    d.querySelectorAll('tr.fr').forEach(tr=>{
+      tr.style.display=(v!=='bad'||tr.classList.contains('r-FAIL')||tr.classList.contains('r-WARN')||tr.classList.contains('r-ASK'))?'':'none';
+    });
+  });
+}
 window.addEventListener('DOMContentLoaded',()=>apply(false));
 """
 
@@ -1321,14 +1526,17 @@ def build_html(rep):
                        f"<td>{h['count']}</td><td>{e(h['reason'])}</td></tr>")
         out.append("</table></section>")
 
+    n_bad_ev = sum(1 for r in rep["results"] if r["status"] in ("FAIL", "WARN", "ASK"))
+    n_pass_ev = sum(1 for r in rep["results"] if r["status"] == "PASS")
+    n_all_ev = len(rep["results"])
     out.append("<section><h2>逐条明细</h2><div class=tool>"
-               "<label><input type=radio name=v value=bad checked onchange=apply(false)> 有问题</label>"
-               "<label><input type=radio name=v value=pass onchange=apply(false)> 通过</label>"
-               "<label><input type=radio name=v value=all onchange=apply(false)> 全部</label>"
-               f"<label><input type=checkbox id=unk onchange=apply(true)> 显示未配置规则 ({s['unknown']})</label>"
+               f"<label><input type=radio name=v value=bad checked onchange=apply(false)> 有问题的 ({n_bad_ev})</label>"
+               f"<label><input type=radio name=v value=pass onchange=apply(false)> 通过的 ({n_pass_ev})</label>"
+               f"<label><input type=radio name=v value=all onchange=apply(false)> 全部 ({n_all_ev})</label>"
+               f"<label><input type=checkbox id=hideUnk checked onchange=apply(true)> 过滤未配置 ({s['unknown']})</label>"
                "<input type=text id=q placeholder='搜索 点位ID / 字段 / 值' oninput=apply(false)></div>")
     for r in rep["results"]:
-        nbad = sum(1 for f in r["fields"] if f["status"] in ("FAIL", "WARN")) + len(r["errors"])
+        nbad = sum(1 for f in r["fields"] if f["status"] in ("FAIL", "WARN")) + sum(1 for er in r["errors"] if er.get("status") in ("FAIL", "WARN"))
         is_open = " open" if r["status"] in ("FAIL", "WARN") else ""
         out.append(f"<details class='ev ev-{r['status']}' data-st={r['status']}{is_open}><summary>"
                    f"<span class='badge b-{r['status']}'>{r['status']}</span> <span class=mono>#{r['seq']} {e(r['ts'])}</span> "
@@ -1496,8 +1704,8 @@ def do_pull(spec, serial=None):
 class Capture:
     """后台线程跑 adb logcat，解析埋点行"""
 
-    def __init__(self, spec, serial, raw_path, on_event=None):
-        self.spec, self.serial, self.raw_path, self.on_event = spec, serial, raw_path, on_event
+    def __init__(self, spec, serial, raw_path, on_event=None, on_line=None):
+        self.spec, self.serial, self.raw_path, self.on_event, self.on_line = spec, serial, raw_path, on_event, on_line
         self.parser = LogParser(spec.pattern)
         self.events, self.proc, self.thread = [], None, None
 
@@ -1517,6 +1725,11 @@ class Capture:
             for b in iter(self.proc.stdout.readline, b""):
                 n += 1
                 line = b.decode("utf-8", errors="replace")
+                if self.on_line:
+                    try:
+                        self.on_line(line)
+                    except Exception:
+                        pass
                 ev = self.parser.feed(line, n)
                 if ev:
                     raw.write(line.rstrip("\r\n") + "\n")
@@ -1912,7 +2125,7 @@ def cmd_infer(a):
         src = Sources(spec)
         for name, cfg in spec.sources.items():
             try:
-                if cfg.get("type", "json_file") in ("json_file", "sqlite_json"):
+                if cfg.get("type", "json_file") in ("json_file", "sqlite_json", "merged_json"):
                     jsons.append(JsonIndex(name, src.json(name)))
                 elif cfg.get("type") == "sqlite":
                     conns[name] = src.db(name)
@@ -1945,7 +2158,7 @@ def load_infer_sources(spec):
     src = Sources(spec)
     for name, cfg in spec.sources.items():
         try:
-            if cfg.get("type", "json_file") in ("json_file", "sqlite_json"):
+            if cfg.get("type", "json_file") in ("json_file", "sqlite_json", "merged_json"):
                 jsons.append(JsonIndex(name, src.json(name)))
             elif cfg.get("type") == "sqlite":
                 conns[name] = src.db(name)

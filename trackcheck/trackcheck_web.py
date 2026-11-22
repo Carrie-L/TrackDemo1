@@ -209,9 +209,9 @@ def fmt_kb(n):
 # 实时调试会话
 # ----------------------------------------------------------------------------
 class LiveSession:
-    """实时调试：抓 logcat；需要时在事件前后自动拍 DB 快照；记录每个事件当时的「操作场景」和人工确认结果"""
+    """实时调试：抓 logcat；需要时在事件前后自动拍 DB 快照，并同步捕获点位/模板绑定的接口响应 JSON"""
 
-    def __init__(self, app, serial, clear, case, only, scenario=None, snapshot=True):
+    def __init__(self, app, serial, clear, case, only, scenario=None, snapshot=True, capture_apis=None):
         self.app, self.serial, self.case = app, serial or None, case or None
         self.only = {str(x) for x in (only or []) if str(x).strip()}
         self.lock = threading.Lock()
@@ -220,6 +220,8 @@ class LiveSession:
         self.raw = os.path.join(app.out, f"session_{self.stamp}.log")
         self.scenario = {k: v for k, v in (scenario or {}).items() if v not in (None, "", [])}
         self.ev_scn, self.decisions, self.ev_snap, self.evs = {}, {}, {}, []
+        self._ev_ts = {}
+        self.version = 0
         self.pending, self.pend_cv = [], threading.Condition()   # 等待「事件后」快照的事件（一阵连发只拍一张）
         dev = app.spec.device or {}
         self.pkg, self.dbs = dev.get("package"), [str(x) for x in (dev.get("dbs") or [])]
@@ -230,10 +232,75 @@ class LiveSession:
             self._cleanup_old()
             self._snapshot()                       # 开始前先拍一张，作为第一个事件的「事件前」
             threading.Thread(target=self._snap_worker, daemon=True).start()
+        self.api_targets = [dict(t) for t in (capture_apis or []) if (t or {}).get("endpoint")]
+        self.api_extractors = [(t, OkHttpApiExtractor(t["endpoint"], t.get("tag", ""))) for t in self.api_targets]
+        self.api_hits, self.api_err = [], ""
+        self._api_proc, self._api_thread = None, None
         self.ck = tc.Checker(app.spec, app.sources)
-        self.cap = tc.Capture(app.spec, self.serial, self.raw, self.on_event)
+        share_stream = bool(self.api_targets and not app.spec.logcat_args)
+        self.cap = tc.Capture(app.spec, self.serial, self.raw, self.on_event,
+                              on_line=(self.on_log_line if share_stream else None))
         self.cap.start(clear=clear)
+        if self.api_targets and not share_stream:
+            self._start_api_stream()
         self.started = time.time()
+
+    def _start_api_stream(self):
+        """当 logcat_args 过滤了特定 TAG 时，额外开一条轻量 logcat 流专抓绑定接口的 OkHttp 响应"""
+        try:
+            adb = tc.adb_base(self.app.spec, self.serial)
+            self._api_proc = subprocess.Popen(
+                adb + ["logcat", "-v", "threadtime", "-T", "1"],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            )
+            self._api_thread = threading.Thread(target=self._api_stream_loop, daemon=True)
+            self._api_thread.start()
+        except Exception as e:
+            self.api_err = str(e)
+
+    def _api_stream_loop(self):
+        try:
+            for b in iter(self._api_proc.stdout.readline, b""):
+                if not self.running:
+                    break
+                self.on_log_line(b.decode("utf-8", errors="replace"))
+        except Exception as e:
+            self.api_err = str(e)
+
+    def _record_api_hit(self, target, url, obj):
+        try:
+            rec = self.app._save_json_ds(target["source"], obj, url=url, source="实时调试自动抓取")
+        except Exception as e:
+            self.api_err = str(e)
+            return
+        now = time.time()
+        hit = {"source": target["source"], "endpoint": target["endpoint"], "url": url,
+               "time": rec.get("time") or time.strftime("%H:%M:%S"), "hist": rec.get("hist", "")}
+        with self.lock:
+            self.api_hits.append(hit)
+            if len(self.api_hits) > 30:
+                self.api_hits = self.api_hits[-30:]
+            ck = tc.Checker(self.app.spec, self.app.sources)
+            self.ck = ck
+            # 若接口日志比刚触发的埋点晚刷完几秒，自动用最新接口数据重校近期/失败事件
+            changed = False
+            for idx, ev in enumerate(self.evs):
+                ts = self._ev_ts.get(ev.seq, 0)
+                cur = self.results[idx] if idx < len(self.results) else None
+                if (now - ts <= 5.0) or (cur and cur.get("status") == "FAIL"):
+                    self.results[idx] = self._check(ck, ev)
+                    changed = True
+            if changed:
+                self.version += 1
+
+    def on_log_line(self, line):
+        if not self.api_extractors:
+            return
+        for target, ext in self.api_extractors:
+            hit = ext.feed(line)
+            if hit:
+                url, obj = hit
+                self._record_api_hit(target, url, obj)
 
     # ---- DB 快照 ----
     def _snapshot(self):
@@ -311,6 +378,7 @@ class LiveSession:
         if self.only and ev.id not in self.only:
             return
         arrived = time.time()
+        self._ev_ts[ev.seq] = arrived
         self.ev_scn[ev.seq] = dict(self.scenario)
         if self.snap_on and self._uses_db(ev.id):
             with self.pend_cv:
@@ -366,6 +434,16 @@ class LiveSession:
     def stop(self, pull=False):
         self.cap.stop(linger=0.3)
         self.running = False
+        if self._api_proc and self._api_proc.poll() is None:
+            try:
+                self._api_proc.terminate()
+            except Exception:
+                pass
+        if self._api_thread:
+            self._api_thread.join(timeout=2)
+        for target, ext in self.api_extractors:
+            for url, obj in ext.flush():
+                self._record_api_hit(target, url, obj)
         with self.pend_cv:
             self.pend_cv.notify_all()
         time.sleep(0.3)
@@ -725,6 +803,14 @@ class App:
             try:
                 if t in ("json_file", "sqlite"):
                     info.update(file_info(self.sources._file(cfg["path"])))
+                elif t == "merged_json":
+                    obj = self.sources.json(name)
+                    mi = self.sources.merge_info(name) or {}
+                    keys = list(obj.keys())[:8] if isinstance(obj, dict) else [f"[{len(obj)}]"]
+                    pr = mi.get("primary_used") or "兜底全量"
+                    fb = mi.get("fallback") or ""
+                    p_txt = f"主源 {pr}" + (f" + 兜底 {fb}" if fb else "")
+                    info.update(exists=True, path=p_txt, keys=keys, merge_info=mi)
                 else:
                     obj = self.sources.json(name)
                     keys = list(obj.keys())[:8] if isinstance(obj, dict) else [f"[{len(obj)}]"]
@@ -732,6 +818,73 @@ class App:
             except Exception as e:
                 info.update(exists=False, error=str(e))
             out[name] = info
+        return out
+
+    @staticmethod
+    def _norm_api_list(raw_api):
+        if not raw_api:
+            return []
+        items = raw_api if isinstance(raw_api, list) else [raw_api]
+        out = []
+        for it in items:
+            if isinstance(it, str) and it.strip():
+                ep = it.strip()
+                out.append({"endpoint": ep, "source": infer_api_ds_name(ep), "tag": ""})
+            elif isinstance(it, dict) and str(it.get("endpoint") or "").strip():
+                ep = str(it["endpoint"]).strip()
+                src = re.sub(r"[^\w\-]", "_", str(it.get("source") or "").strip()) or infer_api_ds_name(ep)
+                out.append({"endpoint": ep, "source": src, "tag": str(it.get("tag") or "").strip()})
+        return out
+
+    def resolve_event_apis(self, eids=None):
+        """根据点位清单（含继承自模板的 api 及数据源绑定）汇总需要监听的接口列表"""
+        s = self.spec
+        eids = [str(x).strip() for x in (eids or []) if str(x).strip()]
+        seen, out = OrderedDict(), []
+
+        def add_one(item, via):
+            key = (item["endpoint"].lower(), item["source"])
+            if key not in seen:
+                seen[key] = {**item, "via": [via] if via else []}
+                out.append(seen[key])
+            elif via and via not in seen[key]["via"]:
+                seen[key]["via"].append(via)
+
+        targets = eids if eids else list(s.events.keys())
+        used_sources = set()
+        for eid in targets:
+            es = s.events.get(eid) or {}
+            for a in self._norm_api_list(es.get("api")):
+                add_one(a, es.get("name") or eid)
+            for c in (es.get("context") or {}).values():
+                if isinstance(c, dict) and c.get("from"):
+                    frms = c["from"] if isinstance(c["from"], list) else [c["from"]]
+                    for f in frms:
+                        used_sources.add(str(f))
+        if not eids:
+            for tname, tpl in s.templates.items():
+                for a in self._norm_api_list((tpl or {}).get("api")):
+                    add_one(a, f"模板 {tname}")
+            used_sources |= set(s.sources.keys())
+        # 展开 merged_json 依赖，检查显式数据源上绑定的 api_endpoint
+        queue = list(used_sources)
+        visited = set()
+        while queue:
+            sn = queue.pop(0)
+            if sn in visited:
+                continue
+            visited.add(sn)
+            cfg = s.sources.get(sn)
+            if not isinstance(cfg, dict):
+                continue
+            if cfg.get("api_endpoint"):
+                ep = str(cfg["api_endpoint"]).strip()
+                add_one({"endpoint": ep, "source": sn, "tag": str(cfg.get("api_tag") or "").strip()}, f"数据源 {sn}")
+            if cfg.get("type") == "merged_json":
+                for dep in tc.Sources._str_list(cfg.get("primary") or cfg.get("sources")):
+                    queue.append(dep)
+                if cfg.get("fallback"):
+                    queue.append(str(cfg["fallback"]))
         return out
 
     # ---- GET ----
@@ -753,7 +906,8 @@ class App:
                 refs.setdefault(n, []).append(eid)
             events.append({"id": eid, "name": res.get("name") or s.catalog.get(eid, ""), "nfields": len(res.get("fields") or {}),
                            "stub": tc.is_stub_event(res),
-                           "extends": (raw or {}).get("extends"), "file": os.path.relpath(p, os.path.dirname(self.store.path)),
+                           "extends": (raw or {}).get("extends"), "api": res.get("api"),
+                           "file": os.path.relpath(p, os.path.dirname(self.store.path)),
                            "last": last.get(eid)})
         dicts, dict_meta = {}, {}
         for k, (v, _) in self.store.items("dicts").items():
@@ -768,7 +922,8 @@ class App:
             live = {"running": self.live.running, "count": len(self.live.results), "report": self.live.report,
                     "raw": self.live.raw, "case": self.live.case, "only": sorted(self.live.only),
                     "scenario": self.live.scenario, "snap_on": self.live.snap_on, "snap_err": self.live.snap_err,
-                    "snaps": len(self.live.snaps)}
+                    "snaps": len(self.live.snaps), "api_targets": self.live.api_targets,
+                    "api_hits": self.live.api_hits[-10:], "api_err": self.live.api_err, "version": self.live.version}
         ask = OrderedDict()   # 需要人工确认 / 按场景比对的字段：{字段: {desc, options, events}}
         for eid, es in s.events.items():
             for fname, r in (es.get("fields") or {}).items():
@@ -819,7 +974,7 @@ class App:
             "options": self.store.main.get("options") or {},
             "log": self.store.main.get("log") or {},
             "reports": reps, "sessions": self.sessions(), "live": live, "ask_fields": ask,
-            "event_fields": ev_fields, "tpl_refs": tpl_refs,
+            "event_fields": ev_fields, "tpl_refs": tpl_refs, "all_apis": self.resolve_event_apis(),
             "evdict": {"count": len(evd.get("entries", {})), "docs": evd.get("docs", [])},
         }
 
@@ -894,7 +1049,22 @@ class App:
             raise ApiError(f"找不到事件 #{seq}")
 
         st_label = {"PASS": "通过", "FAIL": "有问题", "ASK": "待确认"}[status]
-        if field:
+        if field.startswith("__err__:"):
+            try:
+                ei = int(field.split(":", 1)[1])
+                er = target.get("errors", [])[ei]
+            except (ValueError, IndexError):
+                raise ApiError("找不到该条错误信息")
+            er.setdefault("orig_status", er.get("status"))
+            er["status"] = status
+            er["manual"] = True
+            er["note"] = note or ("" if status == er.get("orig_status") else f"人工判定为「{st_label}」")
+            if not note and status == er.get("orig_status"):
+                er.pop("manual", None)
+            target.pop("manual_status", None)
+            target.pop("manual_note", None)
+            target["status"] = tc.worst([x["status"] for x in target.get("fields", [])] + [e["status"] for e in target.get("errors", [])])
+        elif field:
             fobj = next((x for x in target.get("fields", []) if x.get("field") == field), None)
             if not fobj:
                 raise ApiError(f"找不到字段 {field}")
@@ -911,9 +1081,18 @@ class App:
             else:
                 orig = fobj.get("orig_reason", "")
                 fobj["reason"] = f"人工判定为「{st_label}」" + (f"（原：{orig}）" if orig else "")
+            # 当所有子字段均已不再存在失败/警告/待确认时，同步将关联的整条断言错误标记为通过，确保 header 自动变为通过
+            fields_list = target.get("fields", [])
+            if status == "PASS" and fields_list and not any(x.get("status") in ("FAIL", "WARN", "ASK") for x in fields_list):
+                for er in target.get("errors", []):
+                    if er.get("status") in ("FAIL", "WARN", "ASK"):
+                        er.setdefault("orig_status", er.get("status"))
+                        er["status"] = "PASS"
+                        er["manual"] = True
+                        er["note"] = "全部子项已人工判定通过"
             target.pop("manual_status", None)
             target.pop("manual_note", None)
-            target["status"] = tc.worst([x["status"] for x in target.get("fields", [])] + [e["status"] for e in target.get("errors", [])])
+            target["status"] = tc.worst([x["status"] for x in fields_list] + [e["status"] for e in target.get("errors", [])])
         else:
             target.setdefault("orig_status", target.get("status"))
             target["manual_status"] = status
@@ -930,7 +1109,9 @@ class App:
                 for er in target.get("errors", []):
                     if er.get("status") in ("FAIL", "WARN", "ASK"):
                         er.setdefault("orig_status", er.get("status"))
-                        er["status"] = "INFO"
+                        er["status"] = "PASS"
+                        er["manual"] = True
+                        er["note"] = f"人工整条判定通过：{note}" if note else "人工整条判定为「通过」"
             target["status"] = status
 
         cnt = Counter(r["status"] for r in rep.get("results", []))
@@ -966,7 +1147,8 @@ class App:
 
     def api_source_json(self, q):
         try:
-            return {"data": self.sources.json(q["name"])}
+            name = q["name"]
+            return {"data": self.sources.json(name), "merge_info": self.sources.merge_info(name)}
         except tc.SourceError as e:
             raise ApiError(str(e))
 
@@ -997,20 +1179,41 @@ class App:
 
     def api_live_poll(self, q):
         if not self.live:
-            return {"running": False, "results": [], "count": 0}
+            return {"running": False, "results": [], "count": 0, "api_targets": [], "api_hits": [], "version": 0}
         since = int(q.get("since", 0))
         with self.live.lock:
             res = self.live.results[since:]
             n = len(self.live.results)
+            hits = list(self.live.api_hits)
+            ver = self.live.version
         return {"running": self.live.running, "results": res, "count": n, "since": since,
-                "report": self.live.report, "raw": self.live.raw}
+                "report": self.live.report, "raw": self.live.raw,
+                "api_targets": self.live.api_targets, "api_hits": hits, "api_err": self.live.api_err, "version": ver}
+
+    @staticmethod
+    def _clean_api(raw):
+        api = raw.get("api")
+        if isinstance(api, dict):
+            ep = str(api.get("endpoint") or "").strip()
+            if not ep:
+                raw.pop("api", None)
+            else:
+                cleaned = {"endpoint": ep}
+                src = re.sub(r"[^\w\-]", "_", str(api.get("source") or "").strip())
+                if src:
+                    cleaned["source"] = src
+                tag = str(api.get("tag") or "").strip()
+                if tag:
+                    cleaned["tag"] = tag
+                raw["api"] = cleaned
+        return raw
 
     # ---- POST：规则 ----
     def api_event_save(self, b):
         eid = str(b.get("id", "")).strip()
         if not eid:
             raise ApiError("点位ID不能为空")
-        raw = b.get("raw") or {}
+        raw = self._clean_api(dict(b.get("raw") or {}))
         raw = {k: v for k, v in raw.items() if v not in (None, "", [], {}) or k in ("fields",)}
         self.store.put("events", eid, raw, b.get("old_id"))
         self._autotag({eid: raw})
@@ -1074,13 +1277,33 @@ class App:
         return {"ok": True}
 
     def api_source_save(self, b):
-        return self._put("sources", b)
+        val = dict(b.get("value") or {})
+        if val.get("type") == "merged_json":
+            primaries = tc.Sources._str_list(val.get("primary"))
+            fb = str(val.get("fallback") or "").strip()
+            if not primaries and not fb:
+                raise ApiError("合并兜底数据源至少需要填一个主数据源或兜底数据源")
+            cleaned = {"type": "merged_json"}
+            if primaries:
+                cleaned["primary"] = primaries[0] if len(primaries) == 1 else primaries
+            if fb:
+                cleaned["fallback"] = fb
+            for k in ("path", "fallback_path", "key", "empty_field"):
+                v = str(val.get(k) or "").strip()
+                if v:
+                    cleaned[k] = v
+            fb_keys = tc.Sources._str_list(val.get("fallback_keys"))
+            if fb_keys:
+                cleaned["fallback_keys"] = fb_keys
+            val = cleaned
+        return self._put("sources", {**b, "value": val})
 
     def api_case_save(self, b):
         return self._put("cases", b)
 
     def api_template_save(self, b):
-        return self._put("templates", b)
+        val = self._clean_api(dict(b.get("value") or {}))
+        return self._put("templates", {**b, "value": val})
 
     def api_item_delete(self, b):
         if b.get("section") not in ("dicts", "sources", "cases", "templates"):
@@ -1388,7 +1611,11 @@ class App:
                 ctx_names |= set(map(str, ctx.keys()))
                 for c in ctx.values():
                     if isinstance(c, dict) and c.get("from"):
-                        used.add(str(c["from"]))
+                        frms = c["from"] if isinstance(c["from"], list) else [c["from"]]
+                        for f in frms:
+                            used.add(str(f))
+                for a in App._norm_api_list(v.get("api")):
+                    used.add(a["source"])
                 for r in (v.get("fields") or {}).values():
                     if isinstance(r, dict):
                         if r.get("db"):
@@ -1425,10 +1652,29 @@ class App:
         if allx:
             names = list(auto)
         else:
-            used = self._used_source_names(bundle)
-            for k, v in (self.spec.sources or {}).items():       # 特殊数据源依赖的数据库也带上
-                if k in used and isinstance(v, dict) and v.get("db"):
+            used = set(self._used_source_names(bundle))
+            # 递归展开特殊数据源依赖（sqlite_json -> db，merged_json -> primary / fallback）
+            queue = list(used)
+            seen = set()
+            while queue:
+                k = queue.pop(0)
+                if k in seen:
+                    continue
+                seen.add(k)
+                v = (self.spec.sources or {}).get(k)
+                if not isinstance(v, dict):
+                    continue
+                if v.get("db"):
                     used.add(str(v["db"]))
+                    queue.append(str(v["db"]))
+                if v.get("type") == "merged_json":
+                    for dep in tc.Sources._str_list(v.get("primary") or v.get("sources")):
+                        used.add(dep)
+                        queue.append(dep)
+                    if v.get("fallback"):
+                        fb = str(v["fallback"])
+                        used.add(fb)
+                        queue.append(fb)
             names = [n for n in auto if n in used]
         samples, skipped = OrderedDict(), []
         for n in names:
@@ -1583,12 +1829,22 @@ class App:
     def api_live_start(self, b):
         if self.live and self.live.running:
             raise ApiError("已经在抓取中")
+        only = b.get("only") or []
+        case_name = b.get("case")
+        target_eids = [str(x) for x in only if str(x).strip()]
+        if not target_eids and case_name and case_name in self.spec.cases:
+            for item in (self.spec.cases[case_name] or {}).get("expect") or []:
+                eid = item.get("id") if isinstance(item, dict) else item
+                if eid:
+                    target_eids.append(str(eid))
+        apis = self.resolve_event_apis(target_eids or None) if b.get("auto_api", True) else []
         try:
-            self.live = LiveSession(self, b.get("serial"), b.get("clear", True), b.get("case"), b.get("only"),
-                                    b.get("scenario"), b.get("snapshot", True))
+            self.live = LiveSession(self, b.get("serial"), b.get("clear", True), case_name, only,
+                                    b.get("scenario"), b.get("snapshot", True), capture_apis=apis)
         except FileNotFoundError:
             raise ApiError("找不到 adb，请把 Android SDK platform-tools 加到 PATH")
-        return {"ok": True, "raw": self.live.raw, "snap_on": self.live.snap_on, "snap_err": self.live.snap_err}
+        return {"ok": True, "raw": self.live.raw, "snap_on": self.live.snap_on, "snap_err": self.live.snap_err,
+                "api_targets": self.live.api_targets, "api_err": self.live.api_err}
 
     def api_live_scenario(self, b):
         if not self.live:
@@ -2092,18 +2348,31 @@ class App:
         eid = str(b.get("id") or "").strip()
         s = self.spec
         ent = s.event_dict.get("entries", {}).get(eid)
-        lines = ["你是 Android 埋点校验规则助手。请根据下面的【埋点文档】【上报日志】【可用数据源】，",
-                 f"为点位 {eid} 写一段 trackcheck 规则（YAML，放在 events: 下），只输出 YAML。", ""]
-        lines += ["## 规则写法速查",
-                  "- 每个字段一条规则，常用：",
-                  "  - 文档枚举：`source: {enum: {0: 端内, 1: 桌面小组件}, desc: 入口}`",
-                  "  - 由用户操作决定的值（入口、Tab 等）再加 `ask: true`，测试时由测试人员确认或按场景比对",
-                  "  - 接口下发值：先用 context 按上报的 ID 定位节点，再 `from: 节点.路径`；值需要转换时加 `map: {接口值: 上报值}`",
-                  "    context 例：`res: {from: <json数据源名>, path: \"data.list[*]\", where: {id: \"{resID}\"}}`",
-                  "  - 数据库值：`{sql: \"SELECT count(*) FROM t WHERE type = :type\", db: <db数据源名>}`（:字段名 引用上报值）",
-                  "  - 会随操作增长的计数：加 `compare: lte`（上报 ≤ 结束时 DB 值）、`trend: up`（多次上报不减少），或 `tolerance: 1`",
-                  "  - 字段间关系用事件级 asserts：`asserts: [{expr: \"int(a) == int(b) + int(c)\", msg: 说明}]`",
-                  "  - 其它：`type: int`、`regex`、`range: [1, 20]`、`not_empty: true`、`required: false`、`ignore: true`", ""]
+        lines = ["你是 Android 埋点校验规则助手（埋点小岛 trackcheck）。请根据下面的【埋点文档】【上报日志】【可用数据源 / 模板 / 字典】，",
+                 f"为点位 `{eid}` 编写 trackcheck 校验规则（YAML），只输出可直接导入或粘贴进 trackcheck.yaml 的 YAML 代码块。", ""]
+        lines += [
+            "## 规则写法速查",
+            "- 顶层可包含 `events:`（必填），若确需新增公共模板/字典/合并数据源也可一并输出 `templates:` / `dicts:` / `sources:`（优先复用下方已有的）。",
+            "- 点位与模板结构：",
+            "  - 复用公共模板：`extends: <模板名>`（多个同页面/同接口点位建议抽模板，子点位只写差异字段）",
+            "  - 绑定接口（实时调试自动从 OkHttp logcat 抓取响应 JSON 更新数据源）：",
+            "    `api: {endpoint: /config/app/myPageV3, source: myPageV3}`（可写在模板或点位上，子点位自动继承）",
+            "  - 去重校验：`dedupe: [resID, operationCardId]`，`dedupe_window: 2`（秒）",
+            "  - 上下文定位 `context`：按上报字段值去接口 JSON 里定位当前卡片/条目：",
+            "    `res: {from: <数据源名>, path: \"data.myPage[*].res[*]\", where: {id: \"{resID}\"}}`",
+            "    （`from` 也支持数组回退 `[主源, 兜底源]`；若下方已有 `合并兜底 JSON` 数据源，直接 `from: <合并源名>` 即可同时覆盖接口下发与空数组默认兜底）",
+            "- 字段规则 `fields`（每个字段一条）：",
+            "  - 接口取值：`{from: res.planId, desc: 投放计划ID}`；需字典映射加 `map: 字典名` 或链式 `map: [字典1, 字典2]` 或内联 `{a: 1}`",
+            "  - 文档枚举：`{enum: {0: 端内, 1: 桌面小组件}, desc: 入口}`（或 `enum: 已有字典名`）",
+            "  - 取决于用户手势/入口的字段：加 `ask: true`（测试时按用例期望比对或人工点选确认）",
+            "  - 数据库 SQL：`{db: <db名>, sql: \"SELECT count(*) FROM t WHERE type = :type\", desc: 数量}`（`:字段名` 引用上报字段）",
+            "  - 动态变化计数：加 `compare: lte`（上报 ≤ 快照值）、`trend: up`（单调不减）或 `tolerance: 1`",
+            "  - 其它常用：`type: int`、`range: [1, 20]`、`regex: \"^...\"`、`not_empty: true`、`required: false`、`ignore: true`",
+            "- 跨字段断言：`asserts: [{expr: \"int(allNums) == int(a) + int(b)\", msg: 总数应等于分项之和}]`",
+            "- 若业务存在「接口某模块 `res` 为空数组 `[]` 时走本地 `fallback_data` 默认兜底、非空走云侧且保持接口顺序」，可在 `sources:` 定义合并源：",
+            "  `mine_page_merged: {type: merged_json, primary: [myPageV3, mine_api_cache], fallback: fallback_data, path: data.myPage, key: key, empty_field: res, fallback_keys: [myPage_function_new, myPage_top]}`",
+            "",
+        ]
         if ent:
             lines += ["## 埋点文档", f"点位ID：{eid}　名称：{ent.get('name', '')}"]
             for k, v in ent.get("columns", {}).items():
@@ -2116,10 +2385,22 @@ class App:
                 lines += ["| " + " | ".join(str(r.get(h, "")).replace("\n", " ") for h in hdr) + " |" for r in rows]
             lines.append("")
         if b.get("line") or b.get("fields"):
-            lines += ["## 上报日志", b.get("line") or json.dumps(b.get("fields"), ensure_ascii=False), ""]
+            lines += ["## 上报日志样本", b.get("line") or json.dumps(b.get("fields"), ensure_ascii=False), ""]
         lines.append("## 可用数据源")
+        type_labels = {
+            "sqlite": "SQLite 数据库",
+            "sqlite_json": "DB 缓存 JSON",
+            "merged_json": "合并兜底 JSON（优先推荐直接引用）",
+            "json_file": "接口/本地 JSON",
+        }
         for name, cfg in s.sources.items():
             t = cfg.get("type", "json_file")
+            label = type_labels.get(t, t)
+            extra = ""
+            if t == "merged_json":
+                pr = cfg.get("primary")
+                pr_s = " → ".join(pr) if isinstance(pr, list) else str(pr or "")
+                extra = f" [主源: {pr_s}, 兜底: {cfg.get('fallback', '')}, 路径: {cfg.get('path', '<根>')}]"
             desc = ""
             try:
                 if t == "sqlite":
@@ -2134,10 +2415,25 @@ class App:
                     desc = "，".join(paths[:60]) + (" …" if len(paths) > 60 else "")
             except Exception as e:
                 desc = f"（读取失败：{e}）"
-            lines.append(f"- {name}（{'数据库' if t == 'sqlite' else '接口 JSON'}）：{desc}")
+            lines.append(f"- `{name}`（{label}{extra}）：{desc}")
+        if s.templates:
+            lines.append("\n## 已有模板（可 `extends` 直接继承复用）")
+            for tname, tv in s.templates.items():
+                tv = tv or {}
+                api_ep = (tv.get("api") or {}).get("endpoint") if isinstance(tv.get("api"), dict) else tv.get("api")
+                ctx_k = list((tv.get("context") or {}).keys())
+                fld_k = list((tv.get("fields") or {}).keys())
+                lines.append(f"- `{tname}`" + (f"（关联接口 {api_ep}）" if api_ep else "") +
+                             f"：context={ctx_k}，fields={fld_k}")
+        if s.dicts:
+            lines.append("\n## 已有公共字典（可在 `enum` / `map` 中按名字直接引用）")
+            for dname, items in s.dicts.items():
+                preview = ", ".join(f"{k}:{v}" for k, v in list(items.items())[:10])
+                lines.append(f"- `{dname}`：{{{preview}{' ...' if len(items) > 10 else ''}}}")
         cur = s._raw_events.get(eid)
         if cur:
-            lines += ["", "## 现有规则（在此基础上修改）", yaml.safe_dump(plain({eid: cur}), allow_unicode=True, sort_keys=False, default_flow_style=None)]
+            lines += ["", "## 现有规则（在此基础上修改）",
+                      yaml.safe_dump(plain({"events": {eid: cur}}), allow_unicode=True, sort_keys=False, default_flow_style=None)]
         return {"text": "\n".join(lines)}
 
     def api_live_stop(self, b):
@@ -2398,7 +2694,16 @@ def make_handler(app):
                     self._send(500, {"error": f"{type(e).__name__}: {e}"})
                 return
             if u.path.startswith("/report_html/"):
-                p = os.path.join(app.out, os.path.basename(unquote(u.path)))
+                fn = os.path.basename(unquote(u.path))
+                p = os.path.join(app.out, fn)
+                jp = os.path.join(app.out, os.path.splitext(fn)[0] + ".json")
+                if os.path.isfile(jp):
+                    try:
+                        with open(jp, encoding="utf-8") as f:
+                            rep = json.load(f)
+                        return self._send(200, tc.build_html(rep).encode("utf-8"), MIME[".html"])
+                    except Exception:
+                        pass
                 if os.path.exists(p):
                     with open(p, "rb") as f:
                         return self._send(200, f.read(), MIME[".html"])

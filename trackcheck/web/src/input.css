@@ -6,6 +6,36 @@
   html { font-size: 14px; caret-color: transparent; }
   body { @apply font-sans text-sm text-ink antialiased select-none; caret-color: transparent; cursor: default; }
   input, textarea, [contenteditable="true"] { -webkit-user-select: text; user-select: text; caret-color: #664A30; cursor: text; }
+  input[type="checkbox"]:not(.hidden) {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 15px;
+    height: 15px;
+    min-width: 15px;
+    flex-shrink: 0;
+    border-radius: 4.5px;
+    border: 1.5px solid #C2D4BE;
+    background-color: #FFFFFF;
+    display: inline-grid;
+    place-content: center;
+    cursor: pointer;
+    vertical-align: middle;
+    caret-color: transparent;
+    transition: background-color .14s ease, border-color .14s ease, box-shadow .14s ease;
+  }
+  input[type="checkbox"]:not(.hidden):hover:not(:disabled) { border-color: #63A950; }
+  input[type="checkbox"]:not(.hidden):checked {
+    background-color: #63A950;
+    border-color: #63A950;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none'%3E%3Cpath d='M3.3 8.3l3.1 3.2 6.3-6.7' stroke='%23ffffff' stroke-width='2.3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: center;
+    background-size: 12px 12px;
+  }
+  input[type="checkbox"].accent-pond-500:not(.hidden) { border-color: #B6DCF5; }
+  input[type="checkbox"].accent-pond-500:not(.hidden):hover:not(:disabled) { border-color: #5EB8EE; }
+  input[type="checkbox"].accent-pond-500:not(.hidden):checked { background-color: #5EB8EE; border-color: #5EB8EE; }
+  input[type="checkbox"]:not(.hidden):disabled { opacity: .55; cursor: not-allowed; }
   select { caret-color: transparent; cursor: pointer; }
   pre, code { -webkit-user-select: text; user-select: text; caret-color: transparent; }
   button:focus:not(:focus-visible), summary:focus { outline: none; }
@@ -20,7 +50,7 @@
   .subtle { @apply text-xs text-ink-soft; }
   .btn { @apply inline-flex select-none items-center justify-center gap-1.5 whitespace-nowrap rounded-2xl px-3.5 py-1.5 text-sm font-bold transition active:translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-50; }
   .btn-leaf { @apply btn bg-leaf-500 text-white shadow-leafbtn hover:bg-leaf-600 active:shadow-none; }
-  .btn-wood { @apply btn border-2 border-[#E5DEC9] bg-[#FDFBF6] text-wood-700 shadow-[0_3px_0_0_#DFD5BC] hover:bg-wood-50 active:shadow-none; }
+  .btn-wood { @apply btn border-2 border-[#D4ECFA] bg-white text-wood-700 shadow-[0_3px_0_0_#C7E4F8] hover:border-[#AEE0FA] hover:bg-[#F5FBFF] hover:text-wood-700 active:shadow-none; }
   .btn-berry { @apply btn bg-berry-500 text-white shadow-[0_3px_0_0_#B95A6D] hover:bg-berry-600 active:shadow-none; }
   .btn-ghost { @apply btn px-2.5 py-1.5 text-ink-soft hover:bg-pond-50 hover:text-wood-700; }
   .btn-xs { @apply rounded-xl px-2.5 py-1 text-xs; }
@@ -46,10 +76,10 @@
 .row-ASK td { background: #F4FAFF; }
 .dot-ASK { background: #74CAF6; }
 .bar-ASK { border-left: 5px solid #9BD9FA; }
-.st-PASS { background: #E3F5DB; color: #447A38; }
-.st-FAIL { background: #FFE6EC; color: #B44E65; }
-.st-WARN { background: #FFF2CC; color: #96701A; }
-.st-SKIP, .st-INFO, .st-MISS, .st-UNKNOWN { background: #F3EFE7; color: #8A7B6D; }
+.st-PASS { background: #E3F6E5; color: #2F7D44; }
+.st-FAIL { background: #FFE6EE; color: #C24669; }
+.st-WARN { background: #FFF3CF; color: #9A6E12; }
+.st-SKIP, .st-INFO, .st-MISS, .st-UNKNOWN { background: #F2F7FB; color: #86776B; }
 .row-FAIL td { background: #FFF5F7; }
 .row-WARN td { background: #FFFAEA; }
 .row-SKIP td, .row-INFO td { color: #B9A894; }
@@ -82,3 +112,6 @@ body {
 .bob { animation: bob 3s ease-in-out infinite; }
 @keyframes pulse-dot { 0%,100% { box-shadow: 0 0 0 0 rgba(104,163,76,.5) } 50% { box-shadow: 0 0 0 6px rgba(104,163,76,0) } }
 .live-dot { animation: pulse-dot 1.4s infinite; }
+.shell-badge { position: relative; display: inline-grid; place-items: center; width: 30px; height: 28px; flex-shrink: 0; user-select: none; }
+.shell-badge img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; filter: drop-shadow(0 2px 3px rgba(72,158,214,.22)); }
+.shell-badge span { position: relative; z-index: 1; margin-top: 2px; font-size: 12.5px; font-weight: 900; line-height: 1; color: #664A30; paint-order: stroke fill; -webkit-text-stroke: 2.6px #ffffff; }
