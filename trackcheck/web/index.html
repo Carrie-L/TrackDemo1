@@ -915,12 +915,12 @@
             <!-- 特殊数据源（如 mine_api_cache）直接以卡片框展示，不再隐藏在「高级」里 -->
             <template x-for="([name, s], si) in Object.entries(st?.sources_explicit || {})" :key="'sp-' + name">
               <div class="flex flex-col rounded-2xl border-2 p-4" :class="tone(ds.files.length + si + 1)">
-                <div class="flex items-center gap-2">
+                <div class="flex flex-wrap items-center gap-1.5">
                   <img class="pic h-5 w-5" :src="pic(s.type === 'sqlite_json' ? 'db' : 'yaml')" alt="">
-                  <span class="font-mono font-bold text-wood-700" x-text="name"></span>
-                  <span class="chip bg-white/80 text-wood-600" x-text="s.type === 'sqlite_json' ? '特殊数据源 · DB缓存' : (s.type === 'sqlite' ? '特殊数据源 · DB' : '特殊数据源 · JSON')"></span>
+                  <span class="truncate font-mono font-bold text-wood-700" x-text="name"></span>
+                  <span class="chip bg-white/80 text-wood-600" x-text="s.type === 'sqlite_json' ? 'DB 缓存' : (s.type === 'sqlite' ? '特殊 · DB' : '特殊 · JSON')"></span>
                   <span class="chip" :class="st?.source_status?.[name]?.exists ? 'st-PASS' : 'st-FAIL'" x-text="st?.source_status?.[name]?.exists ? '可用' : '不可用'" :title="st?.source_status?.[name]?.error"></span>
-                  <div class="ml-auto flex items-center gap-1">
+                  <div class="ml-auto flex shrink-0 items-center gap-0.5">
                     <button class="btn-ghost btn-xs !px-1.5" x-show="st?.source_status?.[name]?.exists && s.type !== 'sqlite'" title="预览查询到的 JSON 数据" @click="previewDsJson(name, s.type === 'sqlite_json' ? ('DB: ' + s.db + ' · SQL') : s.path)"><svg class="ico h-3.5 w-3.5"><use :href="icon('eye')"></use></svg></button>
                     <button class="btn-ghost btn-xs !px-1.5" title="编辑特殊数据源" @click="openSrc(name)"><svg class="ico h-3.5 w-3.5"><use :href="icon('pencil')"></use></svg></button>
                   </div>
@@ -1325,6 +1325,8 @@
               <div><label class="label">备注</label><input class="input" x-model="exp.note" placeholder="我的页 V2.3 埋点"></div>
             </div>
             <label class="mt-3 flex items-center gap-2 text-sm font-bold text-ink-soft"><input type="checkbox" class="accent-leaf-500" x-model="exp.sources"> 带上特殊数据源配置</label>
+            <label class="mt-2 flex items-start gap-2 text-sm font-bold text-ink-soft"><input type="checkbox" class="accent-leaf-500 mt-1" x-model="exp.samples">
+              <span>附带数据源样本 <span class="block text-xs font-normal text-ink-faint">规则用到的接口 JSON + 3 MB 以内的数据库，同事没连手机也能先离线试校验；导入时默认不会覆盖对方已有的数据。注意样本里可能含测试账号数据。</span></span></label>
             <button class="btn-leaf mt-4" @click="doExport()"><svg class="ico h-4 w-4"><use :href="icon('download')"></use></svg>导出规则包</button>
           </div>
           <div class="panel-pad">
@@ -1349,7 +1351,13 @@
             </div>
           </div>
           <div class="mt-3 rounded-xl bg-sun-50 px-3 py-2 text-sm text-sun-700" x-show="imp.preview?.missing_sources?.length">
-            这些规则用到了数据源 <b x-text="(imp.preview?.missing_sources || []).join('、')"></b>，你这边还没有。导入后去「数据源」放入同名文件即可。
+            这些规则用到了数据源 <b x-text="(imp.preview?.missing_sources || []).join('、')"></b>，你这边还没有，规则包里也没附带样本。导入后去「数据源」拉取或放入同名文件即可。
+          </div>
+          <div class="mt-3 rounded-xl bg-pond-50 px-3 py-2 text-sm text-wood-700" x-show="(imp.preview?.items || []).some(x => x.section === 'samples')">
+            这个规则包附带了 <b x-text="(imp.preview?.items || []).filter(x => x.section === 'samples').length"></b> 份数据源样本：你这边没有的默认导入；已有但内容不同的默认<b>保留你的</b>（选「用对方的覆盖」时，你原来的会存进历史记录，随时能切回）。
+          </div>
+          <div class="mt-2 rounded-xl bg-wood-50 px-3 py-2 text-xs text-ink-soft" x-show="imp.preview?.samples_skipped?.length">
+            分享人那边未附带：<span x-text="(imp.preview?.samples_skipped || []).join('、')"></span>
           </div>
           <div class="mt-3 flex flex-wrap gap-2 text-xs">
             <button class="btn-wood btn-xs" @click="setAllChoices('new', 'import')">新增的全部导入</button>

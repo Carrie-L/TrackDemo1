@@ -6,3 +6,9 @@ node_modules/
 web/node_modules/
 samples/catalog.json
 samples/event_dict.json
+build/
+dist/
+release/
+*.spec
+*_Windows版.zip
+icon.ico

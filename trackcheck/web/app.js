@@ -54,7 +54,7 @@ function app() {
     live: { serial: '', clear: true, pull: false, snapshot: true, caseName: '', only: '', results: [], running: false, sel: -1, report: null, raw: '', filter: 'all', scn: {}, snapErr: '', plan: [], addId: '', onlyPlan: false, showUnk: false, planOpen: true, planSel: '', planQ: '' },
     inf: { mode: 'session', path: '', content: '', fileName: '', drafts: [], dicts: {}, warns: [], log: '', open: 0 },
     ed: null, ruleFilter: '', ruleTab: 'all',
-    exp: { mode: 'all', ids: [], q: '', author: '', note: '', sources: true },
+    exp: { mode: 'all', ids: [], q: '', author: '', note: '', sources: true, samples: true },
     imp: { fileName: '', content: '', preview: null, choices: {}, mode: 'merge', overwriteNames: true, catalog: true },
     fm: null, ai: null,
     evd: { entries: [], docs: [], q: '', filter: 'all', open: null, loaded: false, overwrite: false, result: null, limit: 100 },
@@ -1057,6 +1057,7 @@ function app() {
       if (this.exp.author) p.set('author', this.exp.author);
       if (this.exp.note) p.set('note', this.exp.note);
       if (this.exp.sources) p.set('sources', '1');
+      if (this.exp.samples) p.set('samples', '1');
       window.location.href = '/api/export?' + p.toString();
     },
     readImport(ev) {

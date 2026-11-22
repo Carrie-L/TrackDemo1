@@ -1410,9 +1410,39 @@ def print_summary(rep, hp):
 # ----------------------------------------------------------------------------
 # adb 相关
 # ----------------------------------------------------------------------------
+_ADB_PATH = None
+
+
+def find_adb():
+    """依次查找 adb：PATH → ANDROID_HOME / ANDROID_SDK_ROOT → Android Studio 默认 SDK 目录 → 程序同目录 platform-tools"""
+    global _ADB_PATH
+    if _ADB_PATH and os.path.isfile(_ADB_PATH):
+        return _ADB_PATH
+    import shutil
+    exe = "adb.exe" if os.name == "nt" else "adb"
+    cands = [shutil.which("adb")]
+    for env in ("ANDROID_HOME", "ANDROID_SDK_ROOT"):
+        if os.environ.get(env):
+            cands.append(os.path.join(os.environ[env], "platform-tools", exe))
+    if os.name == "nt":
+        if os.environ.get("LOCALAPPDATA"):
+            cands.append(os.path.join(os.environ["LOCALAPPDATA"], "Android", "Sdk", "platform-tools", exe))
+    else:
+        home = os.path.expanduser("~")
+        cands += [os.path.join(home, "Library", "Android", "sdk", "platform-tools", exe),
+                  os.path.join(home, "Android", "Sdk", "platform-tools", exe)]
+    base = os.path.dirname(os.path.abspath(sys.executable if getattr(sys, "frozen", False) else __file__))
+    cands += [os.path.join(base, "platform-tools", exe), os.path.join(base, exe)]
+    for c in cands:
+        if c and os.path.isfile(c):
+            _ADB_PATH = c
+            return c
+    return "adb"
+
+
 def adb_base(spec, serial=None):
     serial = serial or (spec.device.get("serial") if spec else None)
-    return ["adb"] + (["-s", serial] if serial else [])
+    return [find_adb()] + (["-s", serial] if serial else [])
 
 
 def do_pull(spec, serial=None):

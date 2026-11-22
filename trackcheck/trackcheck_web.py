@@ -9,9 +9,11 @@
 只监听 127.0.0.1，仅依赖 Python 标准库 + PyYAML。
 """
 import argparse
+import base64
 import contextlib
 import copy
 import glob
+import gzip
 import hashlib
 import io
 import json
@@ -21,6 +23,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import traceback
@@ -33,8 +36,13 @@ import yaml
 
 import trackcheck as tc
 
+FROZEN = bool(getattr(sys, "frozen", False))          # PyInstaller 打包后的 exe
 HERE = os.path.dirname(os.path.abspath(__file__))
-WEB = os.path.join(HERE, "web")
+RES = getattr(sys, "_MEIPASS", HERE)                  # 打包后网页资源解压在临时目录
+WEB = os.path.join(RES, "web")
+APP_DIR = os.path.dirname(os.path.abspath(sys.executable)) if FROZEN else HERE
+DATA_DIRNAME = "埋点小岛数据"
+SAMPLE_DB_LIMIT = 3 * 1024 * 1024                      # 分享时附带的数据库样本上限
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 SKELETON = {
@@ -191,6 +199,10 @@ def file_info(p):
         st = os.stat(p)
         return {"exists": True, "path": p, "size": st.st_size, "mtime": time.strftime("%m-%d %H:%M:%S", time.localtime(st.st_mtime))}
     return {"exists": False, "path": p}
+
+
+def fmt_kb(n):
+    return f"{n} B" if n < 1024 else (f"{n / 1024:.1f} KB" if n < 1024 * 1024 else f"{n / 1024 / 1024:.1f} MB")
 
 
 # ----------------------------------------------------------------------------
@@ -970,9 +982,9 @@ class App:
 
     def api_devices(self, q):
         try:
-            p = subprocess.run(["adb", "devices", "-l"], capture_output=True, text=True, timeout=8, errors="replace")
+            p = subprocess.run([tc.find_adb(), "devices", "-l"], capture_output=True, text=True, timeout=8, errors="replace")
         except FileNotFoundError:
-            return {"devices": [], "error": "找不到 adb（把 platform-tools 加到 PATH）"}
+            return {"devices": [], "error": "找不到 adb：装 Android Studio，或把 platform-tools 文件夹放到埋点小岛同目录"}
         except subprocess.TimeoutExpired:
             return {"devices": [], "error": "adb 无响应"}
         devs = []
@@ -1285,6 +1297,13 @@ class App:
             out["cases"] = {k: v for k, (v, _) in self.store.items("cases").items()}
             if self.spec.catalog:
                 out["catalog"] = dict(self.spec.catalog)
+        if q.get("samples") == "1":
+            samples, skipped = self._collect_samples(out, allx)
+            if samples:
+                out["datasource_samples"] = samples
+            out["meta"]["samples"] = len(samples)
+            if skipped:
+                out["meta"]["samples_skipped"] = skipped
         text = "# 埋点小岛 规则分享包 —— 在网站「导入 / 分享」页导入即可\n" + yaml.safe_dump(
             plain(out), allow_unicode=True, sort_keys=False, default_flow_style=None, width=160)
         fn = f"trackcheck_share_{time.strftime('%Y%m%d_%H%M%S')}.yaml"
@@ -1342,14 +1361,33 @@ class App:
                     label += f"（{len(v.get('fields') or {})} 个字段）"
                 items.append({"section": sec, "section_name": names[sec], "key": str(k), "label": label, "status": st})
         cat = tc.parse_catalog(obj.get("catalog") or {})
+        # 数据源样本（同事导出时附带的接口 JSON / 小数据库）
+        for fn, smp in (obj.get("datasource_samples") or {}).items():
+            fn = os.path.basename(str(fn))
+            if not isinstance(smp, dict) or not fn:
+                continue
+            st, label = self._sample_status(fn, smp)
+            items.append({"section": "samples", "section_name": "数据源样本", "key": fn, "label": label, "status": st})
         # 规则里用到、但我这边和规则包里都没有的数据源
-        used = set()
+        have = set(self.spec.sources) | set(map(str, (obj.get("sources") or {}).keys()))
+        have |= {re.sub(r"[^\w]", "_", os.path.splitext(str(k))[0]) for k in (obj.get("datasource_samples") or {})}
+        missing = sorted(self._used_source_names(obj) - have)
+        meta = obj.get("meta") or {}
+        return {"kind": "bundle", "meta": meta, "items": items, "missing_sources": missing,
+                "samples_skipped": meta.get("samples_skipped") or [],
+                "catalog_new": len([k for k in cat if k not in self.spec.catalog]), "catalog_total": len(cat)}
+
+    @staticmethod
+    def _used_source_names(obj):
+        """规则包里 events / templates 引用到的数据源名（排除 context 内部互相引用的名字）"""
+        used, ctx_names = set(), set()
         for sec in ("events", "templates"):
             for v in (obj.get(sec) or {}).values():
                 v = v or {}
                 ctx = v.get("context") or {}
+                ctx_names |= set(map(str, ctx.keys()))
                 for c in ctx.values():
-                    if isinstance(c, dict) and c.get("from") and c["from"] not in ctx:
+                    if isinstance(c, dict) and c.get("from"):
                         used.add(str(c["from"]))
                 for r in (v.get("fields") or {}).values():
                     if isinstance(r, dict):
@@ -1358,14 +1396,106 @@ class App:
                         m = re.match(r"^([A-Za-z_]\w*):", str(r.get("from") or ""))
                         if m:
                             used.add(m.group(1))
-        ctx_names = set()
-        for sec in ("events", "templates"):
-            for v in (obj.get(sec) or {}).values():
-                ctx_names |= set(((v or {}).get("context") or {}).keys())
-        have = set(self.spec.sources) | set(map(str, (obj.get("sources") or {}).keys()))
-        missing = sorted(used - have - ctx_names)
-        return {"kind": "bundle", "meta": obj.get("meta") or {}, "items": items, "missing_sources": missing,
-                "catalog_new": len([k for k in cat if k not in self.spec.catalog]), "catalog_total": len(cat)}
+        return used - ctx_names
+
+    # ---- 数据源样本：导出附带 / 导入落盘 ----
+    @staticmethod
+    def _sqlite_bytes(p):
+        """用 SQLite backup 把 db（含 -wal 里还没合并的数据）整理成一份完整文件"""
+        fd, tmp = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        try:
+            src = sqlite3.connect(f"file:{p}?mode=ro", uri=True)
+            dst = sqlite3.connect(tmp)
+            try:
+                src.backup(dst)
+            finally:
+                dst.close()
+                src.close()
+            with open(tmp, "rb") as f:
+                return f.read()
+        finally:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+    def _collect_samples(self, bundle, allx):
+        auto = tc.scan_datasources(self._ds_dir())
+        if allx:
+            names = list(auto)
+        else:
+            used = self._used_source_names(bundle)
+            for k, v in (self.spec.sources or {}).items():       # 特殊数据源依赖的数据库也带上
+                if k in used and isinstance(v, dict) and v.get("db"):
+                    used.add(str(v["db"]))
+            names = [n for n in auto if n in used]
+        samples, skipped = OrderedDict(), []
+        for n in names:
+            cfg = auto[n]
+            p = cfg["path"]
+            fn = os.path.basename(p)
+            if cfg["type"] == "json_file":
+                try:
+                    with open(p, encoding="utf-8-sig") as f:
+                        samples[fn] = {"type": "json", "data": json.load(f)}
+                except Exception:
+                    skipped.append(f"{fn}（JSON 解析失败）")
+            elif cfg["type"] == "sqlite":
+                try:
+                    raw = self._sqlite_bytes(p)
+                except Exception as e:
+                    skipped.append(f"{fn}（读取失败：{e}）")
+                    continue
+                if len(raw) > SAMPLE_DB_LIMIT:
+                    skipped.append(f"{fn}（{len(raw) // 1024} KB，超过 3 MB 未附带）")
+                    continue
+                samples[fn] = {"type": "sqlite", "size": len(raw),
+                               "gz_b64": base64.b64encode(gzip.compress(raw)).decode("ascii")}
+        return samples, skipped
+
+    @staticmethod
+    def _sample_bytes(smp):
+        if smp.get("type") == "sqlite":
+            return gzip.decompress(base64.b64decode(smp.get("gz_b64") or ""))
+        return json.dumps(smp.get("data"), ensure_ascii=False, sort_keys=True).encode("utf-8")
+
+    def _sample_status(self, fn, smp):
+        p = os.path.join(self._ds_dir(), fn)
+        kind = smp.get("type")
+        try:
+            new = self._sample_bytes(smp)
+        except Exception:
+            return "diff", "样本已损坏"
+        label = ("数据库 · " if kind == "sqlite" else "接口 JSON · ") + fmt_kb(len(new))
+        if not os.path.isfile(p):
+            return "new", label
+        try:
+            if kind == "sqlite":
+                cur = self._sqlite_bytes(p)
+            else:
+                with open(p, encoding="utf-8-sig") as f:
+                    cur = json.dumps(json.load(f), ensure_ascii=False, sort_keys=True).encode("utf-8")
+        except Exception:
+            return "diff", label
+        return ("same" if cur == new else "diff"), label
+
+    def _apply_sample(self, fn, smp, author=""):
+        src = "同事样本" + (f"（{author}）" if author else "")
+        if smp.get("type") == "sqlite":
+            raw = self._sample_bytes(smp)
+            if not raw.startswith(b"SQLite format 3"):
+                raise ApiError(f"{fn} 不是有效的 SQLite 数据库")
+            with self._ds_lock:
+                self._backup_ds(fn)
+                p = os.path.join(self._ds_dir(), fn)
+                for suffix in ("-wal", "-shm", "-journal"):
+                    if os.path.exists(p + suffix):
+                        os.remove(p + suffix)
+                with open(p, "wb") as f:
+                    f.write(raw)
+        else:
+            self._save_json_ds(os.path.splitext(fn)[0], smp.get("data"), source=src)
 
     def _write_catalog(self, cat):
         rel = self.store.main.get("catalog_file") or "catalog.json"
@@ -1428,12 +1558,25 @@ class App:
         if obj.get("catalog") and b.get("catalog", True):
             added, total, _ = self._merge_catalog(tc.parse_catalog(obj["catalog"]), "merge", False)
             msg.append(f"点位清单新增 {added} 个")
+        author = str((obj.get("meta") or {}).get("author") or "")
+        sample_errs = []
+        for fn, smp in (obj.get("datasource_samples") or {}).items():
+            fn = os.path.basename(str(fn))
+            if not fn or not isinstance(smp, dict) or choices.get(f"samples\t{fn}", "skip") == "skip":
+                continue
+            try:
+                self._apply_sample(fn, smp, author)
+                done["samples"] += 1
+            except Exception as e:
+                sample_errs.append(f"{fn}: {e}")
         self.reload()
         if new_events:
             self._autotag(new_events)
             self.reload()
-        names = {"events": "点位", "dicts": "字典", "templates": "模板", "cases": "用例", "sources": "数据源"}
+        names = {"events": "点位", "dicts": "字典", "templates": "模板", "cases": "用例", "sources": "数据源配置", "samples": "数据源样本"}
         msg = [f"{names[k]} {n} 个" for k, n in done.items() if n] + msg
+        if sample_errs:
+            msg.append("样本失败：" + "；".join(sample_errs))
         return {"ok": True, "msg": "已导入：" + ("，".join(msg) if msg else "没有选中任何内容")}
 
     # ---- POST：实时 / 设备 ----
@@ -2275,14 +2418,55 @@ class Server(ThreadingHTTPServer):
     daemon_threads = True
 
 
+def _find_running(spec_path, start_port):
+    """已有埋点小岛在跑同一份规则文件 → 返回它的地址（双击 exe 第二次时直接打开浏览器，不重复启动）"""
+    import urllib.request
+    target = os.path.normcase(os.path.abspath(spec_path))
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))   # 只访问本机 127.0.0.1
+    for port in range(start_port, start_port + 20):
+        try:
+            with opener.open(f"http://127.0.0.1:{port}/api/state", timeout=0.4) as r:
+                d = json.loads(r.read().decode("utf-8"))
+            if os.path.normcase(os.path.abspath(str(d.get("spec_path") or ""))) == target:
+                return f"http://127.0.0.1:{port}/"
+        except Exception:
+            continue
+    return None
+
+
+def _prepare_console():
+    for s in (sys.stdout, sys.stderr):
+        try:
+            s.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+    if os.name == "nt":
+        try:
+            import ctypes
+            ctypes.windll.kernel32.SetConsoleTitleW("埋点小岛 —— 关闭这个窗口即退出")
+            os.system("")   # 打开 Windows 终端的颜色支持
+        except Exception:
+            pass
+
+
 def main():
+    _prepare_console()
+    default_spec = os.path.join(APP_DIR, DATA_DIRNAME, "trackcheck.yaml") if FROZEN else "trackcheck.yaml"
     ap = argparse.ArgumentParser(description="埋点小岛 —— trackcheck 本地可视化网站")
-    ap.add_argument("--spec", default="trackcheck.yaml", help="规则文件（不存在会自动创建）")
+    ap.add_argument("--spec", default=default_spec, help="规则文件（不存在会自动创建）")
     ap.add_argument("--out", help="报告 / 会话日志目录，默认 规则文件同目录/reports")
     ap.add_argument("--port", type=int, default=8686)
     ap.add_argument("--no-browser", action="store_true")
     a = ap.parse_args()
+    running = _find_running(a.spec, a.port)
+    if running:
+        print(f"埋点小岛已经在运行：{running}，直接帮你打开浏览器")
+        if not a.no_browser:
+            webbrowser.open(running)
+        return
+    first_run = not os.path.exists(a.spec)
     app = App(a.spec, a.out)
+    os.makedirs(app.spec.datasource_dir, exist_ok=True)
     srv = None
     for port in range(a.port, a.port + 20):  # 端口被占用就顺延
         try:
@@ -2294,7 +2478,11 @@ def main():
         raise SystemExit(f"端口 {a.port}~{a.port + 19} 都被占用了，用 --port 指定一个")
     url = f"http://127.0.0.1:{port}/"
     print(tc.color("🌱 埋点小岛已开张: ", "green") + tc.color(url, "bold"))
-    print(f"   规则文件: {app.store.path}\n   报告目录: {app.out}\n   Ctrl+C 退出")
+    if first_run:
+        print("   第一次运行，已创建空白规则文件。去「导入 / 分享」页导入同事的规则包即可开始。")
+    adb = tc.find_adb()
+    print(f"   adb: {adb if adb != 'adb' else '没找到（装 Android Studio，或把 platform-tools 放到程序同目录）'}")
+    print(f"   规则文件: {app.store.path}\n   报告目录: {app.out}\n   关闭这个窗口（或 Ctrl+C）即退出")
     if not a.no_browser:
         threading.Timer(0.8, lambda: webbrowser.open(url)).start()
     try:
@@ -2307,4 +2495,12 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise
+    except Exception:
+        traceback.print_exc()
+        if FROZEN:   # 双击运行时窗口会一闪而过，先停住让人看到报错
+            input("\n埋点小岛启动失败（错误信息见上方），按回车关闭…")
+        raise
