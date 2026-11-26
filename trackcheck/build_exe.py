@@ -141,6 +141,35 @@ def main():
     ico = make_icon(os.path.join(HERE, "web", "static", "mascot.jpg"),
                     os.path.join(work_dir, "icon.ico"))
 
+    # 2.1 选出要随包携带的数据（规则 / 用例 / 数据源 / 字典 / 文档）：
+    #     既放进分发目录，也塞进 exe 内部（seed_data）——单独拷走一个 exe，首次运行也会自动释放这些数据
+    pkg_dir = os.path.join(out_dir, APP_NAME)
+    pkg_data = os.path.join(pkg_dir, DATA_DIRNAME)
+    seed_src = os.path.abspath(args.data_from) if args.data_from else ""
+    chosen = None
+    if args.with_data:
+        cands = []
+        if seed_src and _data_score(seed_src):
+            cands.append((_data_mtime(seed_src), seed_src, "开发数据"))
+        if _data_score(pkg_data):
+            cands.append((_data_mtime(pkg_data), pkg_data, "分发目录里已有的数据"))
+        if args.refresh_data and seed_src and _data_score(seed_src):
+            chosen = (seed_src, "开发数据（--refresh-data 强制）")
+        elif cands:
+            cands.sort(reverse=True)
+            chosen = (cands[0][1], cands[0][2])
+    seed_dir = os.path.join(work_dir, "seed_data")
+    if os.path.isdir(seed_dir):
+        shutil.rmtree(seed_dir)
+    if chosen:
+        copy_data_dir(chosen[0], seed_dir)
+        for junk in (".seeded_from_exe",):
+            if os.path.exists(os.path.join(seed_dir, junk)):
+                os.remove(os.path.join(seed_dir, junk))
+        print(f"随包携带数据：{chosen[1]} ← {chosen[0]}（同时内置进 exe）")
+    elif args.with_data:
+        print("提示：没有找到可携带的规则数据（--data-from 指向的目录里没有 trackcheck.yaml）")
+
     # 3. 打包单文件无黑框 exe（--windowed：静默后台启动，通过网页查看日志与退出）
     dist_exe_dir = out_dir
     target_exe = os.path.join(out_dir, f"{APP_NAME}.exe")
@@ -173,6 +202,8 @@ def main():
     ]
     if ico:
         cmd += ["--icon", ico]
+    if chosen and os.path.isdir(seed_dir):
+        cmd += ["--add-data", f"{seed_dir}{sep}seed_data"]
     cmd.append(os.path.join(HERE, "trackcheck_web.py"))
 
     print("正在打包无黑框 exe ...")
@@ -186,7 +217,6 @@ def main():
         sys.exit(1)
 
     # 4. 组装分发目录与 zip（先在 build/ 里拼好暂存目录，再增量同步到 dist/埋点小岛，绝不整目录删除用户数据）
-    pkg_dir = os.path.join(out_dir, APP_NAME)
     os.makedirs(pkg_dir, exist_ok=True)
     stage_root = os.path.join(work_dir, "pkg_stage")
     stage = os.path.join(stage_root, APP_NAME)
@@ -205,25 +235,8 @@ def main():
             print(f"已附带示例包：{SAMPLE_PACK_NAME}")
 
     # 4.1 随包携带规则 / 数据源 / 测试用例（埋点小岛数据），解压即用，重新打包也不会丢
-    pkg_data = os.path.join(pkg_dir, DATA_DIRNAME)
-    seed_src = os.path.abspath(args.data_from) if args.data_from else ""
-    chosen = None
-    if args.with_data:
-        cands = []
-        if seed_src and _data_score(seed_src):
-            cands.append((_data_mtime(seed_src), seed_src, "开发数据"))
-        if _data_score(pkg_data):
-            cands.append((_data_mtime(pkg_data), pkg_data, "分发目录里已有的数据"))
-        if args.refresh_data and seed_src and _data_score(seed_src):
-            chosen = (seed_src, "开发数据（--refresh-data 强制）")
-        elif cands:
-            cands.sort(reverse=True)
-            chosen = (cands[0][1], cands[0][2])
-        if chosen:
-            copy_data_dir(chosen[0], os.path.join(stage, DATA_DIRNAME))
-            print(f"已随包携带数据：{chosen[1]} ← {chosen[0]}")
-        else:
-            print("提示：没有找到可携带的规则数据（--data-from 指向的目录里没有 trackcheck.yaml）")
+    if chosen and os.path.isdir(seed_dir):
+        copy_data_dir(seed_dir, os.path.join(stage, DATA_DIRNAME))
 
     # 4.2 同步到 dist/埋点小岛：exe/说明/示例包覆盖；数据目录只在缺失或 --refresh-data 时写入（旧数据先备份）
     for fn in os.listdir(stage):

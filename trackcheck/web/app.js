@@ -57,10 +57,10 @@ function app() {
     live: { serial: '', clear: true, pull: false, snapshot: true, autoApi: true, apiTargets: [], apiHits: [], ver: 0, caseName: '', only: '', results: [], running: false, sel: -1, report: null, raw: '', filter: 'all', scn: {}, snapErr: '', plan: [], addId: '', onlyPlan: false, showUnk: false, planOpen: true, planSel: '', planQ: '', scope: 'plan', dedupe: true, flash: '' },
     inf: { mode: 'session', path: '', content: '', fileName: '', drafts: [], dicts: {}, warns: [], log: '', open: 0 },
     ed: null, ruleFilter: '', ruleTab: 'all',
-    exp: { mode: 'all', ids: [], q: '', author: '', note: '', sources: true, samples: true },
+    exp: { mode: 'all', ids: [], q: '', author: '', note: '', sources: true, samples: true, evdict: true }, dataInfo: null,
     imp: { fileName: '', content: '', preview: null, choices: {}, mode: 'merge', overwriteNames: true, catalog: true },
     fm: null, ai: null,
-    evd: { entries: [], docs: [], q: '', filter: 'all', open: null, loaded: false, overwrite: false, result: null, limit: 100 },
+    evd: { entries: [], docs: [], untracked: [], docsDir: '', q: '', filter: 'all', open: null, loaded: false, overwrite: false, result: null, limit: 100 },
     ds: { files: [], dir: '', pkg: '', dbs: [], devDbs: null, pasteName: '', pasteText: '', showPaste: false, log: '', advanced: false, drag: false, presets: [], histOpen: {}, keysOpen: {} },
     dbv: { db: '', dbs: [], path: '', size: 0, tables: [], q: '', cur: '', open: {}, sql: '', res: null, err: '', offset: 0, limit: 100, hist: [], loading: false, opener: false },
     apiCap: { running: false, endpoint: '', name: '', tag: '', clear: true, lines: 0, captured: [], error: '', showText: false, rawLog: '' },
@@ -85,6 +85,10 @@ function app() {
       this._loadDrafts();
       setInterval(() => this.saveCaseDraft(), 1000);   // 用例编辑：每秒自动存草稿（离开 / 切换 / 刷新都不丢）
       window.addEventListener('beforeunload', () => this.saveCaseDraft());
+      document.addEventListener('click', e => {
+        const el = e.target?.closest?.('[data-copy-id]'); if (!el) return;
+        e.preventDefault(); e.stopPropagation(); this.copyId(el.dataset.copyId, el);
+      }, true);
       window.addEventListener('storage', e => {          // 多个标签页之间同步「复制的点位」与草稿
         if (e.key === 'tc_copied_row') { try { this.copiedRow = e.newValue ? JSON.parse(e.newValue) : null; } catch (x) {} }
         if (e.key === 'tc_case_drafts') this._loadDrafts();
@@ -111,9 +115,10 @@ function app() {
     go(p, quiet) {
       if (this.page === 'cases' && p !== 'cases') this.saveCaseDraft();
       this.page = p; if (!quiet) location.hash = p; window.scrollTo({ top: 0 });
-      if (p === 'evdict' && !this.evd.loaded) this.loadEvdict();
+      if (p === 'evdict') this.loadEvdict();   // 每次进来都重新检查 docs 目录
       if (p === 'sources') { this.loadDs(); this.pollApiCap(true); if (!this.settingsEd && this.st) this.openSettings(); }
       if (p === 'cases' && !this.caseEd) this.restoreLastCase();
+      if (p === 'share') this.loadDataInfo();
     },
     get tip() { return TIPS[this.tipIdx % TIPS.length]; },
     icon(n) { return '/static/icons.svg#i-' + n; },
@@ -653,9 +658,21 @@ function app() {
 
     // ---------------- 埋点字典 ----------------
     async loadEvdict() {
-      try { const d = await this.api('/api/evdict'); Object.assign(this.evd, { entries: d.entries, docs: d.docs, loaded: true }); }
+      try { const d = await this.api('/api/evdict'); Object.assign(this.evd, { entries: d.entries, docs: d.docs, untracked: d.untracked || [], docsDir: d.docs_dir || '', loaded: true }); }
       catch (e) { this.toast(e.message, 'err'); }
     },
+    async removeEvdDoc(d) {
+      const drop = d.entries ? confirm(`把「${d.name}」从字典的文档列表移除。\n\n是否同时删掉只来自这份文档的点位？\n确定 = 一起删掉；取消 = 只移除文档记录、保留点位`) : false;
+      const r = await this.call(() => this.api('/api/evdict/doc_remove', { name: d.name, drop_entries: drop }));
+      this.toast(`已移除「${d.name}」` + (r.dropped ? `，删掉 ${r.dropped} 个只来自它的点位` : ''), 'ok');
+      await this.loadEvdict(); this.refresh();
+    },
+    async importEvdFile(name) {
+      const r = await this.call(() => this.api('/api/evdict/import_file', { name, overwrite: this.evd.overwrite }));
+      this.evd.result = { file: name, ...r };
+      await this.loadEvdict(); this.refresh();
+    },
+    async reloadEvdict() { await this.loadEvdict(); this.toast('已按 docs 目录重新检查文档', 'ok'); },
     importDocs(ev) {
       const files = [...(ev.target.files || ev.dataTransfer?.files || [])]; if (ev.target.value !== undefined) ev.target.value = '';
       (async () => {
@@ -858,8 +875,7 @@ function app() {
     },
     openDbBrowser(db, table) {
       const p = new URLSearchParams(); if (db) p.set('db', db); if (table) p.set('t', table);
-      const w = window.open('/#dbview' + (p.toString() ? '?' + p : ''), 'tc-dbview', 'width=1360,height=880');
-      if (!w) this.toast('浏览器拦截了新窗口，请允许本站弹窗后再点一次', 'warn');
+      window.open('/#dbview' + (p.toString() ? '?' + p : ''), '_blank');   // 新标签页（不带尺寸参数就不会弹独立窗口）
     },
     onSqlFromDbv(d) {
       if (!d || d.type !== 'tc-sql') return;
@@ -1403,6 +1419,7 @@ function app() {
       if (this.exp.note) p.set('note', this.exp.note);
       if (this.exp.sources) p.set('sources', '1');
       if (this.exp.samples) p.set('samples', '1');
+      if (this.exp.evdict) p.set('evdict', '1');
       window.location.href = '/api/export?' + p.toString();
     },
     readImport(ev) {
@@ -1411,11 +1428,12 @@ function app() {
       rd.onload = async () => { this.imp.content = rd.result; this.imp.fileName = f.name; ev.target.value = ''; await this.previewImport(); };
       rd.readAsText(f, 'utf-8');
     },
+    async loadDataInfo() { try { this.dataInfo = await this.api('/api/data_info'); } catch (e) { this.toast(e.message, 'err'); } },
     async previewImport() {
       const i = this.imp;
       const r = await this.call(() => this.api('/api/import/preview', { content: i.content, filename: i.fileName }));
       const ch = {};
-      if (r.kind === 'bundle') r.items.forEach(x => { ch[x.section + '\t' + x.key] = x.status === 'new' ? 'import' : 'skip'; });
+      if (r.kind === 'bundle') r.items.forEach(x => { ch[x.section + '\t' + x.key] = x.status === 'new' || (x.section === 'evdict' && x.status === 'diff') ? 'import' : 'skip'; });
       i.preview = r; i.choices = ch;
     },
     impCount(st) { return (this.imp.preview?.items || []).filter(x => x.status === st).length; },
@@ -1467,6 +1485,7 @@ function app() {
                                             values: clone(r.values || {}), showAll: !!r.showAll, collapsed: !!r.collapsed }));
         e.dirty = true; e.draftAt = dr.at || Date.now(); e.restored = true;
         if (name && !srv) e.old = '';             // 原用例已被删：草稿当新用例
+        this.act(`恢复用例「${e.name || '新用例'}」离开前没保存的草稿`);
       }
       this.caseView = true;
       try { localStorage.setItem('tc_case_last', key); } catch (x) {}
@@ -1515,6 +1534,7 @@ function app() {
         if (key === '__new__') this.closeCaseEd(); else this.openCase(key, { fresh: true });
       }
       this.toast('草稿已丢弃', 'warn');
+      this.act(`丢弃了用例「${key === '__new__' ? '新用例' : key}」的草稿`);
     },
     restoreLastCase() {
       let key = ''; try { key = localStorage.getItem('tc_case_last') || ''; } catch (e) {}
@@ -1671,6 +1691,7 @@ function app() {
       this.copiedRow = copy;
       try { localStorage.setItem('tc_copied_row', JSON.stringify(copy)); } catch (e) {}
       this.toast(`已复制点位「${this.eventName(row.id) || row.id}」（含期望值），打开其他用例按 Ctrl+V 即可粘贴`, 'ok');
+      this.act(`复制用例里的点位 ${row.id}「${this.eventName(row.id) || ''}」（含期望值）`);
     },
     _flashRow(id) {
       this.caseFlash = 'row:' + id;
@@ -1693,6 +1714,7 @@ function app() {
       c.dirty = true;
       this._flashRow(r.id);
       this.toast(`已粘贴点位「${name}」（含期望值）`, 'ok');
+      this.act(`把点位「${name}」粘贴进用例「${c.name || '新用例'}」`);
     },
     pasteRowToPlan() {
       const r = this.copiedRow; if (!r) return;
@@ -1701,6 +1723,7 @@ function app() {
       this.live.plan.push({ key: Math.random(), id: r.id, min: r.min ?? 1, max: r.max ?? '', values: clone(r.values || {}), showAll: false });
       this.live.planOpen = true; this.live.planSel = r.id; this.pushPlan();
       this.toast(`已把「${name}」粘贴进待测清单`, 'ok');
+      this.act(`把点位「${name}」粘贴进实时调试待测清单`);
     },
     clearCopiedRow() { this.copiedRow = null; try { localStorage.removeItem('tc_copied_row'); } catch (e) {} },
     async useCaseInLive(name) {
@@ -1743,6 +1766,7 @@ function app() {
     statusIcon(s) { return { PASS: 'sprout', FAIL: 'bug', ASK: 'bud', WARN: 'warn' }[s] || ''; },
     async openReport(name) {
       this.rep.cur = await this.call(() => this.api('/api/report?name=' + encodeURIComponent(name)));
+      this.act(`查看校验报告 ${name}`);
       this.rep.cur.name = name; this.rep.expandAll = false; this.rep.evId = ''; this.rv = null; this.go('reports');
     },
     // 点位覆盖里点一行 → 下方逐条明细只看这个点位（再点一次取消）
@@ -1818,6 +1842,16 @@ function app() {
       f.text = this.yv.text; this.yv.edit = false; await this.refresh();
       if (this.ed && !this.ed.dirty && !this.ed.isNew) { this.ed.kind === 'template' ? this.openTemplate(this.ed.id) : this.loadEditor(this.ed.id, this.ed.sample); }
     },
+    async copyId(id, el) {
+      id = String(id || ''); if (!id) return;
+      try { await navigator.clipboard.writeText(id); } catch (e) { return this.toast('复制失败：浏览器不允许访问剪贴板', 'err'); }
+      if (el) { el.classList.add('id-copied'); setTimeout(() => el.classList.remove('id-copied'), 900); }
+      const nm = this.eventName(id);
+      this.toast(`已复制点位 ID ${id}` + (nm ? `（${nm}）` : ''), 'ok');
+      this.act(`复制点位 ID ${id}` + (nm ? `「${nm}」` : ''));
+    },
+    // 纯前端操作也记进运行日志（fire-and-forget）
+    act(text) { if (!this.srvOff) fetch('/api/log/act', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) }).catch(() => {}); },
     async copyText(t) { try { await navigator.clipboard.writeText(t); this.toast('已复制', 'ok'); } catch (e) { this.toast('复制失败，请手动选择复制', 'err'); } },
     yamlHtml(t) {
       const esc = x => x.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -1844,7 +1878,9 @@ function app() {
     get srvLogHasErr() { return this.srvLogErrTotal > 0; },
     get srvLogLines() {
       const ls = this.srvLog?.lines || [];
-      return this.srvLog?.onlyErr ? ls.filter(x => x.level === 'ERROR') : ls;
+      if (this.srvLog?.onlyErr) return ls.filter(x => x.level === 'ERROR');
+      if (this.srvLog?.onlyAct) return ls.filter(x => x.level === 'ACT' || x.level === 'WARN');
+      return ls;
     },
     get srvLogText() {
       return this.srvLogLines.map(x => `[${x.time}] [${x.level}] ${x.text}`).join('\n');
@@ -1853,13 +1889,15 @@ function app() {
       const hadUnread = this.srvErrCount > 0;
       const d = await this.call(() => this.api('/api/server_log?seen=1'));
       if (this.st?.server) this.st.server.err_count = 0;
-      this.srvLog = { ...d, onlyErr: hadUnread && (d.lines || []).some(x => x.level === 'ERROR') };
+      this.srvLog = { ...d, onlyErr: hadUnread && (d.lines || []).some(x => x.level === 'ERROR'), onlyAct: false };
+      this.$nextTick(() => { const b = document.getElementById('srv-log-body'); if (b) b.scrollTop = b.scrollHeight; });
     },
     async reloadServerLog() {
-      const onlyErr = !!this.srvLog?.onlyErr;
+      const onlyErr = !!this.srvLog?.onlyErr, onlyAct = !!this.srvLog?.onlyAct;
       const d = await this.call(() => this.api('/api/server_log?seen=1'));
       if (this.st?.server) this.st.server.err_count = 0;
-      this.srvLog = { ...d, onlyErr };
+      this.srvLog = { ...d, onlyErr, onlyAct };
+      this.$nextTick(() => { const b = document.getElementById('srv-log-body'); if (b) b.scrollTop = b.scrollHeight; });
     },
     async clearServerLog() {
       await this.call(() => this.api('/api/server_log/clear', {}), '已清空当前面板日志');

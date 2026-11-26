@@ -10,7 +10,7 @@
   <script defer src="/static/alpine.min.js"></script>
 </head>
 <body x-data="app()" class="min-h-screen">
-<div class="mx-auto flex max-w-[1680px] gap-5 p-5">
+<div class="mx-auto flex min-h-screen max-w-[1680px] gap-5 p-5">
 
   <!-- ================= 侧边栏 ================= -->
   <aside x-show="page !== 'dbview'" class="sticky top-5 flex h-[calc(100vh-40px)] w-56 shrink-0 flex-col gap-4">
@@ -19,7 +19,7 @@
       <span class="wood-title pointer-events-none absolute inset-x-4 top-[37%] -translate-y-1/2 text-[22px] font-black leading-none tracking-[0.14em]">埋点小岛</span>
       <span class="wood-sub pointer-events-none absolute inset-x-4 top-[83%] -translate-y-1/2 truncate text-[11.5px] font-bold leading-none tracking-wide">Android 埋点调试与校验</span>
     </button>
-    <nav class="panel flex flex-col gap-2.5 p-3">
+    <nav class="panel flex min-h-0 flex-col gap-2.5 overflow-y-auto p-3 scroll-soft">
       <template x-for="n in NAV" :key="n.id">
         <button class="navitem" :class="page === n.id && 'navitem-on'" @click="go(n.id)">
           <img class="pic h-7 w-7 -my-1" :src="pic(n.icon)" alt=""><span x-text="n.label"></span>
@@ -29,35 +29,17 @@
         </button>
       </template>
     </nav>
-    <div class="panel mt-auto flex flex-col gap-2.5 p-3 text-xs">
-      <div class="flex items-center gap-3">
-        <div class="relative shrink-0">
-          <img src="/static/mascot.jpg" class="bob h-12 w-12 rounded-full object-cover ring-2 ring-leaf-200" alt="">
-          <span class="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full ring-2 ring-white"
-                :class="srvErrCount > 0 ? 'bg-berry-500 animate-pulse' : 'bg-[#63A950]'"
-                :title="srvErrCount > 0 ? '后台有 ' + srvErrCount + ' 条异常日志' : '小岛后台服务运行中'"></span>
-        </div>
-        <div class="min-w-0">
-          <div class="font-bold text-wood-700">小芽陪你测埋点</div>
-          <div class="truncate text-ink-faint" x-text="(stats.events || 0) + ' 个点位已配置规则'"></div>
-        </div>
+    <!-- 小芽状态卡：只留陪伴 + 服务状态（运行日志 / 休息已挪到右上角）；屏幕矮时自动隐藏，不再被挤掉一半 -->
+    <div class="panel mt-auto flex shrink-0 items-center gap-3 p-3 text-xs [@media(max-height:820px)]:hidden">
+      <div class="relative shrink-0">
+        <img src="/static/mascot.jpg" class="bob h-11 w-11 rounded-full object-cover ring-2 ring-leaf-200" alt="">
+        <span class="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full ring-2 ring-white"
+              :class="srvErrCount > 0 ? 'bg-berry-500 animate-pulse' : 'bg-[#63A950]'"
+              :title="srvErrCount > 0 ? '后台有 ' + srvErrCount + ' 条异常日志' : '小岛后台服务运行中'"></span>
       </div>
-      <div class="flex items-center gap-1.5 border-t border-[#EBF5FC] pt-2">
-        <button type="button"
-                class="relative inline-flex flex-1 items-center justify-center gap-1.5 rounded-full border px-2.5 py-1 text-[12.5px] font-bold transition"
-                :class="srvErrCount > 0 ? 'border-berry-200 bg-berry-50 text-berry-700 hover:bg-berry-100' : 'border-[#D5ECFA] bg-[#F4FAFF] text-wood-700 hover:border-[#B6DFF8] hover:bg-[#E7F5FE]'"
-                title="查看小岛后台运行与报错日志（server.log）"
-                @click="openServerLog()">
-          <svg class="ico h-3.5 w-3.5" :class="srvErrCount > 0 ? 'text-berry-600' : 'text-wood-500'"><use :href="icon('scroll-text')"></use></svg>
-          <span x-text="srvErrCount > 0 ? '异常日志 ' + srvErrCount : '运行日志'"></span>
-        </button>
-        <button type="button"
-                class="inline-flex items-center justify-center gap-1 rounded-full border border-[#FAD6E2] bg-[#FFF4F8] px-2.5 py-1 text-[12.5px] font-bold text-wood-700 transition hover:border-[#F7BFD2] hover:bg-[#FCDCE6]"
-                title="关闭埋点小岛后台服务"
-                @click="quitAsk = true">
-          <svg class="ico h-3.5 w-3.5 text-berry-600"><use :href="icon('power')"></use></svg>
-          <span>休息</span>
-        </button>
+      <div class="min-w-0">
+        <div class="font-bold text-wood-700">小芽陪你测埋点</div>
+        <div class="truncate text-ink-faint" x-text="(stats.events || 0) + ' 个点位已配置规则'"></div>
       </div>
     </div>
   </aside>
@@ -124,12 +106,25 @@
           <span class="max-w-[220px] truncate text-sm font-bold" :title="st?.spec_path" x-text="fileName(st?.spec_path)"></span>
           <img class="pic h-6 w-6" src="/static/icons/yaml.png" alt="">
         </button>
+        <!-- 运行日志 / 休息：放在右上角，一眼就能看到 -->
+        <button type="button" class="relative flex h-10 items-center gap-1.5 rounded-full px-3.5 text-sm font-bold shadow-soft transition"
+                :class="srvErrCount > 0 ? 'bg-[#FFF2F6] text-berry-700 hover:bg-[#FCDCE6]' : 'bg-white/85 text-wood-700 hover:bg-white'"
+                :title="srvErrCount > 0 ? '后台有 ' + srvErrCount + ' 条异常，点击查看' : '查看运行日志：你的每一步操作和结果都记在这里'"
+                @click="openServerLog()">
+          <svg class="ico h-4 w-4" :class="srvErrCount > 0 ? 'text-berry-600' : 'text-wood-500'"><use :href="icon('scroll-text')"></use></svg>
+          <span x-text="srvErrCount > 0 ? '异常 ' + srvErrCount : '运行日志'"></span>
+          <span x-show="srvErrCount > 0" class="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 animate-pulse rounded-full bg-berry-500 ring-2 ring-white"></span>
+        </button>
+        <button type="button" class="flex h-10 items-center gap-1.5 rounded-full border border-[#FAD6E2] bg-[#FFF4F8] px-3.5 text-sm font-bold text-wood-700 shadow-soft transition hover:bg-[#FCDCE6]"
+                title="关闭埋点小岛后台服务" @click="quitAsk = true">
+          <svg class="ico h-4 w-4 text-berry-600"><use :href="icon('power')"></use></svg>休息
+        </button>
       </div>
     </header>
 
     <div x-show="st?.spec_error" x-cloak class="panel flex items-center gap-2 border-berry-200 bg-berry-50 p-4 text-sm text-berry-700"><img class="pic h-6 w-6" src="/static/icons/warn.png" alt="">规则文件解析出错：<span x-text="st?.spec_error"></span></div>
 
-    <main class="min-h-[70vh]">
+    <main class="flex-1">
       <!-- ========== 数据库浏览器（独立窗口 #dbview，只读） ========== -->
       <section x-show="page === 'dbview'" x-cloak class="flex h-[calc(100vh-40px)] flex-col gap-4">
         <div class="panel flex flex-wrap items-center gap-3 px-4 py-3">
@@ -442,7 +437,7 @@
                 <div class="pop mt-2 rounded-2xl border-2 border-white bg-white/90 p-3">
                   <div class="flex flex-wrap items-center gap-2">
                     <span class="text-sm font-bold text-wood-700" x-text="eventName(livePlanCur.id) || '未命名点位'"></span>
-                    <span class="code" x-text="livePlanCur.id"></span>
+                    <span class="code id-copy" :data-copy-id="livePlanCur.id" title="点击复制点位 ID" x-text="livePlanCur.id"></span>
                     <span class="chip" :class="liveHits(livePlanCur.id) ? 'st-PASS' : 'st-SKIP'" x-text="liveHits(livePlanCur.id) ? '已上报 ' + liveHits(livePlanCur.id) + ' 次' : '还没上报'"></span>
                     <div class="ml-auto flex items-center gap-1">
                       <button class="btn-ghost btn-xs hover:!bg-berry-50 hover:!text-berry-600" title="移出清单" @click="removePlanRow(live.plan.findIndex(x => x.id === livePlanCur.id))"><svg class="ico h-3.5 w-3.5"><use :href="icon('trash-2')"></use></svg>移出</button>
@@ -532,7 +527,7 @@
                     <span class="min-w-0 flex-1">
                       <span class="block truncate text-[15px] font-black text-wood-700" x-text="eventName(g.row.id) || g.row.id"></span>
                       <span class="flex items-center gap-1.5 font-mono text-xs text-ink-soft">
-                        <span x-text="g.row.id"></span>
+                        <span class="id-copy rounded-md px-1" :data-copy-id="g.row.id" title="点击复制点位 ID" x-text="g.row.id"></span>
                         <span class="truncate rounded-full bg-[#FFF0F5] px-1.5 font-sans text-[12.5px] text-wood-700" x-show="rowValSummary(g.row)" x-text="rowValSummary(g.row)"></span>
                       </span>
                     </span>
@@ -571,7 +566,7 @@
                     <span class="ml-auto shrink-0 text-xs font-bold text-[#7F63B8]" x-show="!badCount(it.r) && askCount(it.r)" x-text="askCount(it.r) + ' 待确认'"></span>
                     <span class="shrink-0 rounded-full bg-[#EBF7FE] px-1.5 font-mono text-xs font-bold text-wood-700" x-show="it.n > 1" :title="'完全相同的上报出现了 ' + it.n + ' 次'" x-text="'×' + it.n"></span>
                   </div>
-                  <div class="mt-0.5 flex gap-2 font-mono text-xs text-ink-soft"><span x-text="'#' + it.r.seq"></span><span x-text="it.r.id"></span><span class="ml-auto" x-text="(it.r.ts || '').slice(6)"></span></div>
+                  <div class="mt-0.5 flex gap-2 font-mono text-xs text-ink-soft"><span x-text="'#' + it.r.seq"></span><span class="id-copy rounded-md px-1" :data-copy-id="it.r.id" title="点击复制点位 ID" x-text="it.r.id"></span><span class="ml-auto" x-text="(it.r.ts || '').slice(6)"></span></div>
                 </button>
               </template>
               <p x-show="!liveList.length" class="py-8 text-center text-xs text-ink-faint" x-text="!live.showUnk && liveCounts.UNKNOWN ? '已隐藏 ' + liveCounts.UNKNOWN + ' 条未配置规则的上报' : '没有符合条件的事件'"></p>
@@ -584,7 +579,7 @@
                 <div class="flex flex-wrap items-center gap-2">
                   <span class="chip text-sm" :class="'st-' + liveCur.status" x-text="statusText(liveCur.status)"></span>
                   <h3 class="text-lg font-black text-wood-700" x-text="liveCur.name || liveCur.cls || '未知点位'"></h3>
-                  <span class="code" x-text="liveCur.id"></span><span class="subtle" x-text="liveCur.cls"></span>
+                  <span class="code id-copy" :data-copy-id="liveCur.id" title="点击复制点位 ID" x-text="liveCur.id"></span><span class="subtle" x-text="liveCur.cls"></span>
                   <div class="ml-auto flex gap-2">
                     <button class="btn-wood btn-xs" x-show="liveCur.status !== 'UNKNOWN'" @click="focusPlanEvent(liveCur.id)"><img class="pic h-4 w-4" src="/static/icons/cases.png" alt="">改期望值</button>
                     <button class="btn-wood btn-xs" @click="copyPrompt(liveCur.id, liveCur.raw)"><img class="pic h-4 w-4" src="/static/icons/ai.png" alt="">复制 AI 提示词</button>
@@ -656,9 +651,36 @@
             <div class="min-w-[300px] flex-1">
               <div class="title text-lg"><img class="pic h-7 w-7" src="/static/icons/dict.png" alt="">埋点字典</div>
               <p class="subtle mt-1 leading-relaxed">把公司埋点文档（Excel 导出的 Markdown 表格 / CSV）导进来，就能按点位 ID、名称、参数、含义搜索。<br>可以多次导入不同版本的文档：点位 ID 已存在的会跳过，只记录它也出现在哪份文档里。合并单元格导出后 ID 为空的行，会自动归到上一个点位。</p>
-              <div class="mt-3 flex flex-wrap gap-2">
-                <template x-for="d in evd.docs" :key="d.name"><button class="chip border border-wood-200 bg-white text-wood-700 transition hover:-translate-y-0.5 hover:border-leaf-300 hover:bg-leaf-50 hover:text-leaf-700" title="点击在文件管理器中定位该文档" @click="openPath({doc: d.name})"><img class="pic h-4 w-4" src="/static/icons/yaml.png" alt=""><span x-text="d.name"></span><span class="font-normal text-ink-faint" x-text="d.count + ' 个 · ' + d.imported_at"></span><svg class="ico h-3 w-3 text-wood-400"><use :href="icon('folder-open')"></use></svg></button></template>
+              <div class="mt-3 flex flex-wrap items-center gap-2">
+                <span class="text-xs font-bold text-ink-soft" x-show="evd.docs.length || evd.untracked.length">已导入的文档：</span>
+                <template x-for="d in evd.docs" :key="d.name">
+                  <span class="group inline-flex items-center overflow-hidden rounded-full border transition"
+                        :class="d.missing ? 'border-dashed border-[#F3D8DF] bg-[#FFFAFB]' : 'border-wood-200 bg-white hover:border-leaf-300'">
+                    <button type="button" class="inline-flex items-center gap-1.5 py-1 pl-2.5 pr-1.5 text-xs font-bold transition"
+                            :class="d.missing ? 'text-ink-faint line-through decoration-[#E6A9B8]' : 'text-wood-700 hover:bg-leaf-50 hover:text-leaf-700'"
+                            :title="d.missing ? '文件已经从 docs 目录删掉了；字典里的点位是导入时存下的，仍然可以用。点右边 × 可把它从列表移除' : '点击在文件管理器中定位该文档'"
+                            @click="!d.missing && openPath({doc: d.name})">
+                      <img class="pic h-4 w-4" :class="d.missing && 'opacity-50 grayscale'" src="/static/icons/yaml.png" alt="">
+                      <span x-text="d.name"></span>
+                      <span class="font-normal no-underline text-ink-faint" x-text="(d.missing ? '文件已删除 · ' : '') + (d.entries ?? d.count) + ' 个 · ' + (d.imported_at || '').slice(0, 10)"></span>
+                    </button>
+                    <button type="button" class="px-1.5 py-1 text-ink-faint transition hover:bg-[#FCDCE6] hover:text-berry-600" title="从字典的文档列表移除" @click="removeEvdDoc(d)"><svg class="ico h-3 w-3"><use :href="icon('x')"></use></svg></button>
+                  </span>
+                </template>
+                <template x-for="u in evd.untracked" :key="'u-' + u.name">
+                  <button type="button" class="inline-flex items-center gap-1.5 rounded-full border border-dashed border-[#BFE3F9] bg-[#F4FAFF] px-2.5 py-1 text-xs font-bold text-wood-700 transition hover:bg-[#E7F5FE]"
+                          title="docs 目录里有这份文档但还没导入字典，点一下导入" @click="importEvdFile(u.name)">
+                    <svg class="ico h-3 w-3 text-pond-600"><use :href="icon('plus')"></use></svg><span x-text="u.name"></span><span class="font-normal text-ink-faint">未导入 · 点击导入</span>
+                  </button>
+                </template>
+                <button type="button" class="inline-flex items-center gap-1 rounded-full px-2 py-1 text-xs font-bold text-ink-soft transition hover:bg-pond-50 hover:text-wood-700" title="重新检查 docs 目录（删掉 / 新放进去的文档）" @click="reloadEvdict()">
+                  <svg class="ico h-3.5 w-3.5"><use :href="icon('refresh-cw')"></use></svg>刷新
+                </button>
+                <button type="button" x-show="evd.docsDir" class="path-link text-xs text-ink-soft" :title="evd.docsDir" @click="openPath(evd.docsDir)">
+                  <svg class="ico h-3.5 w-3.5 text-wood-400"><use :href="icon('folder-open')"></use></svg>docs 目录
+                </button>
               </div>
+              <p class="subtle mt-1.5" x-show="evd.docs.some(d => d.missing)">划线的文档文件已被删除：导入时点位已经存进字典，不影响搜索；不需要了就点 × 移除（可选择一起删掉只来自它的点位）。</p>
             </div>
             <div class="w-full max-w-sm">
               <label class="flex cursor-pointer flex-col items-center gap-2 rounded-2xl border-2 border-dashed border-wood-300 bg-white/60 p-5 text-center text-sm text-ink-soft hover:bg-white"
@@ -1448,7 +1470,7 @@
                       <span class="shell-badge cursor-pointer" @click="row.collapsed = !row.collapsed"><img src="/static/icons/shell.png" alt=""><span x-text="ri + 1"></span></span>
                       <button type="button" class="flex items-center gap-1.5 text-left" @click="row.collapsed = !row.collapsed">
                         <span class="text-sm font-extrabold text-wood-700" x-text="eventName(row.id) || '未命名点位'"></span>
-                        <span class="code" x-text="row.id"></span>
+                        <span class="code id-copy" :data-copy-id="row.id" title="点击复制点位 ID" x-text="row.id"></span>
                       </button>
                       <span class="chip ds-todo" x-show="!st?.event_fields?.[row.id]">未配置规则</span>
                       <span x-show="eventLast(row.id)"
@@ -1653,13 +1675,13 @@
               <div class="panel-pad">
                 <div class="mb-2 flex items-center justify-between"><div class="title"><img class="pic h-5 w-5" src="/static/icons/cases.png" alt=""><span x-text="rep.cur.meta.case ? '用例覆盖：' + rep.cur.meta.case : '点位覆盖'"></span></div><span class="subtle">点某一行只看它的明细</span></div>
                 <div class="max-h-72 overflow-auto rounded-2xl border border-wood-100 bg-white/80 scroll-soft"><table class="tbl"><thead><tr><th class="min-w-[140px]">点位</th><th>次数</th><th>结果</th></tr></thead><tbody>
-                  <template x-for="c in rep.cur.coverage"><tr class="cursor-pointer transition" :class="[c.status === 'FAIL' && 'row-FAIL', rep.evId === c.id ? '!bg-[#EAF7FE] shadow-[inset_3px_0_0_#7CC7F2]' : 'hover:bg-[#F4FAFF]']" :title="c.count ? (rep.evId === c.id ? '再点一次取消筛选' : '点击在下方只看这个点位的明细') : '本轮未触发'" @click="focusCoverage(c)"><td><div class="font-bold text-wood-700" x-text="c.name || '未命名'"></div><div class="font-mono text-[12px] text-ink-soft" x-text="c.id"></div></td><td class="font-mono font-bold" x-text="c.count"></td><td><span class="chip" :class="'st-' + c.status" x-text="{PASS: '已触发', FAIL: '未满足', MISS: '未触发'}[c.status]"></span><div class="subtle mt-0.5" x-text="c.expect"></div></td></tr></template>
+                  <template x-for="c in rep.cur.coverage"><tr class="cursor-pointer transition" :class="[c.status === 'FAIL' && 'row-FAIL', rep.evId === c.id ? '!bg-[#EAF7FE] shadow-[inset_3px_0_0_#7CC7F2]' : 'hover:bg-[#F4FAFF]']" :title="c.count ? (rep.evId === c.id ? '再点一次取消筛选' : '点击在下方只看这个点位的明细') : '本轮未触发'" @click="focusCoverage(c)"><td><div class="font-bold text-wood-700" x-text="c.name || '未命名'"></div><div><span class="id-copy rounded-md px-1 font-mono text-[12px] text-ink-soft" :data-copy-id="c.id" title="点击复制点位 ID" x-text="c.id"></span></div></td><td class="font-mono font-bold" x-text="c.count"></td><td><span class="chip" :class="'st-' + c.status" x-text="{PASS: '已触发', FAIL: '未满足', MISS: '未触发'}[c.status]"></span><div class="subtle mt-0.5" x-text="c.expect"></div></td></tr></template>
                 </tbody></table></div>
               </div>
               <div class="panel-pad">
                 <div class="mb-2 flex items-center justify-between"><div class="title"><img class="pic h-5 w-5" src="/static/icons/bug.png" alt="">问题字段汇总</div><span class="subtle">点某一行可定位下方明细</span></div>
                 <div class="max-h-72 overflow-auto rounded-2xl border border-wood-100 bg-white/80 scroll-soft"><table class="tbl"><thead><tr><th class="min-w-[130px]">点位</th><th>字段</th><th>次数</th><th>原因</th></tr></thead><tbody>
-                  <template x-for="h in rep.cur.hot_fields"><tr class="cursor-pointer transition hover:bg-sakura-50" @click="focusReportField(h)"><td><div class="font-bold text-wood-700" x-text="h.name || '未命名'"></div><div class="font-mono text-[12px] text-ink-soft" x-text="h.id"></div></td><td class="font-mono font-bold text-berry-700" x-text="h.field"></td><td><span class="chip st-FAIL" x-text="h.count"></span></td><td class="text-xs text-ink-soft" x-text="h.reason"></td></tr></template>
+                  <template x-for="h in rep.cur.hot_fields"><tr class="cursor-pointer transition hover:bg-sakura-50" @click="focusReportField(h)"><td><div class="font-bold text-wood-700" x-text="h.name || '未命名'"></div><div><span class="id-copy rounded-md px-1 font-mono text-[12px] text-ink-soft" :data-copy-id="h.id" title="点击复制点位 ID" x-text="h.id"></span></div></td><td class="font-mono font-bold text-berry-700" x-text="h.field"></td><td><span class="chip st-FAIL" x-text="h.count"></span></td><td class="text-xs text-ink-soft" x-text="h.reason"></td></tr></template>
                 </tbody></table><p x-show="!rep.cur.hot_fields.length" class="py-6 text-center text-sm text-leaf-600">没有问题字段，干得漂亮！</p></div>
               </div>
             </div>
@@ -1714,7 +1736,7 @@
                         <svg x-show="r.status !== 'UNKNOWN'" class="ico h-3 w-3 opacity-60"><use :href="icon('chevron-down')"></use></svg>
                       </button>
                       <span class="font-mono text-xs text-ink-soft" x-text="'#' + r.seq + ' ' + (r.ts || '')"></span>
-                      <span class="font-bold text-wood-700" x-text="r.name || r.cls"></span><span class="code" x-text="r.id"></span>
+                      <span class="font-bold text-wood-700" x-text="r.name || r.cls"></span><span class="code id-copy" :data-copy-id="r.id" title="点击复制点位 ID" x-text="r.id"></span>
                       <span class="text-xs text-ink-soft" x-show="r.manual_note" x-text="'· 备注：' + r.manual_note"></span>
                       <span class="ml-auto chip st-FAIL" x-show="badCount(r)" x-text="badCount(r) + ' 个问题'"></span>
                       <span class="ml-auto chip st-ASK" x-show="!badCount(r) && askCount(r)" x-text="askCount(r) + ' 待确认'"></span>
@@ -1821,10 +1843,56 @@
 
       <!-- ========== 导入 / 分享 ========== -->
       <section x-show="page === 'share'" x-cloak class="flex flex-col gap-5">
+        <!-- 我的数据在哪：规则 / 用例 / 数据源 / 字典都在这里，拷走就是全部 -->
+        <div class="panel-pad" x-show="dataInfo">
+          <div class="flex flex-wrap items-center gap-2">
+            <div class="title text-lg"><img class="pic h-8 w-8" src="/static/icons/palm.png" alt="">我的数据都在这里</div>
+            <span class="subtle" x-text="dataInfo?.frozen ? '程序旁边的「埋点小岛数据」文件夹，就是你的全部配置' : '开发模式：用的是源码里的这份数据，打包 exe 时会整份带进去'"></span>
+            <button class="btn-wood btn-xs ml-auto" @click="openPath(dataInfo.data_dir)"><svg class="ico h-3.5 w-3.5"><use :href="icon('folder-open')"></use></svg>打开数据文件夹</button>
+          </div>
+          <button class="path-link mt-1 font-mono text-xs text-ink-soft" :title="dataInfo?.data_dir" @click="openPath(dataInfo.data_dir)" x-text="dataInfo?.data_dir"></button>
+          <div class="mt-3 grid grid-cols-1 gap-2.5 sm:grid-cols-2 xl:grid-cols-5">
+            <button class="flex items-start gap-2.5 rounded-2xl border border-[#E3F1FB] bg-white/85 p-3 text-left transition hover:-translate-y-0.5 hover:border-[#BFE3F9]" @click="openPath(dataInfo.spec)">
+              <img class="pic h-8 w-8" src="/static/icons/rules.png" alt="">
+              <span class="min-w-0"><span class="block text-sm font-black text-wood-700">规则 + 用例</span>
+                <span class="block text-xs text-ink-soft" x-text="dataInfo ? `点位 ${dataInfo.counts.events} · 用例 ${dataInfo.counts.cases} · 模板 ${dataInfo.counts.templates} · 映射 ${dataInfo.counts.dicts}` : ''"></span>
+                <span class="block truncate font-mono text-[11.5px] text-ink-faint" x-text="(dataInfo?.spec_files || []).join('、')"></span></span>
+            </button>
+            <button class="flex items-start gap-2.5 rounded-2xl border border-[#E3F1FB] bg-white/85 p-3 text-left transition hover:-translate-y-0.5 hover:border-[#BFE3F9]" @click="openPath(dataInfo.datasources.path)">
+              <img class="pic h-8 w-8" src="/static/icons/data.png" alt="">
+              <span class="min-w-0"><span class="block text-sm font-black text-wood-700">数据源</span>
+                <span class="block text-xs text-ink-soft" x-text="dataInfo ? `${dataInfo.datasources.files} 个文件 · 配置 ${dataInfo.counts.sources} 个` : ''"></span>
+                <span class="block truncate font-mono text-[11.5px] text-ink-faint">datasources/</span></span>
+            </button>
+            <button class="flex items-start gap-2.5 rounded-2xl border border-[#E3F1FB] bg-white/85 p-3 text-left transition hover:-translate-y-0.5 hover:border-[#BFE3F9]" @click="openPath(dataInfo.evdict.path)">
+              <img class="pic h-8 w-8" src="/static/icons/dict.png" alt="">
+              <span class="min-w-0"><span class="block text-sm font-black text-wood-700">埋点字典</span>
+                <span class="block text-xs text-ink-soft" x-text="dataInfo ? `${dataInfo.evdict.entries} 个点位` : ''"></span>
+                <span class="block truncate font-mono text-[11.5px] text-ink-faint">event_dict.json</span></span>
+            </button>
+            <button class="flex items-start gap-2.5 rounded-2xl border border-[#E3F1FB] bg-white/85 p-3 text-left transition hover:-translate-y-0.5 hover:border-[#BFE3F9]" @click="openPath(dataInfo.docs.path)">
+              <img class="pic h-8 w-8" src="/static/icons/yaml.png" alt="">
+              <span class="min-w-0"><span class="block text-sm font-black text-wood-700">埋点文档</span>
+                <span class="block text-xs text-ink-soft" x-text="dataInfo ? `${dataInfo.docs.files} 份` : ''"></span>
+                <span class="block truncate font-mono text-[11.5px] text-ink-faint">docs/</span></span>
+            </button>
+            <button class="flex items-start gap-2.5 rounded-2xl border border-[#E3F1FB] bg-white/85 p-3 text-left transition hover:-translate-y-0.5 hover:border-[#BFE3F9]" @click="openPath(dataInfo.reports.path)">
+              <img class="pic h-8 w-8" src="/static/icons/report.png" alt="">
+              <span class="min-w-0"><span class="block text-sm font-black text-wood-700">校验报告</span>
+                <span class="block text-xs text-ink-soft" x-text="dataInfo ? `${dataInfo.reports.files} 份 · 含运行日志` : ''"></span>
+                <span class="block truncate font-mono text-[11.5px] text-ink-faint">reports/</span></span>
+            </button>
+          </div>
+          <div class="mt-3 grid grid-cols-1 gap-2.5 text-xs leading-relaxed text-ink-soft lg:grid-cols-3">
+            <div class="rounded-2xl bg-[#F4FAFF] px-3.5 py-2.5"><b class="text-wood-700">换电脑 / 给同事整套用：</b>把整个「埋点小岛数据」文件夹和 exe 一起拷过去（放在 exe 旁边），打开就是你配好的全部规则、用例、数据源和字典。</div>
+            <div class="rounded-2xl bg-[#F1FAEC] px-3.5 py-2.5"><b class="text-wood-700">只发一个文件：</b>用下面「分享给同事」导出全部（勾上数据源样本和埋点字典），对方在「导入同事的规则」里导入，逐条确认要不要覆盖。</div>
+            <div class="rounded-2xl bg-[#FFF8FB] px-3.5 py-2.5"><b class="text-wood-700">升级新版本：</b>先点右上角「休息」退出，再用新 exe 替换旧 exe，<b>保留</b>「埋点小岛数据」文件夹即可，配置一个都不会丢。开发者打包时会把当前数据内置进 exe，单独拷走 exe 第一次打开也会自动释放。</div>
+          </div>
+        </div>
         <div class="grid grid-cols-1 gap-5 xl:grid-cols-2">
           <div class="panel-pad">
             <div class="title text-lg"><img class="pic h-8 w-8" src="/static/icons/export.png" alt="">分享给同事</div>
-            <p class="subtle mt-1">导出一个 .yaml 规则包（点位规则 + 模板 + 用到的映射），发给同事，对方在这里导入就能直接用。</p>
+            <p class="subtle mt-1">导出一个 .yaml 文件：「全部规则」会带上点位规则、模板、映射、<b>测试用例</b>、数据源配置，可选附带<b>数据源样本</b>和<b>埋点字典</b>。发给同事，对方在右边导入就能直接用。</p>
             <div class="mt-4 flex gap-1 rounded-2xl bg-wood-50 p-1 md:w-80">
               <button class="tab flex-1" :class="exp.mode === 'all' && 'tab-on'" @click="exp.mode = 'all'">全部规则</button>
               <button class="tab flex-1" :class="exp.mode === 'pick' && 'tab-on'" @click="exp.mode = 'pick'">挑选点位</button>
@@ -1843,6 +1911,8 @@
             <label class="mt-3 flex items-center gap-2 text-sm font-bold text-ink-soft"><input type="checkbox" class="accent-leaf-500" x-model="exp.sources"> 带上特殊数据源配置</label>
             <label class="mt-2 flex items-start gap-2 text-sm font-bold text-ink-soft"><input type="checkbox" class="accent-leaf-500 mt-1" x-model="exp.samples">
               <span>附带数据源样本 <span class="block text-xs font-normal text-ink-faint">规则用到的接口 JSON + 3 MB 以内的数据库，同事没连手机也能先离线试校验；导入时默认不会覆盖对方已有的数据。注意样本里可能含测试账号数据。</span></span></label>
+            <label class="mt-2 flex items-start gap-2 text-sm font-bold text-ink-soft" x-show="exp.mode === 'all'"><input type="checkbox" class="accent-leaf-500 mt-1" x-model="exp.evdict">
+              <span>附带埋点字典和埋点文档 <span class="block text-xs font-normal text-ink-faint">对方导入后能直接按点位 ID / 名称 / 参数搜索；对方已有的点位保留他的。</span></span></label>
             <button class="btn-leaf mt-4" @click="doExport()"><svg class="ico h-4 w-4"><use :href="icon('download')"></use></svg>导出规则包</button>
           </div>
           <div class="panel-pad">
@@ -1907,9 +1977,9 @@
       </section>
     </main>
 
-    <footer class="flex flex-wrap items-center justify-between gap-2 rounded-full border-2 border-[#DCEEF8] bg-white/85 px-6 py-2 text-xs font-bold text-ink-soft shadow-soft">
-      <span class="flex items-center gap-1.5 text-wood-700">🌼 埋点小岛 · trackcheck</span>
-      <span class="flex items-center gap-1.5" x-text="'🌱 ' + (stats.events || 0) + ' 个点位已配置规则' + (st?.evdict.count ? ' · 埋点字典 ' + st.evdict.count + ' 个' : '') + ' · Ctrl+S 快捷保存'"></span>
+    <footer x-show="page !== 'dbview'" class="mt-auto flex flex-wrap items-center justify-between gap-2 rounded-full border-2 border-[#DCEEF8] bg-white/85 px-6 py-2 text-xs font-bold text-ink-soft shadow-soft">
+      <span class="flex items-center gap-1.5 text-wood-700"><img class="pic -my-1 h-6 w-6" src="/static/icons/palm.png" alt="">埋点小岛 · trackcheck</span>
+      <span class="flex items-center gap-1.5"><img class="pic h-4 w-4" src="/static/icons/sprout.png" alt=""><span x-text="(stats.events || 0) + ' 个点位已配置规则' + (st?.evdict.count ? ' · 埋点字典 ' + st.evdict.count + ' 个' : '') + ' · Ctrl+S 快捷保存'"></span></span>
       <span class="flex items-center gap-1.5"><span class="h-2 w-2 rounded-full" :class="onlineDevice ? 'bg-leaf-400' : 'bg-berry-400'"></span><span x-text="onlineDevice ? ('在线：' + (onlineDevice.model || onlineDevice.serial)) : '等待设备'"></span></span>
     </footer>
   </div>
@@ -2279,11 +2349,14 @@
         <div class="ml-auto flex flex-wrap items-center gap-2">
           <div class="flex rounded-full bg-[#EBF7FE] p-0.5 text-xs font-bold">
             <button type="button" class="rounded-full px-3 py-1 transition"
-                    :class="srvLog.onlyErr ? 'text-ink-soft hover:text-wood-700' : 'bg-white text-wood-700 shadow-sm'"
-                    @click="srvLog.onlyErr = false">全部</button>
+                    :class="!srvLog.onlyErr && !srvLog.onlyAct ? 'bg-white text-wood-700 shadow-sm' : 'text-ink-soft hover:text-wood-700'"
+                    @click="srvLog.onlyErr = false; srvLog.onlyAct = false">全部</button>
+            <button type="button" class="rounded-full px-3 py-1 transition"
+                    :class="srvLog.onlyAct ? 'bg-[#DFF4D4] text-wood-700 shadow-sm' : 'text-ink-soft hover:text-wood-700'"
+                    @click="srvLog.onlyAct = true; srvLog.onlyErr = false">我的操作</button>
             <button type="button" class="rounded-full px-3 py-1 transition"
                     :class="srvLog.onlyErr ? 'bg-[#FCDCE6] text-wood-700 shadow-sm' : 'text-ink-soft hover:text-wood-700'"
-                    @click="srvLog.onlyErr = true">只看异常</button>
+                    @click="srvLog.onlyErr = true; srvLog.onlyAct = false">只看异常</button>
           </div>
           <button class="btn-wood btn-xs" @click="reloadServerLog()"><svg class="ico h-3.5 w-3.5"><use :href="icon('refresh-cw')"></use></svg>刷新</button>
           <button class="btn-wood btn-xs" @click="copyText(srvLogText)"><svg class="ico h-3.5 w-3.5"><use :href="icon('copy')"></use></svg>复制</button>
@@ -2291,28 +2364,28 @@
           <button class="btn-ghost" @click="srvLog = null"><svg class="ico h-4 w-4"><use :href="icon('x')"></use></svg></button>
         </div>
       </div>
-      <div class="min-h-0 flex-1 overflow-y-auto bg-white/85 p-4 font-mono text-xs leading-relaxed scroll-soft" style="min-height:42vh">
+      <div id="srv-log-body" class="min-h-0 flex-1 overflow-y-auto bg-white/85 p-4 font-mono text-xs leading-relaxed scroll-soft" style="min-height:42vh">
         <template x-if="!srvLogLines.length">
           <div class="grid place-items-center gap-2 py-16 font-sans text-sm text-ink-faint">
             <img class="pic h-12 w-12 opacity-80" src="/static/icons/sprout.png" alt="">
-            <span x-text="srvLog.onlyErr ? '太棒啦，目前没有任何报错或异常记录～' : '暂无日志记录'"></span>
+            <span x-text="srvLog.onlyErr ? '太棒啦，目前没有任何报错或异常记录～' : (srvLog.onlyAct ? '还没有操作记录，去小岛上逛逛吧～' : '暂无日志记录')"></span>
           </div>
         </template>
         <div class="space-y-1">
           <template x-for="(ln, idx) in srvLogLines" :key="idx">
             <div class="flex items-start gap-2 rounded-xl px-2.5 py-1"
-                 :class="ln.level === 'ERROR' ? 'bg-[#FFF2F6] text-berry-700' : 'text-wood-700 hover:bg-[#F4FAFF]'">
+                 :class="ln.level === 'ERROR' ? 'bg-[#FFF2F6] text-berry-700' : (ln.level === 'ACT' ? 'font-sans text-wood-700 hover:bg-[#F3FBEF]' : (ln.level === 'WARN' ? 'font-sans bg-[#FFFBEF] text-wood-700' : 'text-wood-700 hover:bg-[#F4FAFF]'))">
               <span class="shrink-0 select-none text-[12px] text-ink-faint tabular-nums" x-text="ln.time"></span>
               <span class="shrink-0 select-none rounded-full px-1.5 py-0.2 text-[11px] font-bold"
-                    :class="ln.level === 'ERROR' ? 'bg-[#FCDCE6] text-berry-700' : 'bg-[#EBF7FE] text-ink-soft'"
-                    x-text="ln.level === 'ERROR' ? '异常' : '信息'"></span>
+                    :class="{ ERROR: 'bg-[#FCDCE6] text-berry-700', ACT: 'bg-[#DFF4D4] text-[#3F7F31]', WARN: 'bg-[#FFEFC4] text-wood-700' }[ln.level] || 'bg-[#EBF7FE] text-ink-soft'"
+                    x-text="{ ERROR: '异常', ACT: '操作', WARN: '没成功' }[ln.level] || '信息'"></span>
               <span class="min-w-0 flex-1 whitespace-pre-wrap break-all" x-text="ln.text"></span>
             </div>
           </template>
         </div>
       </div>
       <div class="flex shrink-0 items-center justify-between border-t border-[#E6F3FC] px-6 py-3 text-xs text-ink-soft">
-        <span>无黑框模式下，所有后台输出与报错都会自动保存在 <span class="code">reports/server.log</span>，启动失败也会弹窗提示。</span>
+        <span>你的每一步操作和结果、后台输出与报错都会保存在 <span class="code">reports/server.log</span>；启动失败也会弹窗提示。</span>
         <button class="btn-leaf btn-xs" @click="srvLog = null">知道啦</button>
       </div>
     </div>

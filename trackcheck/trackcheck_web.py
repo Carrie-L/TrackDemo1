@@ -43,6 +43,8 @@ RES = getattr(sys, "_MEIPASS", HERE)                  # 打包后网页资源解
 WEB = os.path.join(RES, "web")
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable)) if FROZEN else HERE
 DATA_DIRNAME = "埋点小岛数据"
+DOC_EXTS = (".md", ".markdown", ".csv", ".tsv", ".txt", ".json")
+SEED_DIRNAME = "seed_data"                              # 打包时塞进 exe 的默认数据（首次运行自动释放）
 SAMPLE_DB_LIMIT = 3 * 1024 * 1024                      # 分享时附带的数据库样本上限
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 HTTP_SERVER = None
@@ -50,7 +52,7 @@ HTTP_SERVER = None
 
 class ServerLogger:
     """无黑框运行时的服务日志收集器：同时写入内存环形缓冲与 server.log，并追踪未读异常数。"""
-    MAX_LINES = 500
+    MAX_LINES = 1500
     MAX_BYTES = 512 * 1024
 
     def __init__(self):
@@ -1824,6 +1826,23 @@ class App:
             out["meta"]["samples"] = len(samples)
             if skipped:
                 out["meta"]["samples_skipped"] = skipped
+        if q.get("evdict") == "1":
+            d = tc.load_event_dict(self.spec.event_dict_path)
+            if d.get("entries"):
+                out["event_dict"] = {"entries": d["entries"], "columns": d.get("columns", []),
+                                     "docs": [{k: x.get(k) for k in ("name", "count", "imported_at")} for x in d.get("docs", [])]}
+                out["meta"]["event_dict"] = len(d["entries"])
+                files = OrderedDict()
+                for x in d.get("docs", []):
+                    p = self._doc_path(x.get("name"), x.get("path"))
+                    if p and os.path.getsize(p) <= 2 * 1024 * 1024:
+                        try:
+                            with open(p, encoding="utf-8-sig", errors="replace") as f:
+                                files[os.path.basename(p)] = f.read()
+                        except OSError:
+                            pass
+                if files:
+                    out["doc_files"] = files
         text = "# 埋点小岛 规则分享包 —— 在网站「导入 / 分享」页导入即可\n" + yaml.safe_dump(
             plain(out), allow_unicode=True, sort_keys=False, default_flow_style=None, width=160)
         fn = f"trackcheck_share_{time.strftime('%Y%m%d_%H%M%S')}.yaml"
@@ -1888,6 +1907,27 @@ class App:
                 continue
             st, label = self._sample_status(fn, smp)
             items.append({"section": "samples", "section_name": "数据源样本", "key": fn, "label": label, "status": st})
+        # 埋点字典 + 埋点文档
+        ed = obj.get("event_dict") or {}
+        if isinstance(ed, dict) and ed.get("entries"):
+            cur = tc.load_event_dict(self.spec.event_dict_path).get("entries", {})
+            new_n = len([k for k in ed["entries"] if str(k) not in cur])
+            items.append({"section": "evdict", "section_name": "埋点字典", "key": "埋点字典",
+                          "label": f"{len(ed['entries'])} 个点位，你这边还没有的 {new_n} 个（已有的保留你的）",
+                          "status": "new" if not cur else ("diff" if new_n else "same")})
+        for fn, text in (obj.get("doc_files") or {}).items():
+            fn = os.path.basename(str(fn))
+            if not fn:
+                continue
+            p = os.path.join(self._docs_dir(), fn)
+            st = "new"
+            if os.path.isfile(p):
+                try:
+                    with open(p, encoding="utf-8-sig", errors="replace") as f:
+                        st = "same" if f.read() == text else "diff"
+                except OSError:
+                    st = "diff"
+            items.append({"section": "docs", "section_name": "埋点文档", "key": fn, "label": fmt_kb(len(str(text).encode("utf-8"))), "status": st})
         # 规则里用到、但我这边和规则包里都没有的数据源
         have = set(self.spec.sources) | set(map(str, (obj.get("sources") or {}).keys()))
         have |= {re.sub(r"[^\w]", "_", os.path.splitext(str(k))[0]) for k in (obj.get("datasource_samples") or {})}
@@ -2112,11 +2152,33 @@ class App:
                 done["samples"] += 1
             except Exception as e:
                 sample_errs.append(f"{fn}: {e}")
+        ed = obj.get("event_dict") or {}
+        if isinstance(ed, dict) and ed.get("entries") and choices.get("evdict\t埋点字典", "skip") != "skip":
+            d = tc.load_event_dict(self.spec.event_dict_path)
+            ents = d.setdefault("entries", {})
+            for k, e in ed["entries"].items():
+                if str(k) not in ents and isinstance(e, dict):
+                    ents[str(k)] = e
+                    done["evdict"] += 1
+            cols = d.setdefault("columns", [])
+            cols.extend(c for c in (ed.get("columns") or []) if c not in cols)
+            have = {x.get("name") for x in d.setdefault("docs", [])}
+            d["docs"].extend(dict(x) for x in (ed.get("docs") or []) if isinstance(x, dict) and x.get("name") not in have)
+            self._save_evdict(d)
+        for fn, text in (obj.get("doc_files") or {}).items():
+            fn = os.path.basename(str(fn))
+            if not fn or choices.get(f"docs\t{fn}", "skip") == "skip":
+                continue
+            os.makedirs(self._docs_dir(), exist_ok=True)
+            with open(os.path.join(self._docs_dir(), fn), "w", encoding="utf-8") as f:
+                f.write(str(text))
+            done["docs"] += 1
         self.reload()
         if new_events:
             self._autotag(new_events)
             self.reload()
-        names = {"events": "点位", "dicts": "字典", "templates": "模板", "cases": "用例", "sources": "数据源配置", "samples": "数据源样本"}
+        names = {"events": "点位", "dicts": "字典", "templates": "模板", "cases": "用例", "sources": "数据源配置", "samples": "数据源样本",
+                 "evdict": "埋点字典点位", "docs": "埋点文档"}
         msg = [f"{names[k]} {n} 个" for k, n in done.items() if n] + msg
         if sample_errs:
             msg.append("样本失败：" + "；".join(sample_errs))
@@ -2592,14 +2654,61 @@ class App:
         ents = sorted(d["entries"].values(), key=lambda e: e["id"])
         for e in ents:
             e["configured"] = e["id"] in conf
-        docs = []
+        docs, known = [], set()
         for x in d.get("docs", []):
             item = dict(x)
             p = self._doc_path(item.get("name"), item.get("path"))
+            item["missing"] = not p
             if p:
                 item["path"] = p
+                known.add(os.path.normcase(os.path.abspath(p)))
+            item["entries"] = sum(1 for e in d["entries"].values() if item.get("name") in (e.get("docs") or []))
             docs.append(item)
-        return {"entries": ents, "docs": docs, "columns": d.get("columns", [])}
+        # docs 目录里有、但还没导入字典的文档（比如手动拷进来的）
+        untracked = []
+        dd = self._docs_dir()
+        if os.path.isdir(dd):
+            for fn in sorted(os.listdir(dd)):
+                fp = os.path.join(dd, fn)
+                if os.path.isfile(fp) and fn.lower().endswith(DOC_EXTS) and os.path.normcase(os.path.abspath(fp)) not in known \
+                        and fn not in {x.get("name") for x in docs}:
+                    untracked.append({"name": fn, "size": os.path.getsize(fp)})
+        return {"entries": ents, "docs": docs, "untracked": untracked, "docs_dir": dd, "columns": d.get("columns", [])}
+
+    def api_evdict_doc_remove(self, b):
+        """把一份文档从字典的文档列表里移除；drop_entries=True 时顺带删掉只来自这份文档的点位"""
+        name = str(b.get("name") or "")
+        d = tc.load_event_dict(self.spec.event_dict_path)
+        before = len(d.get("docs", []))
+        d["docs"] = [x for x in d.get("docs", []) if x.get("name") != name]
+        if len(d["docs"]) == before:
+            raise ApiError(f"字典里没有文档「{name}」")
+        dropped = 0
+        for rid in list(d["entries"]):
+            e = d["entries"][rid]
+            ds = [x for x in (e.get("docs") or []) if x != name]
+            if b.get("drop_entries") and (e.get("docs") or []) and not ds:
+                del d["entries"][rid]
+                dropped += 1
+            else:
+                e["docs"] = ds
+        if b.get("delete_file"):
+            p = self._doc_path(name)
+            if p and os.path.realpath(p).startswith(os.path.realpath(self._docs_dir())):
+                os.remove(p)
+        self._save_evdict(d)
+        self.reload()
+        return {"ok": True, "dropped": dropped, "total": len(d["entries"])}
+
+    def api_evdict_import_file(self, b):
+        """导入 docs 目录里已有的文档文件"""
+        fn = os.path.basename(str(b.get("name") or ""))
+        p = os.path.join(self._docs_dir(), fn)
+        if not fn or not os.path.isfile(p):
+            raise ApiError(f"docs 目录里没有 {fn}")
+        with open(p, encoding="utf-8-sig", errors="replace") as f:
+            text = f.read()
+        return self.api_evdict_import({"content": text, "filename": fn, "overwrite": b.get("overwrite")})
 
     def api_evdict_import(self, b):
         text, fn = b.get("content") or "", os.path.basename(str(b.get("filename") or "埋点文档"))
@@ -2953,6 +3062,30 @@ class App:
         self.reload()
         return {"ok": True, "error": self.spec_error}
 
+    def api_data_info(self, q):
+        """「我的数据在哪」：规则 / 用例 / 数据源 / 字典 / 文档 / 报告各自的位置与数量"""
+        base = os.path.dirname(self.store.path)
+
+        def cnt(d, exts=None):
+            if not os.path.isdir(d):
+                return 0
+            return len([f for f in os.listdir(d) if os.path.isfile(os.path.join(d, f)) and not f.startswith(".")
+                        and (not exts or f.lower().endswith(exts))])
+        evd = tc.load_event_dict(self.spec.event_dict_path)
+        ds = self._ds_dir()
+        return {
+            "frozen": FROZEN, "app_dir": APP_DIR, "data_dir": base, "spec": self.store.path,
+            "spec_files": [os.path.relpath(p, base) for p in self.store.files],
+            "counts": {"events": len(self.store.items("events")), "cases": len(self.store.items("cases")),
+                       "templates": len(self.store.items("templates")), "dicts": len(self.store.items("dicts")),
+                       "sources": len(self.spec.sources or {})},
+            "datasources": {"path": ds, "files": cnt(ds, (".json", ".db", ".sqlite", ".sqlite3"))},
+            "evdict": {"path": self.spec.event_dict_path, "entries": len(evd.get("entries", {}))},
+            "docs": {"path": self._docs_dir(), "files": cnt(self._docs_dir(), DOC_EXTS)},
+            "reports": {"path": self.out, "files": cnt(self.out, (".json",))},
+            "seeded": os.path.isfile(os.path.join(base, ".seeded_from_exe")),
+        }
+
     def api_server_log(self, q):
         mark = str(q.get("seen", "1")) != "0"
         return SERVER_LOG.snapshot(mark_seen=mark)
@@ -2986,6 +3119,132 @@ class App:
 
         threading.Thread(target=_bye, daemon=True).start()
         return {"ok": True}
+    def api_log_act(self, b):
+        """网页端纯前端操作（复制点位、粘贴、恢复草稿…）也记进运行日志"""
+        txt = re.sub(r"\s+", " ", str(b.get("text") or "")).strip()[:240]
+        if txt:
+            SERVER_LOG.emit("ACT", txt)
+        return {"ok": True}
+
+
+# ----------------------------------------------------------------------------
+# 运行日志里的「用户操作 + 结果」：把每次接口调用翻译成一句人话
+# ----------------------------------------------------------------------------
+_SEC_NAME = {"cases": "测试用例", "sources": "数据源", "dicts": "字典映射", "templates": "模板", "events": "点位规则"}
+
+
+def _sum_text(s):
+    s = s or {}
+    parts = [f"通过 {s.get('pass', 0)}"]
+    for k, n in (("fail", "失败"), ("warn", "警告"), ("ask", "待确认"), ("unknown", "无规则")):
+        if s.get(k):
+            parts.append(f"{n} {s[k]}")
+    return " / ".join(parts)
+
+
+def describe_action(app, fn, a, res):
+    """返回一句操作描述；None 表示这类请求太琐碎不记（轮询、读取等）"""
+    a = a if isinstance(a, dict) else {}
+    r = res if isinstance(res, dict) else {}
+
+    def ev(eid):
+        eid = str(eid or "")
+        nm = ((app.spec.events.get(eid) or {}).get("name") or "") if app.spec else ""
+        return f"「{nm}」{eid}" if nm else eid
+
+    def renamed(sec):
+        old, new = str(a.get("old_name") or a.get("old_id") or ""), str(a.get("name") or a.get("id") or "")
+        return f"（由「{old}」改名）" if old and old != new else ""
+
+    if fn == "api_event_save":
+        n = len(((a.get("raw") or {}).get("fields") or {}))
+        return f"保存点位规则 {ev(a.get('id'))}，{n} 个字段规则{renamed('events')}"
+    if fn == "api_event_delete":
+        return f"删除点位规则 {a.get('id')}"
+    if fn == "api_case_save":
+        v = a.get("value") or {}
+        return f"保存测试用例「{a.get('name')}」，{len(v.get('expect') or [])} 个点位" + \
+               (f"，绑定数据源 {len(v.get('sources') or [])} 个" if v.get("sources") else "") + renamed("cases")
+    if fn in ("api_template_save", "api_source_save", "api_dict_save"):
+        sec = {"api_template_save": "模板", "api_source_save": "数据源配置", "api_dict_save": "字典映射"}[fn]
+        return f"保存{sec}「{a.get('name')}」{renamed(sec)}"
+    if fn == "api_item_delete":
+        return f"删除{_SEC_NAME.get(a.get('section'), a.get('section'))}「{a.get('name')}」"
+    if fn == "api_settings_save":
+        return "修改了高级设置（日志识别 / logcat 参数 / 校验选项）"
+    if fn == "api_live_start":
+        return "开始实时调试" + (f"，用例「{a.get('case')}」" if a.get("case") else "") + \
+               (f"，设备 {a.get('serial')}" if a.get("serial") else "") + \
+               (f"，自动抓接口 {len(r.get('api_targets') or [])} 个" if r.get("api_targets") else "") + "，去手机上操作吧"
+    if fn == "api_live_stop":
+        return f"停止实时调试，生成报告 {r.get('report')}：{_sum_text(r.get('summary'))}"
+    if fn == "api_live_recheck":
+        return f"用最新规则重新校验了 {r.get('count', 0)} 条上报"
+    if fn == "api_live_clear":
+        return "清空了实时调试记录"
+    if fn == "api_live_decide":
+        n = len(a.get("seqs") or [a.get("seq")])
+        val = {"ok": "对", "bad": "不对"}.get(a.get("value"), "撤销")
+        return f"人工确认字段 {a.get('field')} → {val}" + (f"（重复上报 {n} 条一起）" if n > 1 else "")
+    if fn == "api_check_log":
+        return f"离线校验日志，生成报告 {r.get('report')}：{_sum_text(r.get('summary'))}"
+    if fn == "api_report_review":
+        st = {"PASS": "通过", "FAIL": "有问题", "ASK": "待确认"}.get(a.get("status"), a.get("status"))
+        f = a.get("field") or "整条"
+        return f"改判报告 #{a.get('seq')} 的 {f} → {st}" + (f"（{a.get('note')}）" if a.get("note") else "")
+    if fn == "api_report_delete":
+        return f"删除校验报告 {a.get('name')}"
+    if fn == "api_reports_clear":
+        return "一键清空了全部校验报告"
+    if fn == "api_ds_upload":
+        return f"上传数据源文件 {r.get('file') or a.get('filename')}"
+    if fn == "api_ds_paste":
+        return f"粘贴 JSON 保存为数据源 {r.get('name') or a.get('name')}"
+    if fn == "api_ds_delete":
+        return f"删除数据源文件 {a.get('file')}"
+    if fn == "api_ds_history_use":
+        return f"数据源 {a.get('file')} 切回历史版本 {a.get('hist')}"
+    if fn == "api_ds_history_delete":
+        return f"删除数据源 {a.get('file')} 的历史版本 {a.get('hist')}"
+    if fn == "api_ds_api_capture_start":
+        return f"开始抓取接口 {a.get('endpoint') or ''}".rstrip()
+    if fn == "api_ds_api_capture_stop":
+        return "停止抓取接口" + (f"，共抓到 {len(r.get('captured') or [])} 份" if isinstance(r.get("captured"), list) else "")
+    if fn == "api_ds_api_capture_extract":
+        return "从粘贴的 OkHttp 日志里提取接口 JSON"
+    if fn in ("api_pull", "api_pull_dbs"):
+        return "从手机拉取数据库到数据源"
+    if fn == "api_pull_apidump":
+        return "从手机拉取接口缓存"
+    if fn == "api_evdict_import":
+        return f"导入埋点文档 {a.get('filename')}：解析 {r.get('parsed', 0)} 个，新增 {r.get('added', 0)} 个"
+    if fn == "api_evdict_import_file":
+        return f"导入 docs 里的埋点文档 {a.get('name')}：新增 {r.get('added', 0)} 个"
+    if fn == "api_evdict_doc_remove":
+        return f"从埋点字典移除文档 {a.get('name')}" + (f"，顺带删掉 {r.get('dropped', 0)} 个只来自它的点位" if r.get("dropped") else "")
+    if fn == "api_evdict_delete":
+        return "清空了埋点字典" if a.get("all") else f"从埋点字典删除点位 {a.get('id')}"
+    if fn == "api_import_apply":
+        return f"导入规则包 {a.get('filename') or ''}：{(r.get('msg') or '').replace('已导入：', '')}"
+    if fn == "api_export":
+        return "导出规则包" + ("（全部）" if not a.get("ids") else f"（{len(str(a.get('ids')).split(','))} 个点位）")
+    if fn == "api_ai_prompt":
+        return f"生成整组 AI 提示词：用例「{a.get('case')}」" if a.get("case") else f"生成 AI 提示词：{ev(a.get('id'))}"
+    if fn == "api_infer":
+        return f"从日志推断规则草稿 {len(r.get('drafts') or [])} 个"
+    if fn == "api_infer_accept":
+        return "采纳规则草稿写入点位规则"
+    if fn == "api_spec_text_save":
+        return f"直接编辑并保存了规则文件 {a.get('name')}"
+    if fn == "api_reload":
+        return "重新加载了规则文件"
+    if fn == "api_db_query":
+        return f"数据库浏览器查询 {a.get('db')}：返回 {len(r.get('rows') or [])} 行"
+    if fn == "api_dict_tag":
+        return "给字典映射打上点位标签"
+    if fn == "api_server_log_clear":
+        return None
+    return None
 
 
 ROUTES = {
@@ -3021,6 +3280,8 @@ ROUTES = {
     ("POST", "/api/open_path"): "api_open_path",
     ("POST", "/api/report/delete"): "api_report_delete", ("POST", "/api/reports/clear"): "api_reports_clear",
     ("POST", "/api/report/review"): "api_report_review",
+    ("POST", "/api/log/act"): "api_log_act", ("GET", "/api/data_info"): "api_data_info",
+    ("POST", "/api/evdict/doc_remove"): "api_evdict_doc_remove", ("POST", "/api/evdict/import_file"): "api_evdict_import_file",
 }
 
 MIME = {".html": "text/html; charset=utf-8", ".js": "application/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
@@ -3079,6 +3340,13 @@ def make_handler(app):
                     else:
                         with lock:
                             res = getattr(app, fn)(arg)
+                    if method == "POST" or fn == "api_export":
+                        try:
+                            txt = describe_action(app, fn, arg, res if not isinstance(res, FileResponse) else {})
+                            if txt:
+                                SERVER_LOG.emit("ACT", txt)
+                        except Exception:
+                            pass
                     if isinstance(res, FileResponse):
                         try:
                             self.send_response(200)
@@ -3094,6 +3362,12 @@ def make_handler(app):
                 except _CLIENT_DISCONNECT:
                     return
                 except ApiError as e:
+                    try:
+                        what = describe_action(app, fn, arg if isinstance(arg, dict) else {}, {})
+                        if what:
+                            SERVER_LOG.emit("WARN", f"{what.split('，')[0]} —— {e}")
+                    except Exception:
+                        pass
                     self._send(400, {"error": str(e)})
                 except Exception as e:
                     tb = traceback.format_exc().rstrip()
@@ -3187,6 +3461,41 @@ def _notify_fatal_error(msg):
             pass
 
 
+def _spec_is_empty(p):
+    """规则文件不存在，或只是首次运行生成的空骨架（没有任何点位 / 用例 / 数据源）"""
+    if not os.path.isfile(p):
+        return True
+    try:
+        d = yload(p)
+    except Exception:
+        return False
+    if d.get("include"):
+        return False
+    return not any(d.get(k) for k in ("events", "cases", "sources", "templates", "dicts"))
+
+
+def _seed_from_exe(spec_path):
+    """exe 里内置了开发者打包时的规则 / 用例 / 数据源 / 字典：数据目录还是空的时自动释放，已有文件绝不覆盖"""
+    seed = os.path.join(RES, SEED_DIRNAME)
+    if not FROZEN or not os.path.isdir(seed) or not _spec_is_empty(spec_path):
+        return 0
+    data_dir = os.path.dirname(os.path.abspath(spec_path))
+    spec_name = os.path.basename(spec_path)
+    n = 0
+    for root, _, files in os.walk(seed):
+        rel = os.path.relpath(root, seed)
+        for fn in files:
+            dst = os.path.join(data_dir, fn) if rel == "." else os.path.join(data_dir, rel, fn)
+            if os.path.exists(dst) and not (rel == "." and fn == spec_name):
+                continue
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            shutil.copy2(os.path.join(root, fn), dst)
+            n += 1
+    with open(os.path.join(data_dir, ".seeded_from_exe"), "w", encoding="utf-8") as f:
+        f.write(time.strftime("%Y-%m-%d %H:%M:%S"))
+    return n
+
+
 def main():
     global HTTP_SERVER
     _prepare_console()
@@ -3204,6 +3513,9 @@ def main():
             webbrowser.open(running)
         return
     first_run = not os.path.exists(a.spec)
+    seeded = _seed_from_exe(a.spec) if os.path.abspath(a.spec) == os.path.abspath(default_spec) else 0
+    if seeded:
+        first_run = False
     app = App(a.spec, a.out)
     SERVER_LOG.bind_file(os.path.join(app.out, "server.log"))
     os.makedirs(app.spec.datasource_dir, exist_ok=True)
@@ -3215,10 +3527,12 @@ def main():
         except OSError:
             continue
     if srv is None:
-        raise SystemExit(f"端口 {a.port}~{a.port + 19} 都被占用了，请先在网页左下角退出旧实例或用 --port 指定端口")
+        raise SystemExit(f"端口 {a.port}~{a.port + 19} 都被占用了，请先在网页右上角「休息」退出旧实例或用 --port 指定端口")
     HTTP_SERVER = srv
     url = f"http://127.0.0.1:{port}/"
     print(tc.color("🌱 埋点小岛已开张: ", "green") + tc.color(url, "bold"))
+    if seeded:
+        print(f"   第一次运行：已从程序里释放内置的规则 / 用例 / 数据源 / 埋点字典（{seeded} 个文件），打开就能用。")
     if first_run:
         print("   第一次运行，已创建空白规则文件。去「导入 / 分享」页导入同事的规则包即可开始。")
     adb = tc.find_adb()
@@ -3226,7 +3540,7 @@ def main():
     print(f"   规则文件: {app.store.path}")
     print(f"   报告目录: {app.out}")
     print(f"   运行日志: {SERVER_LOG.path}")
-    print("   提示: 可在网页左下角查看运行日志或点击「休息退出」关闭后台服务")
+    print("   提示: 可在网页右上角查看运行日志或点击「休息退出」关闭后台服务")
     SERVER_LOG.flush_partial()
     if not a.no_browser:
         threading.Timer(0.6, lambda: webbrowser.open(url)).start()
