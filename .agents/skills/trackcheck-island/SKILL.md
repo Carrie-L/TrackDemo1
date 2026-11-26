@@ -70,6 +70,14 @@ trackcheck/
   - 实时调试：选了用例默认「本用例点位」视图（按清单顺序列出、未触发也显示），「合并重复上报」默认开（键 = 点位 ID + 全部字段值），对重复组人工判定会一次作用到整组 `seqs`；判定后自动跳到下一个待确认。
   - 数据库浏览器：独立窗口 `/#dbview?db=&t=`（只读：`mode=ro` 连接 + 仅允许 SELECT/WITH/PRAGMA/EXPLAIN），可 `postMessage({type:'tc-sql'})` 把 SQL 填回主窗口字段规则；字段规则「数据库」页有 SQL 向导。
   - 打包：`build_exe.py` 先在 `build/pkg_stage` 拼包、默认携带 `--data-from samples/` 的规则数据，增量同步到 `dist/埋点小岛`，**不再整目录删除** `埋点小岛数据`（`--refresh-data` 强制覆盖前自动备份，`--no-data` 打干净包）。
+  - 测试用例（最高频页面之一，改动要格外稳）：
+    - **草稿自动保存**：`saveCaseDraft()` 每秒 + 切换用例/离开页面/`beforeunload` 时把未保存修改写入 localStorage `tc_case_drafts`（键 = 用例名，新用例 = `__new__`）；`_caseDiffers()` 用「服务器版本经 `caseRows→rowsToExpect` 往返」对比判定 dirty，别再只靠手动 `dirty = true`。`openCase()` 有草稿就恢复并显示黄色「已恢复…」横幅（可丢弃）；`tc_case_last` 记住上次打开的用例，回到用例页/刷新自动打开。左列表给有草稿的用例挂「草稿」小胶囊，新用例草稿常驻列表顶部虚线行。
+    - **复制用例**直接 `api/case/save` 存一份「xxx - 副本」，左侧立刻多一行并高亮；左列表悬停按钮 = 实时调试 + 删除（`delCase` 同步清草稿 / 解绑实时调试）。
+    - **复制点位**存 `tc_copied_row`（跨标签页 `storage` 事件同步），在其他用例页面空白处 **Ctrl+V** 粘贴（实时调试页粘贴进待测清单）；已存在时 toast 提供「用复制的期望值覆盖」。
+    - **批量设置只列 `ask: true`（看操作）字段**，其它字段有点位规则自动比对，不要列出来添乱。
+    - **数据同步**：`refresh()` 时编辑器无未保存修改就跟随服务器（实时调试「存回用例」/导入/改 YAML）；`saveCase()` 后 `syncLivePlan()` 刷新实时调试同名用例的待测清单；`useCaseInLive` 遇到未保存修改先自动保存。
+  - 校验报告：点位覆盖行可点 → `rep.evId` 筛选逐条明细（「只看：xxx ×」胶囊取消，计数同步）；每条明细底部和实时调试一样附「Logcat 原始日志」（`r.raw` + `line_no` + 复制）。
+  - 文字可复制：`body` 允许 `user-select: text` 但 `caret-color: transparent; cursor: default`（不出现闪烁光标和 I 形鼠标）；按钮/summary/label/`.cursor-pointer` 禁选防误选，`.code/pre/.tbl td` 强制可选。
 - **视觉与 UI 设计规范**：完整色板、控件规范和 3D 图标约定见 [references/ui-design-system.md](references/ui-design-system.md)。
 
 ## 3. Quick Start & Utility Scripts

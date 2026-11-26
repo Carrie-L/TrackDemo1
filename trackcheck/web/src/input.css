@@ -4,7 +4,10 @@
 
 @layer base {
   html { font-size: 14px; caret-color: transparent; }
-  body { @apply font-sans text-sm text-ink antialiased select-none; caret-color: transparent; cursor: default; }
+  /* 文字可以选中复制，但不出现闪烁光标、也不把鼠标变成 I 形；按钮 / 可点击卡片不被误选 */
+  body { @apply font-sans text-sm text-ink antialiased; -webkit-user-select: text; user-select: text; caret-color: transparent; cursor: default; }
+  button, summary, label, select, img, svg, nav, [role="button"], .btn, .cursor-pointer { -webkit-user-select: none; user-select: none; }
+  .code, code, pre, kbd, .tbl td, .selectable { -webkit-user-select: text; user-select: text; }
   input, textarea, [contenteditable="true"] { -webkit-user-select: text; user-select: text; caret-color: #664A30; cursor: text; }
   input[type="checkbox"]:not(.hidden) {
     -webkit-appearance: none;

@@ -65,8 +65,8 @@ function app() {
     dbv: { db: '', dbs: [], path: '', size: 0, tables: [], q: '', cur: '', open: {}, sql: '', res: null, err: '', offset: 0, limit: 100, hist: [], loading: false, opener: false },
     apiCap: { running: false, endpoint: '', name: '', tag: '', clear: true, lines: 0, captured: [], error: '', showText: false, rawLog: '' },
     dsPreview: null,
-    srcEd: null, caseEd: null, caseFilter: '', copiedRow: null, settingsEd: null, pullLog: '',
-    rep: { list: [], cur: null, view: 'bad', showUnk: false, q: '', expandAll: false, listFilter: 'all', listQ: '' }, rv: null, yv: null,
+    srcEd: null, caseEd: null, caseFilter: '', copiedRow: null, settingsEd: null, pullLog: '', caseDrafts: {}, caseFlash: '', caseView: false,
+    rep: { list: [], cur: null, view: 'bad', showUnk: false, q: '', expandAll: false, listFilter: 'all', listQ: '', evId: '' }, rv: null, yv: null,
     srvLog: null, quitAsk: false, srvOff: false,
     checkForm: { path: '', content: '', fileName: '', caseName: '' },
 
@@ -82,6 +82,13 @@ function app() {
       setInterval(() => { if (!this.srvOff) this.loadDevices(); }, 15000);
       setInterval(() => { this.tipIdx = (this.tipIdx + 1) % TIPS.length; }, 9000);
       try { const saved = localStorage.getItem('tc_copied_row'); if (saved) this.copiedRow = JSON.parse(saved); } catch (e) {}
+      this._loadDrafts();
+      setInterval(() => this.saveCaseDraft(), 1000);   // 用例编辑：每秒自动存草稿（离开 / 切换 / 刷新都不丢）
+      window.addEventListener('beforeunload', () => this.saveCaseDraft());
+      window.addEventListener('storage', e => {          // 多个标签页之间同步「复制的点位」与草稿
+        if (e.key === 'tc_copied_row') { try { this.copiedRow = e.newValue ? JSON.parse(e.newValue) : null; } catch (x) {} }
+        if (e.key === 'tc_case_drafts') this._loadDrafts();
+      });
       const h = location.hash.slice(1); if (NAV.some(n => n.id === h)) this.go(h, true);
       window.addEventListener('hashchange', () => { const x = location.hash.slice(1); if (NAV.some(n => n.id === x) && x !== this.page) this.go(x, true); });
       window.addEventListener('keydown', e => {
@@ -89,6 +96,9 @@ function app() {
         const editing = tag === 'input' || tag === 'textarea' || tag === 'select' || e.target?.isContentEditable;
         if (e.key === '/' && !editing && !e.ctrlKey && !e.metaKey && !e.altKey) {
           e.preventDefault(); this.$refs.gsearch?.focus(); this.searchOpen = true;
+        } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v' && !editing && !e.repeat && this.copiedRow
+                   && ((this.page === 'cases' && this.caseEd) || this.page === 'live') && !this.fm) {
+          e.preventDefault(); this.page === 'cases' ? this.pasteCaseRow() : this.pasteRowToPlan();
         } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
           if (this.busy || e.repeat) { e.preventDefault(); return; }
           if (this.yv?.edit) { e.preventDefault(); this.saveYaml(); }
@@ -99,9 +109,11 @@ function app() {
       });
     },
     go(p, quiet) {
+      if (this.page === 'cases' && p !== 'cases') this.saveCaseDraft();
       this.page = p; if (!quiet) location.hash = p; window.scrollTo({ top: 0 });
       if (p === 'evdict' && !this.evd.loaded) this.loadEvdict();
       if (p === 'sources') { this.loadDs(); this.pollApiCap(true); if (!this.settingsEd && this.st) this.openSettings(); }
+      if (p === 'cases' && !this.caseEd) this.restoreLastCase();
     },
     get tip() { return TIPS[this.tipIdx % TIPS.length]; },
     icon(n) { return '/static/icons.svg#i-' + n; },
@@ -174,7 +186,18 @@ function app() {
     pickQuickDict(e) { this.searchOpen = false; this.evd.q = e.id; this.evd.open = e.id; this.evd.filter = 'all'; this.go('evdict'); },
     pickQuickCase(name) { this.searchOpen = false; this.openCase(name); },
     async refresh() {
+      // 刷新前记下用例编辑器是否有未保存修改：没改过的话，服务器数据变了（实时调试存回用例 / 导入 / 改 YAML）就跟着同步
+      const ce = this.caseEd, ceClean = !!(ce && ce.old && !ce.dirty && !this._caseDiffers(ce));
       try { this.st = await this.api('/api/state'); } catch (e) { this.toast(e.message, 'err'); }
+      if (ceClean && this.caseEd === ce) {
+        const srv = this.st?.cases?.[ce.old];
+        if (!srv) this.closeCaseEd();
+        else if (this._caseDiffers(ce)) {
+          const fold = Object.fromEntries(ce.rows.map(r => [r.id, r.collapsed]));
+          ce.desc = srv.desc || ''; ce.sources = [].concat(srv.sources || []).map(String);
+          ce.rows = this.caseRows(srv).map(r => ({ ...r, collapsed: !!fold[r.id] }));
+        }
+      }
       if (this.st?.live) {
         this.live.running = this.st.live.running; this.live.report = this.st.live.report;
         if (this.st.live.running && !this.live.plan.length) {
@@ -625,6 +648,7 @@ function app() {
       if (old.sources?.length) value.sources = old.sources;
       await this.call(() => this.api('/api/case/save', { name, old_name: isNew ? '' : name, value }), isNew ? `已存为用例「${name}」，可以去「测试用例」改名` : `已保存回用例「${name}」`);
       await this.refresh(); this.live.caseName = name;
+      if (this.caseEd?.old === name && this.caseEd.dirty) this.toast(`「测试用例」页里这个用例还有没保存的草稿，记得核对后再保存`, 'warn');
     },
 
     // ---------------- 埋点字典 ----------------
@@ -1349,7 +1373,7 @@ function app() {
     },
     async delItem(section, name) {
       if (!confirm(`确定删除 ${name}？`)) return;
-      await this.call(() => this.api('/api/item/delete', { section, name }), '已删除'); this.srcEd = this.caseEd = null; this.refresh();
+      await this.call(() => this.api('/api/item/delete', { section, name }), '已删除'); this.srcEd = null; if (section === 'cases') this.closeCaseEd(); this.refresh();
     },
     openSettings() {
       const s = this.st;
@@ -1426,11 +1450,93 @@ function app() {
         .filter(([, v]) => v !== '' && !(Array.isArray(v) && !v.length))
         .map(([k, v]) => `${k}=${Array.isArray(v) ? v.join('/') : v}`);
     },
-    openCase(name) {
-      const c = name ? clone(this.st.cases[name]) : { expect: [] };
-      this.caseEd = { name: name || '', old: name || '', desc: c.desc || '', addId: '', rows: this.caseRows(c), dirty: !name,
-                      sources: [].concat(c.sources || []).map(String), batchField: '', batchText: '' };
-      if (this.page !== 'cases') this.go('cases');
+    openCase(name, opts = {}) {
+      this.saveCaseDraft();                       // 切换前先把当前编辑存成草稿
+      const key = name || '__new__';
+      if (opts.fresh) this._dropDraft(key);
+      const dr = this.caseDrafts[key];
+      const srv = name ? this.st?.cases?.[name] : null;
+      if (name && !srv && !dr) return this.toast(`用例「${name}」不存在了`, 'warn');
+      const c = clone(srv || { expect: [] });
+      this.caseEd = { name: name || '', old: name || '', desc: c.desc || '', addId: '', rows: this.caseRows(c), dirty: false,
+                      sources: [].concat(c.sources || []).map(String), batchField: '', batchText: '', draftAt: 0 };
+      if (dr?.data) {
+        const d = dr.data, e = this.caseEd;
+        e.name = d.name ?? e.name; e.desc = d.desc ?? ''; e.sources = [].concat(d.sources || []).map(String);
+        e.rows = (d.rows || []).map(r => ({ key: Math.random(), id: String(r.id), min: r.min ?? 1, max: r.max ?? '', where: r.where || null,
+                                            values: clone(r.values || {}), showAll: !!r.showAll, collapsed: !!r.collapsed }));
+        e.dirty = true; e.draftAt = dr.at || Date.now(); e.restored = true;
+        if (name && !srv) e.old = '';             // 原用例已被删：草稿当新用例
+      }
+      this.caseView = true;
+      try { localStorage.setItem('tc_case_last', key); } catch (x) {}
+      if (this.page !== 'cases' && !opts.stay) this.go('cases');
+    },
+    // 先收起编辑器模板、下一帧再清空数据，避免 Alpine 子绑定读到 null 报错
+    closeCaseEd() { this.caseView = false; this.$nextTick(() => { if (!this.caseView) this.caseEd = null; }); },
+    // ---- 草稿：离开 / 切换用例 / 刷新页面都自动保留，回来接着改 ----
+    _loadDrafts() { try { this.caseDrafts = JSON.parse(localStorage.getItem('tc_case_drafts') || '{}') || {}; } catch (e) { this.caseDrafts = {}; } },
+    _writeDrafts() { try { localStorage.setItem('tc_case_drafts', JSON.stringify(this.caseDrafts)); } catch (e) {} },
+    _dropDraft(key) { if (!this.caseDrafts[key]) return; const d = { ...this.caseDrafts }; delete d[key]; this.caseDrafts = d; this._writeDrafts(); },
+    _caseValue(c) {
+      const v = {}; if (c.desc) v.desc = c.desc; v.expect = this.rowsToExpect(c.rows || []);
+      if (c.sources?.length) v.sources = [...c.sources]; return v;
+    },
+    _caseDiffers(c) {
+      if (!c) return false;
+      if (!c.old) return !!(String(c.name || '').trim() || c.desc || c.rows.length || c.sources?.length);
+      const srv = this.st?.cases?.[c.old]; if (!srv) return true;
+      const base = this._caseValue({ desc: srv.desc || '', rows: this.caseRows(srv), sources: [].concat(srv.sources || []).map(String) });
+      return String(c.name || '').trim() !== c.old || JSON.stringify(this._caseValue(c)) !== JSON.stringify(base);
+    },
+    saveCaseDraft() {
+      const c = this.caseEd; if (!c || !this.st) return;
+      const key = c.old || '__new__', differs = this._caseDiffers(c);
+      c.dirty = differs;
+      if (!differs) { this._dropDraft(key); return; }
+      const data = { name: c.name, desc: c.desc, sources: [...(c.sources || [])],
+                     rows: c.rows.map(r => ({ id: r.id, min: r.min, max: r.max, where: r.where || null, values: r.values || {}, collapsed: !!r.collapsed, showAll: !!r.showAll })) };
+      const s = JSON.stringify(data);
+      if (this._draftStr?.[key] === s && this.caseDrafts[key]) return;
+      this._draftStr = { ...(this._draftStr || {}), [key]: s };
+      if (!c.draftAt) c.draftAt = Date.now();
+      this.caseDrafts = { ...this.caseDrafts, [key]: { data: JSON.parse(s), at: Date.now() } };
+      this._writeDrafts();
+    },
+    hasDraft(name) { return !!this.caseDrafts[name || '__new__']; },
+    get newCaseDraft() { const d = this.caseDrafts.__new__; return d ? (d.data?.name || '').trim() || '未命名新用例' : ''; },
+    draftTime(at) { if (!at) return ''; const d = new Date(at), p = n => String(n).padStart(2, '0'); return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`; },
+    discardCaseDraft(key) {
+      const c = this.caseEd; key = key ?? (c ? (c.old || '__new__') : '');
+      if (!key) return;
+      if (!confirm(key === '__new__' ? '丢弃这个还没保存的新用例草稿？' : `丢弃「${key}」未保存的修改，恢复到已保存版本？`)) return;
+      this._dropDraft(key);
+      if (c && (c.old || '__new__') === key) {
+        if (key === '__new__') this.closeCaseEd(); else this.openCase(key, { fresh: true });
+      }
+      this.toast('草稿已丢弃', 'warn');
+    },
+    restoreLastCase() {
+      let key = ''; try { key = localStorage.getItem('tc_case_last') || ''; } catch (e) {}
+      if (!key || !this.st) return;
+      if (key === '__new__' ? this.caseDrafts.__new__ : (this.st.cases?.[key] || this.caseDrafts[key])) this.openCase(key === '__new__' ? '' : key, { stay: true });
+    },
+    async delCase(name) {
+      if (!confirm(`确定删除用例「${name}」？`)) return;
+      await this.call(() => this.api('/api/item/delete', { section: 'cases', name }), `已删除用例「${name}」`);
+      this._dropDraft(name);
+      if (this.caseEd?.old === name) this.closeCaseEd();
+      if (this.live.caseName === name && !this.live.running) this.live.caseName = '';
+      await this.refresh();
+    },
+    // 用例保存后，实时调试里选的是同一个用例 → 待测清单同步
+    syncLivePlan(name) {
+      if (!name || this.live.caseName !== name) return;
+      const rows = this.caseRows(this.st?.cases?.[name]);
+      this.live.plan = rows;
+      if (!rows.some(r => r.id === this.live.planSel)) this.live.planSel = '';
+      if (!rows.length) this.live.scope = 'all';
+      this.pushPlan();
     },
     // ---- 数据源绑定（AI 提示词只带这组点位用到的数据源）----
     get allSourceNames() { return Object.keys(this.st?.sources || {}); },
@@ -1469,12 +1575,13 @@ function app() {
         { n: 6, t: '开始实时调试', d: '对着清单在手机上操作', done: false, go: () => c?.old ? this.useCaseInLive(c.old) : this.toast('先保存用例', 'warn') },
       ];
     },
-    // ---- 批量设置：同名字段一次勾选，所有含该字段的点位都生效 ----
+    // ---- 批量设置：只列「需要人工确认（看操作）」的字段，其它字段有规则自动比对 ----
     _rowHas(row, name) { return this._rowAll(row).some(f => f.name === name); },
     get caseBatchFields() {
       const c = this.caseEd; if (!c || c.rows.length < 2) return [];
       const m = new Map();
       c.rows.forEach(row => this._rowAll(row).forEach(f => {
+        if (!f.ask) return;
         const e = m.get(f.name) || { name: f.name, desc: '', options: {}, rows: 0, set: 0 };
         e.rows++; if (!e.desc && f.desc) e.desc = f.desc;
         Object.entries(f.options || {}).forEach(([k, v]) => { if (!(k in e.options) || (!e.options[k] && v)) e.options[k] = v; });
@@ -1483,14 +1590,15 @@ function app() {
       }));
       return [...m.values()].filter(e => e.rows >= 2).sort((a, b) => b.rows - a.rows || a.name.localeCompare(b.name));
     },
+    _askRows(name) { return (this.caseEd?.rows || []).filter(r => this._rowAll(r).some(f => f.name === name && f.ask)); },
     get caseBatchCur() { return this.caseBatchFields.find(f => f.name === this.caseEd?.batchField) || null; },
     batchOn(name, k) {
-      const rows = (this.caseEd?.rows || []).filter(r => this._rowHas(r, name));
+      const rows = this._askRows(name);
       return rows.length > 0 && rows.every(r => { const v = this._vals((r.values || {})[name]); return v.length === 1 && v[0] === String(k); });
     },
     batchApply(name, val) {
       const c = this.caseEd; if (!c) return;
-      const rows = c.rows.filter(r => this._rowHas(r, name));
+      const rows = this._askRows(name);
       const clear = val === null || val === '' || (Array.isArray(val) && !val.length);
       rows.forEach(r => { const v = { ...(r.values || {}) }; if (clear) delete v[name]; else v[name] = val; r.values = v; });
       c.dirty = true;
@@ -1523,13 +1631,17 @@ function app() {
     async saveCase() {
       const c = this.caseEd, name = c.name.trim();
       if (!name) return this.toast('先填用例名', 'err');
-      const value = {}; if (c.desc) value.desc = c.desc; value.expect = this.rowsToExpect(c.rows);
-      if (c.sources?.length) value.sources = [...c.sources];
+      if (name !== c.old && this.st?.cases?.[name]) return this.toast(`已经有叫「${name}」的用例了，换个名字吧`, 'err');
+      const value = this._caseValue(c), oldKey = c.old || '__new__';
       await this.call(() => this.api('/api/case/save', { name, old_name: c.old, value }), '用例已保存');
-      if (this.live.caseName === c.old) this.live.caseName = name;
-      c.old = name; c.dirty = false; await this.refresh();
+      if (this.live.caseName === c.old && c.old) this.live.caseName = name;
+      c.old = name; c.dirty = false; c.restored = false; c.draftAt = 0;
+      this._dropDraft(oldKey); this._dropDraft(name);
+      try { localStorage.setItem('tc_case_last', name); } catch (x) {}
+      await this.refresh();
+      this.syncLivePlan(name);
     },
-    duplicateCase(name, fromEditor) {
+    async duplicateCase(name, fromEditor) {
       const base = fromEditor && this.caseEd
         ? { desc: this.caseEd.desc || '', expect: this.rowsToExpect(this.caseEd.rows), sources: [...(this.caseEd.sources || [])] }
         : clone(this.st?.cases?.[name] || { expect: [] });
@@ -1537,12 +1649,20 @@ function app() {
       const used = new Set(Object.keys(this.st?.cases || {}));
       let newName = rawName + ' - 副本', i = 2;
       while (used.has(newName)) newName = `${rawName} - 副本${i++}`;
-      this.caseEd = { name: newName, old: '', desc: base.desc || '', addId: '', rows: this.caseRows(base), dirty: true,
-                      sources: [].concat(base.sources || []).map(String), batchField: '', batchText: '' };
-      if (this.page !== 'cases') this.go('cases');
-      this.$nextTick(() => { this.$refs.caseNameInput?.focus(); this.$refs.caseNameInput?.select(); });
-      this.toast(`已复制「${name || '当前用例'}」，修改名称后点「保存用例」即可`, 'ok');
+      // 直接存一份新用例：左边列表立刻多出一行，不会让人以为没复制成功
+      const value = {}; if (base.desc) value.desc = base.desc; value.expect = base.expect || [];
+      if (base.sources?.length) value.sources = [].concat(base.sources);
+      await this.call(() => this.api('/api/case/save', { name: newName, old_name: '', value }));
+      await this.refresh();
+      this.openCase(newName, { fresh: true });
+      this.caseFlash = newName; setTimeout(() => { if (this.caseFlash === newName) this.caseFlash = ''; }, 2200);
+      this.$nextTick(() => {
+        document.getElementById('case-item-' + this.caseDomId(newName))?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        this.$refs.caseNameInput?.focus(); this.$refs.caseNameInput?.select();
+      });
+      this.toast(`已复制为「${newName}」，左侧列表已新增；直接改名后点「保存用例」即可`, 'ok');
     },
+    caseDomId(name) { return Array.from(String(name)).map(ch => ch.charCodeAt(0).toString(36)).join('-'); },
     get canPasteRow() {
       return !!(this.copiedRow && this.caseEd && !this.caseEd.rows.some(r => r.id === this.copiedRow.id));
     },
@@ -1550,21 +1670,43 @@ function app() {
       const copy = { id: row.id, min: row.min, max: row.max, where: clone(row.where || null), values: clone(row.values || {}) };
       this.copiedRow = copy;
       try { localStorage.setItem('tc_copied_row', JSON.stringify(copy)); } catch (e) {}
-      this.toast(`已复制点位「${this.eventName(row.id) || row.id}」（含期望值），切到其他还没包含它的用例即可粘贴`, 'ok');
+      this.toast(`已复制点位「${this.eventName(row.id) || row.id}」（含期望值），打开其他用例按 Ctrl+V 即可粘贴`, 'ok');
+    },
+    _flashRow(id) {
+      this.caseFlash = 'row:' + id;
+      setTimeout(() => { if (this.caseFlash === 'row:' + id) this.caseFlash = ''; }, 1800);
+      this.$nextTick(() => document.getElementById('case-row-' + id)?.scrollIntoView({ behavior: 'smooth', block: 'center' }));
     },
     pasteCaseRow() {
       const c = this.caseEd, r = this.copiedRow; if (!c || !r) return;
-      if (c.rows.some(x => x.id === r.id)) {
-        this.toast(`当前用例已有「${this.eventName(r.id) || r.id}」`, 'warn'); return;
-      }
-      c.rows.push({ key: Math.random(), id: r.id, min: r.min ?? 1, max: r.max ?? '', where: clone(r.where || null), values: clone(r.values || {}), showAll: false });
-      c.dirty = true;
       const name = this.eventName(r.id) || r.id;
-      this.clearCopiedRow();
-      this.toast(`已粘贴点位「${name}」`, 'ok');
+      const exist = c.rows.find(x => x.id === r.id);
+      if (exist) {
+        this._flashRow(r.id);
+        const hasVals = Object.keys(r.values || {}).length;
+        this.toast(`当前用例已有「${name}」`, 'warn', hasVals ? {
+          label: '用复制的期望值覆盖', fn: () => { exist.values = clone(r.values || {}); exist.min = r.min ?? 1; exist.max = r.max ?? ''; c.dirty = true; this._flashRow(r.id); this.toast(`已覆盖「${name}」的期望值`, 'ok'); }
+        } : null);
+        return;
+      }
+      c.rows.push({ key: Math.random(), id: r.id, min: r.min ?? 1, max: r.max ?? '', where: clone(r.where || null), values: clone(r.values || {}), showAll: false, collapsed: false });
+      c.dirty = true;
+      this._flashRow(r.id);
+      this.toast(`已粘贴点位「${name}」（含期望值）`, 'ok');
+    },
+    pasteRowToPlan() {
+      const r = this.copiedRow; if (!r) return;
+      const name = this.eventName(r.id) || r.id;
+      if (this.live.plan.some(x => x.id === r.id)) { this.live.planSel = r.id; return this.toast(`待测清单已有「${name}」`, 'warn'); }
+      this.live.plan.push({ key: Math.random(), id: r.id, min: r.min ?? 1, max: r.max ?? '', values: clone(r.values || {}), showAll: false });
+      this.live.planOpen = true; this.live.planSel = r.id; this.pushPlan();
+      this.toast(`已把「${name}」粘贴进待测清单`, 'ok');
     },
     clearCopiedRow() { this.copiedRow = null; try { localStorage.removeItem('tc_copied_row'); } catch (e) {} },
-    useCaseInLive(name) { this.live.caseName = name; this.loadPlanFromCase(); this.go('live'); },
+    async useCaseInLive(name) {
+      if (this.caseEd?.old === name && this.caseEd.dirty) { await this.saveCase(); name = this.caseEd.old; }
+      this.live.caseName = name; this.loadPlanFromCase(); this.go('live');
+    },
 
     // ---------------- 报告 ----------------
     get filteredReports() {
@@ -1601,7 +1743,15 @@ function app() {
     statusIcon(s) { return { PASS: 'sprout', FAIL: 'bug', ASK: 'bud', WARN: 'warn' }[s] || ''; },
     async openReport(name) {
       this.rep.cur = await this.call(() => this.api('/api/report?name=' + encodeURIComponent(name)));
-      this.rep.cur.name = name; this.rep.expandAll = false; this.rv = null; this.go('reports');
+      this.rep.cur.name = name; this.rep.expandAll = false; this.rep.evId = ''; this.rv = null; this.go('reports');
+    },
+    // 点位覆盖里点一行 → 下方逐条明细只看这个点位（再点一次取消）
+    focusCoverage(c) {
+      if (this.rep.evId === c.id) { this.rep.evId = ''; return; }
+      if (!c.count) return this.toast(`「${c.name || c.id}」这一轮没有触发，明细里没有它的上报`, 'warn');
+      this.rep.evId = c.id; this.rep.view = 'all'; this.rep.q = '';
+      if ((this.rep.cur?.results || []).some(x => x.id === c.id && x.status === 'UNKNOWN')) this.rep.showUnk = true;
+      this.$nextTick(() => document.getElementById('rep-details')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
     },
     isReviewOpen(seq, field = '') {
       return !!(this.rv && this.rv.seq === seq && (this.rv.field || '') === (field || ''));
@@ -1642,10 +1792,11 @@ function app() {
       return Math.round((n || 0) * 100 / denom);
     },
     focusReportField(h) {
-      this.rep.view = 'bad'; this.rep.q = h.field; this.rep.expandAll = true;
+      this.rep.view = 'bad'; this.rep.q = h.field; this.rep.expandAll = true; this.rep.evId = '';
       this.$nextTick(() => document.getElementById('rep-details')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
     },
     repKeep(x, view) {
+      if (this.rep.evId && x.id !== this.rep.evId) return false;
       if (view === 'bad') return ['FAIL', 'WARN', 'ASK'].includes(x.status);
       if (view === 'ask') return x.status === 'ASK';
       if (view === 'pass') return x.status === 'PASS';
