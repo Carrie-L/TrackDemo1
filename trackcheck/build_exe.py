@@ -5,12 +5,60 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 import zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 APP_NAME = "埋点小岛"
 ZIP_NAME = "埋点小岛_Windows版.zip"
 SAMPLE_PACK_NAME = "示例规则包（含数据源样本）.yaml"
+DATA_DIRNAME = "埋点小岛数据"
+DATA_SKIP_DIRS = {"reports", ".history", "__pycache__", "snapshots", "flows"}
+DATA_SKIP_EXT = (".bak", ".log", ".py", ".pyc", ".tmp")
+
+
+def _data_score(d):
+    """目录里是否有「真的规则数据」（不是首次运行生成的空骨架）"""
+    p = os.path.join(d or "", "trackcheck.yaml")
+    if not os.path.isfile(p):
+        return 0
+    try:
+        txt = open(p, encoding="utf-8").read()
+    except OSError:
+        return 0
+    has_ds = os.path.isdir(os.path.join(d, "datasources")) and any(
+        not x.startswith(".") for x in os.listdir(os.path.join(d, "datasources")))
+    return len(txt) + (1000 if has_ds else 0) if (len(txt) > 600 or has_ds) else 0
+
+
+def _data_mtime(d):
+    latest = 0
+    for root, dirs, files in os.walk(d):
+        dirs[:] = [x for x in dirs if x not in DATA_SKIP_DIRS]
+        for fn in files:
+            try:
+                latest = max(latest, os.path.getmtime(os.path.join(root, fn)))
+            except OSError:
+                pass
+    return latest
+
+
+def copy_data_dir(src, dst, merge=False, keep_reports=False):
+    """复制规则数据目录：trackcheck.yaml(+include) / datasources（不含 .history）/ event_dict.json / docs"""
+    skip_dirs = set(DATA_SKIP_DIRS) - ({"reports"} if keep_reports else set())
+    if os.path.isdir(dst) and not merge:
+        shutil.rmtree(dst)
+    for root, dirs, files in os.walk(src):
+        dirs[:] = [x for x in dirs if x not in skip_dirs]
+        rel = os.path.relpath(root, src)
+        for fn in files:
+            if fn.lower().endswith(DATA_SKIP_EXT) and not keep_reports:
+                continue
+            if rel == "." and not keep_reports and not fn.lower().endswith((".yaml", ".yml", ".json", ".md")):
+                continue
+            target = os.path.join(dst, rel, fn) if rel != "." else os.path.join(dst, fn)
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            shutil.copy2(os.path.join(root, fn), target)
 
 
 def make_icon(src_img, out_ico):
@@ -68,6 +116,12 @@ def main():
     ap.add_argument("--work", default=os.path.join(HERE, "build"), help="临时构建目录（默认 build/）")
     ap.add_argument("--sample-spec", default=os.path.join(HERE, "samples", "trackcheck.yaml"),
                     help="生成示例规则包所用的 trackcheck.yaml（传入空串跳过）")
+    ap.add_argument("--data-from", default=os.path.join(HERE, "samples"),
+                    help="随包携带的数据目录（含 trackcheck.yaml / datasources / event_dict.json / docs），默认 samples/")
+    ap.add_argument("--no-data", dest="with_data", action="store_false",
+                    help="不携带规则与数据源（只打干净的 exe 包，适合发给外部同事）")
+    ap.add_argument("--refresh-data", action="store_true",
+                    help="强制用 --data-from 覆盖 dist/埋点小岛/埋点小岛数据（原数据会先备份到 build/data_backup/）")
     args = ap.parse_args()
 
     out_dir = os.path.abspath(args.out)
@@ -131,26 +185,67 @@ def main():
         print("未找到生成的 exe:", exe_path)
         sys.exit(1)
 
-    # 4. 组装分发目录与 zip
+    # 4. 组装分发目录与 zip（先在 build/ 里拼好暂存目录，再增量同步到 dist/埋点小岛，绝不整目录删除用户数据）
     pkg_dir = os.path.join(out_dir, APP_NAME)
-    if os.path.isdir(pkg_dir):
-        shutil.rmtree(pkg_dir)
     os.makedirs(pkg_dir, exist_ok=True)
+    stage_root = os.path.join(work_dir, "pkg_stage")
+    stage = os.path.join(stage_root, APP_NAME)
+    if os.path.isdir(stage_root):
+        shutil.rmtree(stage_root)
+    os.makedirs(stage, exist_ok=True)
 
-    shutil.copy2(exe_path, os.path.join(pkg_dir, f"{APP_NAME}.exe"))
+    shutil.copy2(exe_path, os.path.join(stage, f"{APP_NAME}.exe"))
     readme = os.path.join(HERE, "使用说明.txt")
     if os.path.isfile(readme):
-        shutil.copy2(readme, os.path.join(pkg_dir, "使用说明.txt"))
+        shutil.copy2(readme, os.path.join(stage, "使用说明.txt"))
     if args.sample_spec:
         ok = export_sample_pack(os.path.abspath(args.sample_spec),
-                                os.path.join(pkg_dir, SAMPLE_PACK_NAME), work_dir)
+                                os.path.join(stage, SAMPLE_PACK_NAME), work_dir)
         if ok:
             print(f"已附带示例包：{SAMPLE_PACK_NAME}")
+
+    # 4.1 随包携带规则 / 数据源 / 测试用例（埋点小岛数据），解压即用，重新打包也不会丢
+    pkg_data = os.path.join(pkg_dir, DATA_DIRNAME)
+    seed_src = os.path.abspath(args.data_from) if args.data_from else ""
+    chosen = None
+    if args.with_data:
+        cands = []
+        if seed_src and _data_score(seed_src):
+            cands.append((_data_mtime(seed_src), seed_src, "开发数据"))
+        if _data_score(pkg_data):
+            cands.append((_data_mtime(pkg_data), pkg_data, "分发目录里已有的数据"))
+        if args.refresh_data and seed_src and _data_score(seed_src):
+            chosen = (seed_src, "开发数据（--refresh-data 强制）")
+        elif cands:
+            cands.sort(reverse=True)
+            chosen = (cands[0][1], cands[0][2])
+        if chosen:
+            copy_data_dir(chosen[0], os.path.join(stage, DATA_DIRNAME))
+            print(f"已随包携带数据：{chosen[1]} ← {chosen[0]}")
+        else:
+            print("提示：没有找到可携带的规则数据（--data-from 指向的目录里没有 trackcheck.yaml）")
+
+    # 4.2 同步到 dist/埋点小岛：exe/说明/示例包覆盖；数据目录只在缺失或 --refresh-data 时写入（旧数据先备份）
+    for fn in os.listdir(stage):
+        sp, dp = os.path.join(stage, fn), os.path.join(pkg_dir, fn)
+        if fn == DATA_DIRNAME:
+            continue
+        try:
+            shutil.copy2(sp, dp)
+        except PermissionError:
+            print(f"提示：{dp} 正在运行被占用，跳过替换（压缩包里已是最新版本，退出旧程序后可重新打包或直接用压缩包）")
+    stage_data = os.path.join(stage, DATA_DIRNAME)
+    if os.path.isdir(stage_data) and chosen and os.path.abspath(chosen[0]) != os.path.abspath(pkg_data):
+        if _data_score(pkg_data):
+            bak = os.path.join(work_dir, "data_backup", time.strftime("%Y%m%d_%H%M%S"))
+            copy_data_dir(pkg_data, bak, keep_reports=True)
+            print(f"已备份分发目录原数据到：{bak}")
+        copy_data_dir(stage_data, pkg_data, merge=True)
 
     zip_path = os.path.join(out_dir, ZIP_NAME)
     if os.path.isfile(zip_path):
         os.remove(zip_path)
-    zip_folder(pkg_dir, zip_path)
+    zip_folder(stage, zip_path)
 
     mb_exe = os.path.getsize(exe_path) / (1024 * 1024)
     mb_zip = os.path.getsize(zip_path) / (1024 * 1024)

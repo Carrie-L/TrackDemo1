@@ -66,6 +66,10 @@ trackcheck/
   - 模板 `api` 绑定与继承：多点位共用一个接口时直接在模板定义 `api`，子点位 `extends` 自动继承；实时调试时 `resolve_event_apis()` 自动汇总清单中所有点位/模板/数据源绑定的接口并从 OkHttp logcat 抓最新 JSON，同时回溯 5 秒内及失败事件自动重校。
   - 人工复核联动：支持子字段及顶层 `__err__:<idx>` 逐项改判；当一个事件的所有子字段都已 `PASS` 时，后端 `api_report_review` 自动将事件顶层 `errors` 归为通过，重算事件状态与报告 `summary`。
   - 独立 HTML 报告：`/report_html/<name>.html` 优先读取同名 `.json` 实时调用 `tc.build_html(rep)` 渲染，确保历史报告也能立刻享受最新筛选器（`有问题的 / 通过的 / 全部` 单选 + `过滤未配置` 复选）。
+  - 数据源绑定：用例 / 模板上的 `sources: [...]` 决定 AI 提示词带哪些数据源；`App.event_sources(eid)` 汇总「模板绑定 + 用例绑定 + 规则 context/from/sql/api 引用 + 合并源依赖」，用例页「复制整组 AI 提示词」走 `api_ai_prompt({case})`。
+  - 实时调试：选了用例默认「本用例点位」视图（按清单顺序列出、未触发也显示），「合并重复上报」默认开（键 = 点位 ID + 全部字段值），对重复组人工判定会一次作用到整组 `seqs`；判定后自动跳到下一个待确认。
+  - 数据库浏览器：独立窗口 `/#dbview?db=&t=`（只读：`mode=ro` 连接 + 仅允许 SELECT/WITH/PRAGMA/EXPLAIN），可 `postMessage({type:'tc-sql'})` 把 SQL 填回主窗口字段规则；字段规则「数据库」页有 SQL 向导。
+  - 打包：`build_exe.py` 先在 `build/pkg_stage` 拼包、默认携带 `--data-from samples/` 的规则数据，增量同步到 `dist/埋点小岛`，**不再整目录删除** `埋点小岛数据`（`--refresh-data` 强制覆盖前自动备份，`--no-data` 打干净包）。
 - **视觉与 UI 设计规范**：完整色板、控件规范和 3D 图标约定见 [references/ui-design-system.md](references/ui-design-system.md)。
 
 ## 3. Quick Start & Utility Scripts
@@ -121,6 +125,7 @@ uv run --no-project C:\Users\windows\.gemini\config\skills\trackcheck-island\scr
 
 ## 5. 高频踩坑备忘
 
+0. **改文件别用 Python 文本模式整体重写**：`open(p).read()` + 默认写回会把 LF/CRLF 互转（`trackcheck_web.py`/`app.js` 是 LF，`index.html`/`input.css`/`trackcheck.py` 是 CRLF），git 里会变成整文件改动。批量替换请用 `open(p, 'rb')` 字节读写或写完再按仓库原换行恢复。
 1. **`badCount` 误把 `INFO` 算成「1 个问题」**：
    - 未定义字段的提示属于 `status == "INFO"`，统计红标问题数时必须**只统计 `FAIL` 和 `WARN`**（前端 `badCount(r)` 与独立 HTML 报告逻辑保持一致）。
 2. **手动改判子项全通过后，事件头仍显示失败**：

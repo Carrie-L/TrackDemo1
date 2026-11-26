@@ -31,6 +31,7 @@ import webbrowser
 from collections import Counter, OrderedDict, defaultdict, deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import quote as urllib_quote
 
 import yaml
 
@@ -556,11 +557,13 @@ class LiveSession:
             self.recheck()
 
     def decide(self, seq, field, value):
-        d = self.decisions.setdefault(int(seq), {})
-        if value in ("ok", "bad"):
-            d[field] = value
-        else:
-            d.pop(field, None)
+        seqs = seq if isinstance(seq, (list, tuple)) else [seq]
+        for sq in seqs:
+            d = self.decisions.setdefault(int(sq), {})
+            if value in ("ok", "bad"):
+                d[field] = value
+            else:
+                d.pop(field, None)
         self.recheck()
 
     def stop(self, pull=False):
@@ -1019,6 +1022,100 @@ class App:
                 if cfg.get("fallback"):
                     queue.append(str(cfg["fallback"]))
         return out
+
+    # ---- 点位 ↔ 数据源 绑定（AI 提示词只带「这个点位真正用得到的」数据源） ----
+    def _case_ids(self, case):
+        out = []
+        for item in (case or {}).get("expect") or []:
+            eid = item.get("id") if isinstance(item, dict) else item
+            if eid not in (None, ""):
+                out.append(str(eid))
+        return out
+
+    def event_sources(self, eid):
+        """返回 (有序数据源名列表, {数据源: [来由...]})。
+        来由：模板/点位 sources 绑定、所在用例 sources 绑定、规则里 context/from/sql/api 实际引用，并展开合并源依赖。"""
+        s = self.spec
+        es = s.events.get(str(eid)) or {}
+        why = OrderedDict()
+
+        def add(name, reason):
+            name = str(name or "").strip()
+            if not name or name not in s.sources:
+                return
+            why.setdefault(name, [])
+            if reason not in why[name]:
+                why[name].append(reason)
+
+        raw = s._raw_events.get(str(eid)) or {}
+        own = tc.Sources._str_list(raw.get("sources"))
+        for x in tc.Sources._str_list(es.get("sources")):
+            add(x, "点位绑定" if x in own else f"模板 {raw.get('extends') or ''} 绑定".replace("  ", " "))
+        for cname, c in s.cases.items():
+            if str(eid) in self._case_ids(c):
+                for x in tc.Sources._str_list((c or {}).get("sources")):
+                    add(x, f"用例「{cname}」绑定")
+        ctx_names = set((es.get("context") or {}).keys())
+        for c in (es.get("context") or {}).values():
+            if isinstance(c, dict) and c.get("from"):
+                for f in (c["from"] if isinstance(c["from"], list) else [c["from"]]):
+                    add(f, "规则 context 引用")
+        first_db = next((k for k, v in s.sources.items() if v.get("type") == "sqlite"), None)
+        for r in (es.get("fields") or {}).values():
+            if isinstance(r, str):
+                r = {"from": r}
+            if not isinstance(r, dict):
+                continue
+            frm = str(r.get("from") or "")
+            if frm:
+                head = frm.split(":", 1)[0] if ":" in frm else re.split(r"[.\[]", frm, 1)[0]
+                if head not in ctx_names:
+                    add(head, "字段 from 引用")
+            if r.get("sql"):
+                add(r.get("db") or first_db, "字段 SQL 引用")
+        for a in self._norm_api_list(es.get("api")):
+            add(a["source"], "关联接口")
+        queue, seen = list(why.keys()), set()
+        while queue:
+            sn = queue.pop(0)
+            if sn in seen:
+                continue
+            seen.add(sn)
+            cfg = s.sources.get(sn) or {}
+            if cfg.get("type") == "merged_json":
+                for dep in tc.Sources._str_list(cfg.get("primary") or cfg.get("sources")) + tc.Sources._str_list(cfg.get("fallback")):
+                    add(dep, f"合并源 {sn} 的依赖")
+                    queue.append(dep)
+            elif cfg.get("type") == "sqlite_json" and cfg.get("db"):
+                add(cfg["db"], f"{sn} 所在数据库")
+        return list(why.keys()), why
+
+    def _source_prompt_line(self, name, reasons=None, max_paths=120):
+        s = self.spec
+        cfg = s.sources.get(name) or {}
+        t = cfg.get("type", "json_file")
+        label = {"sqlite": "SQLite 数据库", "sqlite_json": "DB 缓存 JSON", "merged_json": "合并兜底 JSON（优先直接引用）",
+                 "json_file": "接口/本地 JSON"}.get(t, t)
+        extra = ""
+        if t == "merged_json":
+            pr = cfg.get("primary")
+            pr_s = " → ".join(pr) if isinstance(pr, list) else str(pr or "")
+            extra = f" [主源: {pr_s}, 兜底: {cfg.get('fallback', '')}, 路径: {cfg.get('path', '<根>')}, 匹配键: {cfg.get('key', 'key')}]"
+        try:
+            if t == "sqlite":
+                conn = self.sources.db(name)
+                tbs = []
+                for (tb,) in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name != 'android_metadata' ORDER BY name"):
+                    cols = [r[1] for r in conn.execute(f'PRAGMA table_info("{tb}")')]
+                    tbs.append(f"{tb}({', '.join(cols)})")
+                desc = "；".join(tbs[:40]) + (" …" if len(tbs) > 40 else "")
+            else:
+                paths = sorted({tc.path_str(p, True) for p, _ in tc.iter_leaves(self.sources.json(name))})
+                desc = "，".join(paths[:max_paths]) + (" …" if len(paths) > max_paths else "")
+        except Exception as e:
+            desc = f"（读取失败：{e}）"
+        why = f" ←{'、'.join(reasons)}" if reasons else ""
+        return f"- `{name}`（{label}{extra}{why}）：{desc}"
 
     # ---- GET ----
     def api_state(self, q):
@@ -1485,6 +1582,72 @@ class App:
         except (tc.SourceError, sqlite3.Error) as e:
             raise ApiError(str(e))
         return {"columns": cols, "rows": rows}
+
+    # ---- 数据库浏览器（只读，像 sqlite3 工具一样看表 / 查表，帮用户写 sql 规则） ----
+    _SQL_WRITE = re.compile(r"\b(insert|update|delete|drop|alter|create|attach|detach|vacuum|reindex)\b", re.I)
+
+    def _db_names(self):
+        return [k for k, v in self.spec.sources.items() if v.get("type") == "sqlite"]
+
+    def _db_ro(self, name):
+        dbs = self._db_names()
+        if not dbs:
+            raise ApiError("还没有数据库：去「数据源」页从手机拉一个 .db，或把 .db 放进数据源目录")
+        name = name if name in dbs else dbs[0]
+        try:
+            path = self.sources._file(str(self.spec.sources[name].get("path") or ""))
+        except tc.SourceError as e:
+            raise ApiError(str(e))
+        uri = "file:" + urllib_quote(os.path.abspath(path).replace("\\", "/")) + "?mode=ro"
+        conn = sqlite3.connect(uri, uri=True, check_same_thread=False)
+        return name, path, conn
+
+    def api_db_tables(self, q):
+        name, path, conn = self._db_ro(q.get("db"))
+        try:
+            tables = []
+            for (tb, kind) in conn.execute("SELECT name, type FROM sqlite_master WHERE type IN ('table','view') "
+                                           "AND name NOT LIKE 'sqlite_%' ORDER BY type, name"):
+                cols = [{"name": r[1], "type": r[2] or "", "pk": bool(r[5])} for r in conn.execute(f'PRAGMA table_info("{tb}")')]
+                try:
+                    n = conn.execute(f'SELECT count(*) FROM "{tb}"').fetchone()[0]
+                except sqlite3.Error:
+                    n = None
+                tables.append({"name": tb, "kind": kind, "columns": cols, "rows": n})
+        finally:
+            conn.close()
+        return {"db": name, "dbs": self._db_names(), "path": path, "tables": tables,
+                "size": os.path.getsize(path) if os.path.exists(path) else 0}
+
+    def api_db_query(self, b):
+        sql = str(b.get("sql") or "").strip().rstrip(";").strip()
+        if not sql:
+            raise ApiError("先输入一条 SQL")
+        body = re.sub(r"--[^\n]*|/\*.*?\*/", " ", sql, flags=re.S).strip()
+        first = (body.split(None, 1) or [""])[0].lower()
+        if first not in ("select", "with", "pragma", "explain", "values") or self._SQL_WRITE.search(body) \
+                or (first == "pragma" and "=" in body):
+            raise ApiError("数据库浏览器是只读的：只支持 SELECT / WITH / PRAGMA / EXPLAIN 查询")
+        limit = max(1, min(int(b.get("limit") or 200), 2000))
+        offset = max(0, int(b.get("offset") or 0))
+        fields = b.get("fields") or {}
+        name, _, conn = self._db_ro(b.get("db"))
+        t0 = time.time()
+        try:
+            cur = conn.execute(tc.subst(sql, fields) if fields else sql,
+                               {k: tc.norm(v) for k, v in fields.items()} if fields else {})
+            cols = [d[0] for d in cur.description or []]
+            if offset:
+                cur.fetchmany(offset)
+            raw = cur.fetchmany(limit + 1)
+        except sqlite3.Error as e:
+            raise ApiError(f"SQL 执行出错：{e}")
+        finally:
+            ms = int((time.time() - t0) * 1000)
+        conn.close()
+        more = len(raw) > limit
+        rows = [[None if x is None else tc.disp(x, 400) for x in r] for r in raw[:limit]]
+        return {"db": name, "columns": cols, "rows": rows, "more": more, "offset": offset, "limit": limit, "ms": ms}
 
     def api_suggest(self, b):
         """在 JSON 树里点了一个叶子 -> 生成可复用的 from 表达式（必要时自动补上下文定位）"""
@@ -1990,7 +2153,7 @@ class App:
     def api_live_decide(self, b):
         if not self.live:
             raise ApiError("还没开始抓取")
-        self.live.decide(b["seq"], b["field"], b.get("value"))
+        self.live.decide(b.get("seqs") or b["seq"], b["field"], b.get("value"))
         return {"ok": True}
 
     # ---- 数据源目录 & 历史版本 & OkHttp 接口抓取 ----
@@ -2478,19 +2641,15 @@ class App:
         return {"ok": True}
 
     # ---- 给 AI 的提示词 ----
-    def api_ai_prompt(self, b):
-        eid = str(b.get("id") or "").strip()
-        s = self.spec
-        ent = s.event_dict.get("entries", {}).get(eid)
-        lines = ["你是 Android 埋点校验规则助手（埋点小岛 trackcheck）。请根据下面的【埋点文档】【上报日志】【可用数据源 / 模板 / 字典】，",
-                 f"为点位 `{eid}` 编写 trackcheck 校验规则（YAML），只输出可直接导入或粘贴进 trackcheck.yaml 的 YAML 代码块。", ""]
-        lines += [
+    def _prompt_cheatsheet(self):
+        return [
             "## 规则写法速查",
             "- 顶层可包含 `events:`（必填），若确需新增公共模板/字典/合并数据源也可一并输出 `templates:` / `dicts:` / `sources:`（优先复用下方已有的）。",
             "- 点位与模板结构：",
             "  - 复用公共模板：`extends: <模板名>`（多个同页面/同接口点位建议抽模板，子点位只写差异字段）",
             "  - 绑定接口（实时调试自动从 OkHttp logcat 抓取响应 JSON 更新数据源）：",
             "    `api: {endpoint: /config/app/myPageV3, source: myPageV3}`（可写在模板或点位上，子点位自动继承）",
+            "  - 绑定数据源：模板或用例上可写 `sources: [mine_page_merged, app]`，表示这组点位只关注这些数据源（下方列出的就是绑定结果）",
             "  - 去重校验：`dedupe: [resID, operationCardId]`，`dedupe_window: 2`（秒）",
             "  - 上下文定位 `context`：按上报字段值去接口 JSON 里定位当前卡片/条目：",
             "    `res: {from: <数据源名>, path: \"data.myPage[*].res[*]\", where: {id: \"{resID}\"}}`",
@@ -2507,6 +2666,85 @@ class App:
             "  `mine_page_merged: {type: merged_json, primary: [myPageV3, mine_api_cache], fallback: fallback_data, path: data.myPage, key: key, empty_field: res, fallback_keys: [myPage_function_new, myPage_top]}`",
             "",
         ]
+
+    def _case_prompt(self, case_name):
+        s = self.spec
+        case = s.cases.get(case_name)
+        if case is None:
+            raise ApiError(f"没有用例 {case_name}")
+        eids = self._case_ids(case)
+        if not eids:
+            raise ApiError("这个用例里还没有点位")
+        lines = ["你是 Android 埋点校验规则助手（埋点小岛 trackcheck）。下面是一个测试用例里的全部点位，",
+                 f"请为用例「{case_name}」中的 {len(eids)} 个点位一次性编写 trackcheck 校验规则（YAML），只输出可直接导入的 YAML 代码块。",
+                 "同页面 / 同接口的点位请优先抽成模板（templates），子点位只写差异字段。", ""]
+        if case.get("desc"):
+            lines += [f"用例场景：{case['desc']}", ""]
+        lines += self._prompt_cheatsheet()
+        union = OrderedDict()
+        for eid in eids:
+            names, why = self.event_sources(eid)
+            for n in names:
+                union.setdefault(n, [])
+                for w in why.get(n, []):
+                    if w not in union[n]:
+                        union[n].append(w)
+        if union:
+            lines.append("## 本用例用到的数据源")
+            for n, w in union.items():
+                lines.append(self._source_prompt_line(n, w))
+        else:
+            lines.append("## 可用数据源（用例还没有绑定数据源，以下列出全部；建议先在用例上「绑定数据源」）")
+            for n in s.sources:
+                lines.append(self._source_prompt_line(n, max_paths=60))
+        lines.append("")
+        expect = {}
+        for item in case.get("expect") or []:
+            if isinstance(item, dict) and item.get("values"):
+                expect[str(item.get("id"))] = item["values"]
+        lines.append("## 点位清单")
+        for i, eid in enumerate(eids, 1):
+            ent = s.event_dict.get("entries", {}).get(eid) or {}
+            name = ent.get("name") or (s.events.get(eid) or {}).get("name") or s.catalog.get(eid, "")
+            lines.append(f"### {i}. `{eid}` {name}")
+            for k, v in (ent.get("columns") or {}).items():
+                if v:
+                    lines.append(f"- {k}：{v}")
+            rows = ent.get("rows") or []
+            if len(rows) > 1:
+                hdr = list(rows[0].keys())
+                lines += ["", "| " + " | ".join(hdr) + " |", "|" + "---|" * len(hdr)]
+                lines += ["| " + " | ".join(str(r.get(h, "")).replace("\n", " ") for h in hdr) + " |" for r in rows]
+            if expect.get(eid):
+                lines.append("- 用例期望值（由操作决定，可写 `ask: true`）：" + json.dumps(expect[eid], ensure_ascii=False))
+            cur = s._raw_events.get(eid)
+            if cur and not tc.is_stub_event(s.events.get(eid) or {}):
+                lines += ["- 现有规则：", "```yaml",
+                          yaml.safe_dump(plain({eid: cur}), allow_unicode=True, sort_keys=False, default_flow_style=None).rstrip(), "```"]
+            lines.append("")
+        if s.templates:
+            lines.append("## 已有模板（可 `extends` 直接继承复用）")
+            for tname, tv in s.templates.items():
+                tv = tv or {}
+                api_ep = (tv.get("api") or {}).get("endpoint") if isinstance(tv.get("api"), dict) else tv.get("api")
+                lines.append(f"- `{tname}`" + (f"（关联接口 {api_ep}）" if api_ep else "") +
+                             f"：context={list((tv.get('context') or {}).keys())}，fields={list((tv.get('fields') or {}).keys())}")
+        if s.dicts:
+            lines.append("\n## 已有公共字典（可在 `enum` / `map` 中按名字直接引用）")
+            for dname, items in s.dicts.items():
+                preview = ", ".join(f"{k}:{v}" for k, v in list(items.items())[:10])
+                lines.append(f"- `{dname}`：{{{preview}{' ...' if len(items) > 10 else ''}}}")
+        return {"text": "\n".join(lines), "events": len(eids), "sources": list(union.keys())}
+
+    def api_ai_prompt(self, b):
+        if b.get("case"):
+            return self._case_prompt(str(b["case"]))
+        eid = str(b.get("id") or "").strip()
+        s = self.spec
+        ent = s.event_dict.get("entries", {}).get(eid)
+        lines = ["你是 Android 埋点校验规则助手（埋点小岛 trackcheck）。请根据下面的【埋点文档】【上报日志】【可用数据源 / 模板 / 字典】，",
+                 f"为点位 `{eid}` 编写 trackcheck 校验规则（YAML），只输出可直接导入或粘贴进 trackcheck.yaml 的 YAML 代码块。", ""]
+        lines += self._prompt_cheatsheet()
         if ent:
             lines += ["## 埋点文档", f"点位ID：{eid}　名称：{ent.get('name', '')}"]
             for k, v in ent.get("columns", {}).items():
@@ -2520,36 +2758,16 @@ class App:
             lines.append("")
         if b.get("line") or b.get("fields"):
             lines += ["## 上报日志样本", b.get("line") or json.dumps(b.get("fields"), ensure_ascii=False), ""]
-        lines.append("## 可用数据源")
-        type_labels = {
-            "sqlite": "SQLite 数据库",
-            "sqlite_json": "DB 缓存 JSON",
-            "merged_json": "合并兜底 JSON（优先推荐直接引用）",
-            "json_file": "接口/本地 JSON",
-        }
-        for name, cfg in s.sources.items():
-            t = cfg.get("type", "json_file")
-            label = type_labels.get(t, t)
-            extra = ""
-            if t == "merged_json":
-                pr = cfg.get("primary")
-                pr_s = " → ".join(pr) if isinstance(pr, list) else str(pr or "")
-                extra = f" [主源: {pr_s}, 兜底: {cfg.get('fallback', '')}, 路径: {cfg.get('path', '<根>')}]"
-            desc = ""
-            try:
-                if t == "sqlite":
-                    conn = self.sources.db(name)
-                    tbs = []
-                    for (tb,) in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name != 'android_metadata'"):
-                        cols = [r[1] for r in conn.execute(f'PRAGMA table_info("{tb}")')]
-                        tbs.append(f"{tb}({', '.join(cols)})")
-                    desc = "；".join(tbs[:30])
-                else:
-                    paths = sorted({tc.path_str(p, True) for p, _ in tc.iter_leaves(self.sources.json(name))})
-                    desc = "，".join(paths[:60]) + (" …" if len(paths) > 60 else "")
-            except Exception as e:
-                desc = f"（读取失败：{e}）"
-            lines.append(f"- `{name}`（{label}{extra}）：{desc}")
+        names, why = self.event_sources(eid)
+        if names:
+            lines.append("## 这个点位用到的数据源（来自模板 / 用例绑定和现有规则引用）")
+            for name in names:
+                lines.append(self._source_prompt_line(name, why.get(name)))
+        else:
+            lines.append("## 可用数据源（该点位还没有绑定数据源，以下列出全部；建议在「测试用例」或「模板」里绑定后再复制，提示词会更精准）")
+            for name in self.spec.sources:
+                lines.append(self._source_prompt_line(name, max_paths=60))
+        lines.append("")
         if s.templates:
             lines.append("\n## 已有模板（可 `extends` 直接继承复用）")
             for tname, tv in s.templates.items():
@@ -2568,7 +2786,7 @@ class App:
         if cur:
             lines += ["", "## 现有规则（在此基础上修改）",
                       yaml.safe_dump(plain({"events": {eid: cur}}), allow_unicode=True, sort_keys=False, default_flow_style=None)]
-        return {"text": "\n".join(lines)}
+        return {"text": "\n".join(lines), "sources": names}
 
     def api_live_stop(self, b):
         if not self.live or not self.live.running:
@@ -2776,6 +2994,7 @@ ROUTES = {
     ("GET", "/api/devices"): "api_devices", ("GET", "/api/live/poll"): "api_live_poll",
     ("GET", "/api/server_log"): "api_server_log", ("POST", "/api/server_log/clear"): "api_server_log_clear",
     ("POST", "/api/shutdown"): "api_shutdown",
+    ("GET", "/api/db/tables"): "api_db_tables", ("POST", "/api/db/query"): "api_db_query",
     ("POST", "/api/event/save"): "api_event_save", ("POST", "/api/event/delete"): "api_event_delete",
     ("POST", "/api/dict/save"): "api_dict_save", ("POST", "/api/source/save"): "api_source_save",
     ("POST", "/api/case/save"): "api_case_save", ("POST", "/api/template/save"): "api_template_save",
