@@ -1650,7 +1650,20 @@ class App:
             ms = int((time.time() - t0) * 1000)
         conn.close()
         more = len(raw) > limit
-        rows = [[None if x is None else tc.disp(x, 400) for x in r] for r in raw[:limit]]
+        def _cell(x):
+            if x is None:
+                return None
+            if isinstance(x, (bytes, bytearray, memoryview)):
+                b = bytes(x)
+                try:
+                    s = b.decode("utf-8")
+                except UnicodeDecodeError:
+                    return f"<BLOB {len(b)} B>"
+            else:
+                s = str(x)
+            return s if len(s) <= 200000 else (s[:200000] + f"\n…（已截断，完整共 {len(s)} 字符）")
+
+        rows = [[_cell(x) for x in r] for r in raw[:limit]]
         return {"db": name, "columns": cols, "rows": rows, "more": more, "offset": offset, "limit": limit, "ms": ms}
 
     def api_suggest(self, b):

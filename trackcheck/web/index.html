@@ -10,7 +10,7 @@
   <script defer src="/static/alpine.min.js"></script>
 </head>
 <body x-data="app()" class="min-h-screen">
-<div class="mx-auto flex min-h-screen max-w-[1680px] gap-5 p-5">
+<div class="mx-auto flex min-h-screen gap-5 p-5" :class="page === 'dbview' ? 'max-w-[1980px]' : 'max-w-[1680px]'">
 
   <!-- ================= 侧边栏 ================= -->
   <aside x-show="page !== 'dbview'" class="sticky top-5 flex h-[calc(100vh-40px)] w-56 shrink-0 flex-col gap-4">
@@ -125,7 +125,7 @@
     <div x-show="st?.spec_error" x-cloak class="panel flex items-center gap-2 border-berry-200 bg-berry-50 p-4 text-sm text-berry-700"><img class="pic h-6 w-6" src="/static/icons/warn.png" alt="">规则文件解析出错：<span x-text="st?.spec_error"></span></div>
 
     <main class="flex-1">
-      <!-- ========== 数据库浏览器（新标签页 #dbview，只读，按表保存 SQL 历史 + 单击复制列值） ========== -->
+      <!-- ========== 数据库浏览器（新标签页 #dbview：左表栏 + 中多选列/SQL/完整结果 + 右完整SQL历史栏） ========== -->
       <section x-show="page === 'dbview'" x-cloak class="flex h-[calc(100vh-40px)] flex-col gap-3.5">
         <div class="panel flex flex-wrap items-center gap-3 px-4 py-2.5">
           <img class="pic h-9 w-9" src="/static/icons/db.png" alt="">
@@ -136,18 +136,18 @@
             </div>
             <div class="truncate font-mono text-xs text-ink-soft" x-text="dbv.path ? dbv.path + ' · ' + fmtSize(dbv.size || 0) : '只读查看，不会改动数据库'"></div>
           </div>
-          <select class="input !w-44 !py-1.5 font-mono text-sm" x-show="dbv.dbs.length > 1" :value="dbv.db" @change="dbv.cur = ''; dbv.res = null; loadDbv($event.target.value)">
+          <select class="input !w-44 !py-1.5 font-mono text-sm" x-show="dbv.dbs.length > 1" :value="dbv.db" @change="dbv.cur = ''; dbv.res = null; dbv.selCols = []; dbv.mode = ''; loadDbv($event.target.value)">
             <template x-for="d in dbv.dbs" :key="d"><option :value="d" :selected="d === dbv.db" x-text="d"></option></template>
           </select>
           <span class="chip bg-[#EBF7FE] font-mono text-wood-700" x-show="dbv.dbs.length === 1" x-text="dbv.db"></span>
           <div class="ml-auto flex items-center gap-2">
-            <span class="subtle hidden xl:inline">单击任意单元格复制值 · 单击表头复制列名 · Ctrl+Enter 运行</span>
+            <span class="subtle hidden xl:inline">单击单元格复制完整值 · 单击表头复制列名 · Ctrl+Enter 运行</span>
             <button class="btn-wood btn-xs" @click="loadDbv(dbv.db)"><img class="pic h-4 w-4" src="/static/icons/refresh.png" alt="">刷新表</button>
           </div>
         </div>
         <div x-show="dbv.err && !dbv.tables.length" class="panel border-berry-200 bg-berry-50 p-4 text-sm text-berry-700" x-text="dbv.err"></div>
-        <div class="grid min-h-0 flex-1 grid-cols-1 gap-4 lg:grid-cols-[280px_1fr]">
-          <!-- 左侧表列表 -->
+        <div class="grid min-h-0 flex-1 grid-cols-1 gap-4 lg:grid-cols-[235px_1fr_290px]">
+          <!-- 左栏：数据表列表（清爽干净，无多余角标） -->
           <div class="panel flex min-h-0 flex-col p-3">
             <div class="relative mb-2">
               <svg class="ico absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-ink-faint"><use :href="icon('search')"></use></svg>
@@ -156,24 +156,21 @@
             </div>
             <div class="mb-1.5 flex items-center justify-between px-1 text-xs font-bold text-ink-faint">
               <span x-text="dbvTables.length + ' 张表'"></span>
-              <span>点表看数据 · 点列插入</span>
+              <span>点表查数据</span>
             </div>
             <div class="flex-1 space-y-1 overflow-y-auto pr-1 scroll-soft">
               <template x-for="t in dbvTables" :key="t.name">
                 <div class="rounded-2xl border transition" :class="dbv.cur === t.name ? 'border-[#F7C6D7] bg-[#FFF4F8] shadow-sm' : 'border-transparent hover:border-[#E3F1FB] hover:bg-[#F7FCFF]'">
                   <div class="flex items-center gap-1.5 px-2.5 py-1.5">
                     <button type="button" class="min-w-0 flex-1 text-left" @click="dbvOpenTable(t)">
-                      <div class="flex items-center gap-1.5">
-                        <span class="truncate font-mono text-[13px] font-bold text-wood-700" x-text="t.name"></span>
-                        <span x-show="dbvHistCount(t.name)" class="shrink-0 rounded-full bg-[#EAF8E6] px-1.5 text-[10.5px] font-extrabold text-leaf-700" :title="'该表已保存 ' + dbvHistCount(t.name) + ' 条成功 SQL'" x-text="dbvHistCount(t.name) + ' 历史'"></span>
-                      </div>
+                      <span class="block truncate font-mono text-[13px] font-bold text-wood-700" x-text="t.name"></span>
                       <span class="text-[11.5px] text-ink-soft" x-text="(t.kind === 'view' ? '视图 · ' : '') + (t.rows ?? '?') + ' 行 · ' + t.columns.length + ' 列'"></span>
                     </button>
-                    <button type="button" class="btn-ghost btn-xs !px-1" :title="dbv.open[t.name] ? '收起列' : '展开列（点击可插入到 SQL）'" @click="dbv.open = { ...dbv.open, [t.name]: !dbv.open[t.name] }"><svg class="ico h-3.5 w-3.5 transition" :class="dbv.open[t.name] && 'rotate-90'"><use :href="icon('chevron-right')"></use></svg></button>
+                    <button type="button" class="btn-ghost btn-xs !px-1" :title="dbv.open[t.name] ? '收起列' : '展开列（点击可插入 SQL）'" @click="dbv.open = { ...dbv.open, [t.name]: !dbv.open[t.name] }"><svg class="ico h-3.5 w-3.5 transition" :class="dbv.open[t.name] && 'rotate-90'"><use :href="icon('chevron-right')"></use></svg></button>
                   </div>
                   <div x-show="dbv.open[t.name]" class="flex flex-wrap gap-1 px-2.5 pb-2">
                     <template x-for="c in t.columns" :key="c.name">
-                      <button type="button" class="chip border border-[#E3F1FB] bg-white font-mono !text-[11.5px] font-normal text-wood-700 transition hover:border-[#F7BFD2] hover:bg-[#FFF4F8]" :title="'点击把列名 ' + c.name + ' 插入 SQL（' + (c.type || 'TEXT') + '）'" @click="dbvInsertCol(c.name)">
+                      <button type="button" class="chip border border-[#E3F1FB] bg-white font-mono !text-[11.5px] font-normal text-wood-700 transition hover:border-[#F7BFD2] hover:bg-[#FFF4F8]" :title="'点击插入列名 ' + c.name + '（' + (c.type || 'TEXT') + '）'" @click="dbvInsertCol(c.name)">
                         <span x-text="c.name"></span><span class="text-[10.5px] text-ink-faint" x-text="c.pk ? 'PK' : (c.type || '').toLowerCase()"></span>
                       </button>
                     </template>
@@ -182,26 +179,22 @@
               </template>
             </div>
           </div>
-          <!-- 右侧查询与结果 -->
+
+          <!-- 中栏：快捷模式 + SQL 编辑器 + 多选列区 + 完整结果表 -->
           <div class="flex min-h-0 min-w-0 flex-col gap-3.5">
             <div class="panel p-3.5">
-              <!-- 当前表快捷按钮栏 -->
+              <!-- 当前表快捷查询模式：点哪个高亮哪个，不默认高亮 COUNT -->
               <div class="mb-2 flex flex-wrap items-center gap-1.5" x-show="dbvCurTable">
                 <span class="mr-0.5 inline-flex items-center gap-1 rounded-full bg-[#EBF7FE] px-2.5 py-0.5 font-mono text-xs font-extrabold text-wood-700" x-text="dbv.cur"></span>
-                <button type="button" class="chip border border-[#D5ECFA] bg-white text-ink-soft hover:bg-[#F4FAFF] hover:text-wood-700" @click="dbvSnippet('all')">看全表</button>
-                <button type="button" class="chip border border-[#D5ECFA] bg-white text-ink-soft hover:bg-[#F4FAFF] hover:text-wood-700" @click="dbvSnippet('latest')">最新 20 行</button>
-                <button type="button" class="chip border border-[#D5ECFA] bg-white text-ink-soft hover:bg-[#F4FAFF] hover:text-wood-700" @click="dbvSnippet('count')">总行数</button>
-                <button type="button" class="chip border border-[#CDEBC2] bg-[#F3FBEF] text-leaf-700 hover:bg-[#E5F6DE]" title="保留当前的 WHERE 条件，一键改成 SELECT count(*) 统计数量" @click="dbvToCount()">转 COUNT(*)</button>
-                <button type="button" class="chip border border-[#D5ECFA] bg-white text-ink-soft hover:bg-[#F4FAFF] hover:text-wood-700" @click="dbvSnippet('schema')">表结构</button>
-                <span class="mx-0.5 h-4 w-px bg-[#E3F1FB]"></span>
-                <span class="text-[11.5px] text-ink-faint">按列分组统计：</span>
-                <template x-for="c in (dbvCurTable?.columns || []).slice(0, 12)" :key="'sn-' + c.name">
-                  <button type="button" class="chip bg-[#F7FCFF] font-mono !text-[11.5px] font-normal text-ink-soft hover:bg-[#FFF4F8] hover:text-wood-700" :title="'统计各 ' + c.name + ' 值的数量（GROUP BY）'" @click="dbvSnippet('group', c.name)" x-text="c.name"></button>
+                <template x-for="m in [['all','看全表','查询当前表数据'],['latest','最新 20 行','按 rowid 倒序看最新 20 行'],['count','总行数','统计整张表的行数'],['tocount','转 COUNT(*)','保留当前 WHERE 条件，改成 SELECT count(*)'],['schema','表结构','查看列定义与类型']]" :key="m[0]">
+                  <button type="button" class="chip border transition" :title="m[2]"
+                          :class="dbv.mode === m[0] ? 'border-transparent bg-[#FCDCE6] text-wood-700 shadow-sm' : 'border-[#D5ECFA] bg-white text-ink-soft hover:bg-[#F4FAFF] hover:text-wood-700'"
+                          @click="m[0] === 'tocount' ? dbvToCount() : dbvSnippet(m[0])" x-text="m[1]"></button>
                 </template>
               </div>
               <!-- SQL 输入框 + 右上角一键清空按钮 -->
               <div class="relative">
-                <textarea x-ref="dbvSql" class="input h-24 !pr-20 font-mono text-xs leading-relaxed" spellcheck="false" x-model="dbv.sql" placeholder="SELECT count(*) FROM history WHERE type = 'novel'   （Ctrl+Enter 立即运行）" @keydown.ctrl.enter.prevent="dbvRun(0)" @keydown.meta.enter.prevent="dbvRun(0)"></textarea>
+                <textarea x-ref="dbvSql" class="input h-24 !pr-20 font-mono text-xs leading-relaxed" spellcheck="false" x-model="dbv.sql" @input="dbv.mode = ''" placeholder="SELECT col1, col2 FROM table WHERE ...   （Ctrl+Enter 立即运行）" @keydown.ctrl.enter.prevent="dbvRun(0)" @keydown.meta.enter.prevent="dbvRun(0)"></textarea>
                 <button x-show="dbv.sql" type="button"
                         class="absolute right-2.5 top-2 inline-flex items-center gap-1 rounded-full border border-[#FAD6E2] bg-[#FFF6F9] px-2.5 py-0.5 text-[11.5px] font-bold text-ink-soft shadow-sm transition hover:bg-[#FCDCE6] hover:text-berry-700"
                         title="清空 SQL 输入框" @click="dbvClearSql()">
@@ -217,7 +210,7 @@
                 <span class="text-xs font-bold text-berry-600" x-show="dbv.err && dbv.tables.length" x-text="dbv.err"></span>
                 <div class="ml-auto flex flex-wrap items-center gap-1.5" x-show="dbv.res">
                   <div class="relative" x-show="(dbv.res?.rows?.length || 0) > 1">
-                    <input class="input !w-40 !rounded-full !py-0.5 !pl-3 !pr-6 text-xs" placeholder="在结果中筛选…" x-model="dbv.resQ">
+                    <input class="input !w-36 !rounded-full !py-0.5 !pl-3 !pr-6 text-xs" placeholder="在结果中筛选…" x-model="dbv.resQ">
                     <button x-show="dbv.resQ" type="button" class="absolute right-2 top-1/2 -translate-y-1/2 text-ink-faint hover:text-wood-700" @click="dbv.resQ = ''"><svg class="ico h-3 w-3"><use :href="icon('x')"></use></svg></button>
                   </div>
                   <button type="button" class="btn-ghost btn-xs" x-show="dbv.res?.rows?.length" title="复制为制表符分隔文本，可直接粘贴到 Excel" @click="dbvCopyResult('tsv')">复制表格</button>
@@ -234,29 +227,47 @@
                   </template>
                 </div>
               </div>
-              <!-- 按表保存的成功 SQL 历史 -->
-              <div class="mt-2.5 flex flex-wrap items-center gap-1.5 border-t border-[#ECF5FB] pt-2" x-show="dbvCurHist.length">
-                <span class="text-[11.5px] font-bold text-wood-600" x-text="(dbv.cur ? '「' + dbv.cur + '」' : '本库') + '成功 SQL 历史：'"></span>
-                <template x-for="h in dbvCurHist" :key="h.sql">
-                  <span class="group inline-flex max-w-[340px] items-center overflow-hidden rounded-full border border-[#DCEEF8] bg-[#F7FCFF] transition hover:border-[#F5C2D4] hover:bg-[#FFF6FA]">
-                    <button type="button" class="flex min-w-0 items-center gap-1.5 py-0.5 pl-2.5 pr-1.5 font-mono text-[11.5px] text-wood-700" :title="h.sql + '（点击立即运行）'" @click="dbv.sql = h.sql; dbvRun(0)">
-                      <span class="truncate" x-text="h.sql"></span>
-                      <span class="shrink-0 rounded-full bg-white/90 px-1.5 font-sans text-[10.5px] text-ink-faint" x-text="h.rows + '行'"></span>
+              <!-- 多选列区：表有 30 个字段也能轻松点选其中 10 列生成 SELECT（原 SQL 历史位置现专供选列） -->
+              <div class="mt-2.5 border-t border-[#ECF5FB] pt-2.5" x-show="dbvCurTable">
+                <div class="mb-1.5 flex flex-wrap items-center gap-2 text-xs">
+                  <span class="font-extrabold text-wood-700" x-text="'字段列（' + (dbvCurTable?.columns?.length || 0) + '）'"></span>
+                  <div class="flex rounded-full bg-[#F1F9FE] p-0.5 text-[11.5px] font-bold">
+                    <button type="button" class="rounded-full px-2.5 py-0.5 transition" :class="dbv.colMode === 'select' ? 'bg-white text-wood-700 shadow-sm' : 'text-ink-soft hover:text-wood-700'" @click="dbv.colMode = 'select'">多选列查询</button>
+                    <button type="button" class="rounded-full px-2.5 py-0.5 transition" :class="dbv.colMode === 'group' ? 'bg-white text-wood-700 shadow-sm' : 'text-ink-soft hover:text-wood-700'" @click="dbv.colMode = 'group'">点列分组统计</button>
+                  </div>
+                  <span class="text-[11.5px] text-ink-soft" x-show="dbv.colMode === 'select'" x-text="dbv.selCols.length ? '已选 ' + dbv.selCols.length + ' 列（SQL 已自动更新）' : '点击下方列名多选，只查你关心的字段'"></span>
+                  <div class="relative ml-auto" x-show="(dbvCurTable?.columns?.length || 0) > 8">
+                    <input class="input !w-36 !rounded-full !py-0.5 !pl-3 !pr-6 text-[11.5px]" placeholder="筛列名…" x-model="dbv.colQ">
+                    <button x-show="dbv.colQ" type="button" class="absolute right-2 top-1/2 -translate-y-1/2 text-ink-faint hover:text-wood-700" @click="dbv.colQ = ''"><svg class="ico h-3 w-3"><use :href="icon('x')"></use></svg></button>
+                  </div>
+                  <div class="flex items-center gap-1.5" :class="(dbvCurTable?.columns?.length || 0) <= 8 && 'ml-auto'" x-show="dbv.colMode === 'select'">
+                    <button type="button" class="text-[11.5px] font-bold text-ink-soft hover:text-wood-700" @click="dbvSelectAllCols()">全选</button>
+                    <button type="button" x-show="dbv.selCols.length" class="text-[11.5px] font-bold text-ink-faint hover:text-berry-600" @click="dbvClearSelCols()">清空</button>
+                    <button type="button" x-show="dbv.selCols.length" class="btn-leaf btn-xs !py-0.5" @click="dbvApplyColsToSql(true)">查询选中列</button>
+                  </div>
+                </div>
+                <div class="flex max-h-24 flex-wrap gap-1.5 overflow-y-auto pr-1 scroll-soft">
+                  <template x-for="c in dbvFilteredCols" :key="'col-' + c.name">
+                    <button type="button" class="chip border font-mono !text-[12px] transition"
+                            :class="dbv.colMode === 'select' && dbv.selCols.includes(c.name) ? 'border-transparent bg-[#FCDCE6] text-wood-700 shadow-sm' : 'border-[#DCEEF8] bg-[#F8FCFF] font-normal text-wood-700 hover:border-[#F5C2D4] hover:bg-[#FFF5F9]'"
+                            :title="dbv.colMode === 'group' ? ('按 ' + c.name + ' 分组统计数量') : ('点击选中或取消列 ' + c.name + '（' + (c.type || 'TEXT') + '）')"
+                            @click="dbvToggleCol(c.name)">
+                      <svg x-show="dbv.colMode === 'select' && dbv.selCols.includes(c.name)" class="ico h-3 w-3 text-[#C24669]"><use :href="icon('check')"></use></svg>
+                      <span x-text="c.name"></span>
+                      <span class="font-sans text-[10.5px] opacity-60" x-text="c.pk ? 'PK' : (c.type || '').toLowerCase()"></span>
                     </button>
-                    <button type="button" class="px-1.5 py-0.5 text-ink-faint transition hover:bg-[#FCDCE6] hover:text-berry-600" title="删除这条历史" @click.stop="dbvDelHist(h.sql)"><svg class="ico h-3 w-3"><use :href="icon('x')"></use></svg></button>
-                  </span>
-                </template>
-                <button type="button" class="ml-auto text-[11.5px] font-bold text-ink-faint hover:text-berry-600" @click="dbvClearHist()">清空本表历史</button>
+                  </template>
+                </div>
               </div>
             </div>
-            <!-- 单值结果快捷条（比如 SELECT count(*) 查出一个数，直接点一下复制） -->
+            <!-- 单值结果快捷条 -->
             <div x-show="dbv.res && dbv.res.columns?.length === 1 && dbv.res.rows?.length === 1" class="flex items-center gap-2.5 rounded-2xl border border-[#CDEBC2] bg-[#F3FBEF] px-4 py-2 text-xs">
               <img class="pic h-5 w-5" src="/static/icons/ok.png" alt="">
               <span class="font-bold text-wood-700">查询结果值：</span>
               <button type="button" class="code id-copy !bg-white !px-2.5 !py-0.5 text-sm font-black text-leaf-700" title="点击复制结果值" @click="dbvCopyCell(dbv.res.rows[0][0], dbv.res.columns[0], $event)" x-text="dbv.res?.rows?.[0]?.[0] ?? 'NULL'"></button>
               <span class="subtle">点数值即可复制，或点上方「填回字段规则」直接作为期望值 SQL</span>
             </div>
-            <!-- 结果数据表：单击单元格复制值，悬停可按该值一键筛选 -->
+            <!-- 结果数据表：单击单元格复制完整值，长文本 / JSON 可一键弹完整预览，悬停可按值筛选 -->
             <div class="panel min-h-0 flex-1 overflow-auto p-0 scroll-soft">
               <template x-if="dbv.res && dbv.res.columns.length">
                 <table class="tbl min-w-full">
@@ -278,13 +289,20 @@
                       <tr class="hover:bg-[#FAFDFF]">
                         <td class="text-xs text-ink-faint tabular-nums" x-text="dbv.offset + item.idx + 1"></td>
                         <template x-for="(v, ci) in item.r" :key="ci">
-                          <td class="dbv-cell group relative max-w-[360px] font-mono text-xs"
+                          <td class="dbv-cell group relative max-w-[380px] font-mono text-xs"
                               :class="v === null && 'italic text-ink-faint'"
-                              :title="v === null ? 'NULL（点击复制空串）' : '点击复制该值：' + String(v).slice(0, 120)"
+                              :title="v === null ? 'NULL（点击复制空串）' : '点击复制完整值（共 ' + String(v).length + ' 字符）'"
                               @click="dbvCopyCell(v, dbv.res.columns[ci], $event)">
-                            <span class="whitespace-pre-wrap break-all" x-text="v === null ? 'NULL' : v"></span>
+                            <span class="whitespace-pre-wrap break-all leading-5" :class="dbvIsLongCell(v) ? 'line-clamp-4' : 'block'" x-text="v === null ? 'NULL' : v"></span>
+                            <div class="mt-2 flex items-center gap-1" x-show="dbvIsLongCell(v)">
+                              <button type="button" class="inline-flex items-center gap-1 rounded-full border border-[#CBE6FA] bg-[#F2FAFF] px-2 py-0.5 font-sans text-[11px] font-bold text-wood-700 transition hover:bg-[#FCDCE6]"
+                                      @click.stop="dbvPreviewCell(v, dbv.res.columns[ci])">
+                                <svg class="ico h-3 w-3"><use :href="icon('eye')"></use></svg>
+                                <span x-text="'查看完整（' + String(v ?? '').length + ' 字）'"></span>
+                              </button>
+                            </div>
                             <button x-show="v !== null && String(v).length <= 60 && dbvCurTable" type="button"
-                                    class=" invisible absolute right-1.5 top-1/2 -translate-y-1/2 rounded-full border border-[#CDEBC2] bg-white/95 px-1.5 py-0.5 font-sans text-[10.5px] font-bold text-leaf-700 shadow-sm hover:bg-[#EAF8E6] group-hover:visible"
+                                    class="invisible absolute right-1.5 top-1/2 -translate-y-1/2 rounded-full border border-[#CDEBC2] bg-white/95 px-1.5 py-0.5 font-sans text-[10.5px] font-bold text-leaf-700 shadow-sm hover:bg-[#EAF8E6] group-hover:visible"
                                     :title="'筛选 ' + dbv.res.columns[ci] + ' = ' + v"
                                     @click.stop="dbvFilterCell(dbv.res.columns[ci], v)">= 筛选</button>
                           </td>
@@ -298,6 +316,41 @@
                 <div class="text-center"><img class="pic mx-auto h-14 w-14 opacity-80" src="/static/icons/db.png" alt=""><p class="mt-2">点左边的表查看数据，或在上方输入 SQL 查询</p></div>
               </div>
               <p x-show="dbv.res && !dbvFilteredRows.length" class="p-6 text-center text-sm text-ink-faint" x-text="dbv.resQ ? '当前筛选下没有匹配的行' : '没有查到数据'"></p>
+            </div>
+          </div>
+
+          <!-- 右栏：独立「SQL 历史」侧栏（完整展示每条成功 SQL，不截断） -->
+          <div class="panel flex min-h-0 flex-col p-3">
+            <div class="mb-2 flex items-center gap-1.5 px-1">
+              <img class="pic h-5 w-5" src="/static/icons/shell.png" alt="">
+              <span class="text-sm font-black text-wood-700">SQL 历史</span>
+              <button type="button" x-show="dbvCurHist.length" class="ml-auto text-xs font-bold text-ink-faint hover:text-berry-600" @click="dbvClearHist()">清空</button>
+            </div>
+            <div class="mb-2.5 flex rounded-full bg-[#F1F9FE] p-0.5 text-xs font-bold">
+              <button type="button" class="flex-1 rounded-full py-1 transition" :class="dbv.histScope === 'table' ? 'bg-white text-wood-700 shadow-sm' : 'text-ink-soft hover:text-wood-700'" @click="dbv.histScope = 'table'" x-text="(dbv.cur ? '本表' : '当前') + ' ' + dbvTableHistList.length"></button>
+              <button type="button" class="flex-1 rounded-full py-1 transition" :class="dbv.histScope === 'all' ? 'bg-white text-wood-700 shadow-sm' : 'text-ink-soft hover:text-wood-700'" @click="dbv.histScope = 'all'" x-text="'本库全部 ' + dbvAllHistList.length"></button>
+            </div>
+            <div class="flex-1 space-y-2 overflow-y-auto pr-1 scroll-soft">
+              <template x-for="(h, hi) in dbvCurHist" :key="(h._k || '') + h.sql + hi">
+                <div class="group cursor-pointer rounded-2xl border border-[#E3F1FB] bg-white/85 p-2.5 transition hover:border-[#F5C2D4] hover:bg-[#FFF9FB] hover:shadow-soft"
+                     title="点击填入并立即运行这条 SQL"
+                     @click="dbv.sql = h.sql; dbv.mode = ''; if (h.tbl && dbv.tables.some(t => t.name === h.tbl)) dbv.cur = h.tbl; dbvRun(0)">
+                  <pre class="whitespace-pre-wrap break-all font-mono text-[12px] leading-relaxed text-wood-700" x-text="h.sql"></pre>
+                  <div class="mt-1.5 flex items-center gap-1.5 text-[11px] text-ink-soft">
+                    <span x-show="dbv.histScope === 'all' && h.tbl" class="rounded-full bg-[#EBF7FE] px-1.5 py-0.5 font-mono font-bold text-wood-700" x-text="h.tbl"></span>
+                    <span class="rounded-full bg-[#EAF8E6] px-1.5 py-0.5 font-bold text-leaf-700" x-text="h.rows + ' 行'"></span>
+                    <span class="text-ink-faint tabular-nums" x-text="dbvHistTime(h.at)"></span>
+                    <div class="ml-auto flex items-center gap-0.5 opacity-0 transition group-hover:opacity-100">
+                      <button type="button" class="rounded-lg p-1 text-ink-soft hover:bg-white hover:text-wood-700" title="复制 SQL" @click.stop="copyText(h.sql)"><svg class="ico h-3.5 w-3.5"><use :href="icon('copy')"></use></svg></button>
+                      <button type="button" class="rounded-lg p-1 text-ink-soft hover:bg-[#FCDCE6] hover:text-berry-600" title="删除这条历史" @click.stop="dbvDelHist(h)"><svg class="ico h-3.5 w-3.5"><use :href="icon('trash-2')"></use></svg></button>
+                    </div>
+                  </div>
+                </div>
+              </template>
+              <div x-show="!dbvCurHist.length" class="grid place-items-center gap-1.5 py-12 text-center text-xs text-ink-faint">
+                <img class="pic h-10 w-10 opacity-60" src="/static/icons/shell.png" alt="">
+                <span x-text="dbv.histScope === 'table' && dbv.cur ? '「' + dbv.cur + '」还没有保存的 SQL' : '运行过的成功 SQL 会完整记在这里'"></span>
+              </div>
             </div>
           </div>
         </div>
@@ -783,7 +836,7 @@
             <button class="btn-ghost btn-xs ml-auto" x-show="evd.entries.length" @click="delEvd()"><svg class="ico h-3.5 w-3.5"><use :href="icon('trash-2')"></use></svg>清空字典</button>
           </div>
           <!-- 按「模块」列筛选 + 一键以此模块新建测试用例 -->
-          <div x-show="evd.modules.length" class="mb-3 flex flex-wrap items-center gap-1.5 rounded-2xl border border-[#E3F1FB] bg-[#F7FCFF] px-3 py-2">
+          <div x-show="evd.modules.length" class="mb-3 flex max-h-24 flex-wrap items-center gap-1.5 overflow-y-auto rounded-2xl border border-[#E3F1FB] bg-[#F7FCFF] px-3 py-2 scroll-soft">
             <span class="text-xs font-extrabold text-wood-700">所属模块：</span>
             <button type="button" class="chip border transition" :class="!evd.mod ? 'border-transparent bg-[#FCDCE6] text-wood-700' : 'border-[#D5ECFA] bg-white text-ink-soft hover:text-wood-700'" @click="evd.mod = ''">全部</button>
             <template x-for="m in evd.modules" :key="'em-' + m.name">
@@ -1427,14 +1480,25 @@
         <div x-show="!(caseEd && caseView)" class="panel-pad grid place-items-center py-16 text-center">
           <img class="pic h-16 w-16" src="/static/icons/cases.png" alt="">
           <p class="mt-3 max-w-md text-sm text-ink-soft">从左边选一个用例，或者新建一个。<br>把这轮要测的点位加进来，给「入口」「Tab」这类由操作决定的字段点选期望值，调试时就自动帮你核对了。</p>
-          <div x-show="dictModules.length" class="mt-4 flex max-w-2xl flex-wrap items-center justify-center gap-2 rounded-2xl border border-[#DCEEF8] bg-[#F7FCFF] px-4 py-2.5">
-            <span class="text-xs font-extrabold text-wood-700">按埋点文档模块一键建用例：</span>
-            <template x-for="m in dictModules" :key="'cm0-' + m.name">
-              <button type="button" class="chip border border-[#CBE6FA] bg-white text-wood-700 transition hover:-translate-y-0.5 hover:border-transparent hover:bg-[#FCDCE6]"
-                      :title="'新建用例并一次性导入「' + m.name + '」的 ' + m.count + ' 个点位'" @click="createCaseFromModule(m)">
-                <span x-text="m.name"></span><span class="rounded-full bg-[#EBF7FE] px-1.5 text-[11.5px] font-bold text-ink-soft" x-text="m.count + ' 点位'"></span>
-              </button>
-            </template>
+          <div x-show="dictModules.length" class="relative mt-4 w-full max-w-sm" @click.outside="caseModEmptyOpen = false">
+            <div class="relative flex items-center">
+              <img class="pic pointer-events-none absolute left-3 h-4 w-4" src="/static/icons/dict.png" alt="">
+              <input class="input !rounded-full !border-[1.5px] !border-[#CBE6FA] !bg-[#F5FBFF] !py-1.5 !pl-9 !pr-8 text-xs font-bold text-wood-700 placeholder:text-ink-soft focus:!bg-white"
+                     placeholder="选择或搜索模块，一键新建测试用例…"
+                     x-model="caseModEmptyQ" @focus="caseModEmptyOpen = true" @input="caseModEmptyOpen = true" @keydown.escape="caseModEmptyOpen = false; $event.target.blur()"
+                     @keydown.enter.prevent="if (caseModEmptyHits.length) createCaseFromModule(caseModEmptyHits[0])">
+              <button x-show="caseModEmptyQ" type="button" class="absolute right-2.5 rounded-full p-0.5 text-ink-faint hover:text-wood-700" @click="caseModEmptyQ = ''"><svg class="ico h-3.5 w-3.5"><use :href="icon('x')"></use></svg></button>
+              <svg x-show="!caseModEmptyQ" class="ico pointer-events-none absolute right-3 h-3.5 w-3.5 text-ink-faint"><use :href="icon('chevron-down')"></use></svg>
+            </div>
+            <div x-show="caseModEmptyOpen" x-cloak class="pop panel absolute left-0 right-0 top-full z-30 mt-1.5 max-h-64 overflow-y-auto !rounded-2xl !bg-cream p-1.5 text-left shadow-[0_14px_32px_-10px_rgba(72,148,196,0.28)] scroll-soft">
+              <template x-for="m in caseModEmptyHits" :key="'cm0-' + m.name">
+                <button type="button" class="flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-xs transition hover:bg-white" @click="createCaseFromModule(m)">
+                  <span class="truncate font-bold text-wood-700" x-text="m.name"></span>
+                  <span class="ml-auto shrink-0 rounded-full bg-[#EBF7FE] px-2 py-0.5 text-[11px] font-bold text-ink-soft" x-text="m.count + ' 个点位'"></span>
+                </button>
+              </template>
+              <div x-show="!caseModEmptyHits.length" class="py-4 text-center text-xs text-ink-faint">没有匹配的模块</div>
+            </div>
           </div>
           <div class="mt-5 grid w-full max-w-3xl grid-cols-2 gap-2 text-left sm:grid-cols-3">
             <template x-for="s in caseSteps" :key="'e' + s.n">
@@ -1511,42 +1575,62 @@
               <div class="mb-3.5 flex flex-wrap items-center gap-2">
                 <div class="title"><img class="pic h-6 w-6" src="/static/icons/shell.png" alt="">要测的点位 <span class="rounded-full bg-pond-100 px-2 py-0.5 text-xs font-extrabold text-wood-700" x-show="caseEd?.rows?.length" x-text="caseEd?.rows?.length"></span></div>
                 <span class="subtle">点选胶囊设定本用例期望值（再点取消），点位过多时可一键折叠。</span>
-                <div class="ml-auto flex flex-wrap items-center gap-2">
-                  <button x-show="dictModules.length && caseEd?.old && caseEd?.rows?.length" type="button" class="btn-wood btn-xs" @click="caseEd.modOpen = !caseEd.modOpen">
-                    <img class="pic h-4 w-4" src="/static/icons/dict.png" alt="">按模块导入
-                  </button>
-                  <button x-show="caseEd?.rows?.length > 1" class="btn-ghost btn-xs" @click="toggleAllCaseRows()" x-text="allCaseRowsCollapsed ? '全部展开' : '全部收起'"></button>
+                <div class="ml-auto flex select-none flex-wrap items-center gap-2">
+                  <button x-show="caseEd?.rows?.length > 1" type="button" class="btn-ghost btn-xs" @click="toggleAllCaseRows()" x-text="allCaseRowsCollapsed ? '全部展开' : '全部收起'"></button>
                   <div x-show="canPasteRow" class="inline-flex items-center overflow-hidden rounded-full border-[1.5px] border-sakura-300 bg-sakura-100/95 shadow-[inset_0_1px_0_rgba(255,255,255,0.8)]">
-                    <button class="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-bold text-sakura-700 hover:bg-sakura-200/80" @click="pasteCaseRow()" :title="'粘贴点位 ' + copiedRow?.id + '（含期望值），也可以直接按 Ctrl+V'">
+                    <button type="button" class="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-bold text-sakura-700 hover:bg-sakura-200/80" @click="pasteCaseRow()" :title="'粘贴点位 ' + copiedRow?.id + '（含期望值），也可以直接按 Ctrl+V'">
                       <svg class="ico h-3.5 w-3.5"><use :href="icon('clipboard-paste')"></use></svg>
                       <span class="max-w-[160px] truncate" x-text="'粘贴：' + (eventName(copiedRow?.id) || copiedRow?.id)"></span>
                       <kbd class="rounded-md bg-white/80 px-1 font-mono text-[12px] font-bold text-sakura-600">Ctrl+V</kbd>
                     </button>
-                    <button class="px-2 py-1 text-sakura-600 hover:bg-sakura-200/80 hover:text-sakura-700" title="放弃复制" @click="clearCopiedRow()"><svg class="ico h-3 w-3"><use :href="icon('x')"></use></svg></button>
+                    <button type="button" class="px-2 py-1 text-sakura-600 hover:bg-sakura-200/80 hover:text-sakura-700" title="放弃复制" @click="clearCopiedRow()"><svg class="ico h-3 w-3"><use :href="icon('x')"></use></svg></button>
                   </div>
-                  <input x-ref="caseAddInput" class="input !w-60 !rounded-full !border-[1.5px] !border-pond-200 !bg-pond-50/80 !px-3.5 !py-1 text-xs font-bold text-wood-700 placeholder:text-ink-soft focus:!bg-white" list="evlist" placeholder="＋ 添加点位：输入 ID 或名称" x-model="caseEd.addId" @input="onPickDatalist($event, 'case')" @change="addCaseRow()" @keydown.enter.prevent="addCaseRow(); $event.target.blur()">
-                </div>
-              </div>
-              <!-- 按埋点字典「模块」一键导入整组点位（新建用例时默认展开，不要的点位再手动删） -->
-              <div x-show="dictModules.length && (!caseEd?.old || !caseEd?.rows?.length || caseEd?.modOpen)" class="mb-3.5 rounded-2xl border border-[#DCEEF8] bg-[#F5FBFF] px-3.5 py-2.5">
-                <div class="flex flex-wrap items-center gap-2">
-                  <img class="pic h-5 w-5" src="/static/icons/dict.png" alt="">
-                  <span class="text-sm font-extrabold text-wood-700">按模块一键导入点位</span>
-                  <span class="subtle">点一下就把该模块的所有点位加进来，不需要的点位直接点右侧删除即可</span>
-                  <button x-show="caseEd?.old && caseEd?.rows?.length && caseEd?.modOpen" type="button" class="ml-auto text-xs font-bold text-ink-faint hover:text-wood-700" @click="caseEd.modOpen = false">收起</button>
-                </div>
-                <div class="mt-2 flex flex-wrap gap-1.5">
-                  <template x-for="m in dictModules" :key="'cm-' + m.name">
-                    <button type="button" class="chip border transition"
-                            :class="caseModInCount(m) === m.count ? 'border-[#CDEBC2] bg-[#F1FAEC] text-leaf-700' : 'border-[#CBE6FA] bg-white text-wood-700 hover:border-transparent hover:bg-[#FCDCE6]'"
-                            :title="(m.events || []).map(x => x.name || x.id).join('、')"
-                            @click="importModuleToCase(m)">
-                      <svg x-show="caseModInCount(m) === m.count" class="ico h-3 w-3 text-leaf-600"><use :href="icon('check')"></use></svg>
-                      <svg x-show="caseModInCount(m) < m.count" class="ico h-3 w-3 text-pond-600"><use :href="icon('plus')"></use></svg>
-                      <span x-text="m.name"></span>
-                      <span class="rounded-full bg-white/80 px-1.5 text-[11.5px] font-normal text-ink-soft" x-text="caseModInCount(m) ? (caseModInCount(m) + '/' + m.count) : (m.count + ' 个')"></span>
-                    </button>
-                  </template>
+                  <!-- 按模块选择/搜索导入（几十个模块也清爽好找） -->
+                  <div x-show="dictModules.length" class="relative w-[228px]" @click.outside="caseModOpen = false">
+                    <img class="pic pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2" src="/static/icons/dict.png" alt="">
+                    <input class="input !rounded-full !border-[1.5px] !border-[#CBEBC0] !bg-[#F4FCF0] !py-1.5 !pl-8 !pr-7 text-xs font-bold text-wood-700 placeholder:text-ink-soft focus:!border-leaf-400 focus:!bg-white"
+                           placeholder="按模块导入整组点位…"
+                           x-model="caseModQ" @focus="caseModOpen = true" @input="caseModOpen = true"
+                           @keydown.escape="caseModOpen = false; $event.target.blur()"
+                           @keydown.enter.prevent="pickModuleByEnter(); $event.target.blur()">
+                    <button x-show="caseModQ" type="button" class="absolute right-2 top-1/2 -translate-y-1/2 rounded-full p-0.5 text-ink-faint hover:text-wood-700" @click="caseModQ = ''"><svg class="ico h-3.5 w-3.5"><use :href="icon('x')"></use></svg></button>
+                    <svg x-show="!caseModQ" class="ico pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-ink-faint"><use :href="icon('chevron-down')"></use></svg>
+                    <div x-show="caseModOpen" x-cloak class="pop panel absolute right-0 top-full z-30 mt-1.5 max-h-72 w-[280px] overflow-y-auto !rounded-2xl !bg-cream p-1.5 shadow-[0_14px_32px_-10px_rgba(72,148,196,0.28)] scroll-soft">
+                      <div class="px-2 py-1 text-[11.5px] font-bold text-ink-faint" x-text="'共 ' + dictModules.length + ' 个模块 · 点击即导入全部点位'"></div>
+                      <template x-for="m in caseModHits" :key="'cm-' + m.name">
+                        <button type="button" class="flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-left text-xs transition hover:bg-white"
+                                :title="(m.events || []).map(x => x.name || x.id).join('、')" @click="importModuleToCase(m)">
+                          <span class="min-w-0 flex-1 truncate font-bold text-wood-700" x-text="m.name"></span>
+                          <span class="shrink-0 rounded-full px-2 py-0.5 text-[11px] font-bold"
+                                :class="caseModInCount(m) === m.count ? 'bg-[#EAF8E6] text-leaf-700' : 'bg-[#EBF7FE] text-ink-soft'"
+                                x-text="caseModInCount(m) ? ('已加 ' + caseModInCount(m) + '/' + m.count) : (m.count + ' 点位')"></span>
+                        </button>
+                      </template>
+                      <div x-show="!caseModHits.length" class="py-4 text-center text-xs text-ink-faint">没有匹配的模块</div>
+                    </div>
+                  </div>
+                  <!-- 精致可搜索「添加点位」选择框（替代原生 datalist，文字完整不截断） -->
+                  <div class="relative w-[272px]" @click.outside="caseAddOpen = false">
+                    <svg class="ico pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-pond-600"><use :href="icon('plus')"></use></svg>
+                    <input x-ref="caseAddInput" class="input !rounded-full !border-[1.5px] !border-[#BFE3F9] !bg-[#F3FAFF] !py-1.5 !pl-8 !pr-7 text-xs font-bold text-wood-700 placeholder:text-ink-soft focus:!border-pond-500 focus:!bg-white"
+                           placeholder="添加点位：输入 ID 或名称"
+                           x-model="caseEd.addId" @focus="caseAddOpen = true" @input="caseAddOpen = true"
+                           @keydown.escape="caseAddOpen = false; $event.target.blur()"
+                           @keydown.enter.prevent="addCaseRow(); caseAddOpen = false; $event.target.blur()">
+                    <button x-show="caseEd?.addId" type="button" class="absolute right-2 top-1/2 -translate-y-1/2 rounded-full p-0.5 text-ink-faint hover:text-wood-700" @click="caseEd.addId = ''"><svg class="ico h-3.5 w-3.5"><use :href="icon('x')"></use></svg></button>
+                    <svg x-show="!caseEd?.addId" class="ico pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-ink-faint"><use :href="icon('chevron-down')"></use></svg>
+                    <div x-show="caseAddOpen" x-cloak class="pop panel absolute right-0 top-full z-30 mt-1.5 max-h-72 w-[320px] overflow-y-auto !rounded-2xl !bg-cream p-1.5 shadow-[0_14px_32px_-10px_rgba(72,148,196,0.28)] scroll-soft">
+                      <template x-for="ev in caseAddHits" :key="'ca-' + ev.id">
+                        <button type="button" class="flex w-full items-center gap-2 rounded-xl px-2.5 py-1.5 text-left text-xs transition hover:bg-white"
+                                :class="ev.added && 'opacity-55'" @click="pickAddEvent(ev.id)">
+                          <span class="min-w-0 flex-1 truncate font-bold text-wood-700" x-text="ev.name || '未命名点位'"></span>
+                          <span class="shrink-0 font-mono text-[11.5px] text-ink-soft" x-text="ev.id"></span>
+                          <span x-show="ev.added" class="shrink-0 rounded-full bg-[#EAF8E6] px-1.5 text-[10.5px] font-bold text-leaf-700">已加</span>
+                        </button>
+                      </template>
+                      <div x-show="!caseAddHits.length" class="py-4 text-center text-xs text-ink-faint">没找到匹配点位，直接输入完整数字 ID 按回车可添加</div>
+                    </div>
+                  </div>
                 </div>
               </div>
               <!-- 批量设置：只列需要人工确认（看操作）的字段，一次点选，所有包含该字段的点位都生效 -->
@@ -1621,7 +1705,7 @@
                         <span>次数 ≥</span>
                         <input class="input !w-14 !rounded-full !border-[#CBEAFB] !px-2 !py-0.5 text-center text-xs" type="number" min="0" x-model="row.min" @input="caseEd.dirty = true">
                         <span>≤</span>
-                        <input class="input !w-14 !rounded-full !border-[#CBEAFB] !px-2 !py-0.5 text-center text-xs" type="number" min="0" x-model="row.max" @input="caseEd.dirty = true" placeholder="不限">
+                        <input class="input !w-16 !rounded-full !border-[#CBEAFB] !px-2 !py-0.5 text-center text-xs" type="number" min="0" x-model="row.max" @input="caseEd.dirty = true" placeholder="不限">
                         <button class="btn-ghost btn-xs !px-1.5 hover:!bg-pond-50 hover:!text-wood-700" title="复制该点位和期望值，到其他用例按 Ctrl+V 粘贴" @click.stop="copyCaseRow(row)"><svg class="ico h-3.5 w-3.5"><use :href="icon('copy')"></use></svg></button>
                         <button class="btn-ghost btn-xs !px-1.5 hover:!bg-berry-50 hover:!text-berry-600" title="从用例移除该点位" @click.stop="removeCaseRow(ri)"><svg class="ico h-3.5 w-3.5"><use :href="icon('trash-2')"></use></svg></button>
                         <button class="btn-ghost btn-xs !px-1.5" :title="row.collapsed ? '展开字段期望' : '收起字段期望'" @click.stop="row.collapsed = !row.collapsed"><svg class="ico h-3.5 w-3.5 transition" :class="row.collapsed ? '' : 'rotate-90'"><use :href="icon('chevron-right')"></use></svg></button>
@@ -1684,44 +1768,35 @@
             </div>
             <input x-show="(st?.reports?.length || 0) > 5" class="input !py-1 text-xs" placeholder="按用例名或时间筛选…" x-model="rep.listQ">
           </div>
-          <!-- 按日期分组 + 去掉重复小图标，几十上百条也清爽耐看 -->
-          <div class="flex-1 space-y-3 overflow-y-auto pr-1 scroll-soft">
-            <template x-for="grp in groupedReports" :key="grp.date">
-              <div>
-                <div class="mb-1 flex items-center gap-2 px-1.5 text-[13px] font-bold text-ink-faint">
-                  <span class="tabular-nums" x-text="grp.date"></span>
-                  <span class="h-px flex-1 bg-[#ECF5FB]"></span>
-                </div>
-                <div class="space-y-1.5">
-                  <template x-for="r in grp.items" :key="r.name">
-                    <div class="group relative cursor-pointer overflow-hidden rounded-2xl border px-2.5 py-2 text-left transition"
-                         :class="rep.cur?.name === r.name ? 'border-[#8ED3F9] bg-white shadow-soft ring-2 ring-[#E1F4FE]' : 'border-transparent bg-white/70 hover:border-[#DFEFFA] hover:bg-white'"
-                         @click="openReport(r.name)">
-                      <!-- 右下角淡化融入背景的状态图标（通过 = 嫩芽，失败 = 凋落粉花，待确认 = 淡紫花苞） -->
-                      <img class="pointer-events-none select-none absolute right-1.5 bottom-1 z-0 h-[30px] w-[30px] object-contain opacity-[0.24] transition-opacity duration-200 group-hover:opacity-[0.34]"
-                           :src="pic(!r.summary.ok ? 'fail' : (r.summary.ask || r.summary.warn ? 'bud' : 'sprout'))"
-                           alt="">
-                      <div class="relative z-10 flex items-center gap-1.5">
-                        <span class="whitespace-nowrap text-[14.5px] font-extrabold text-wood-700 tabular-nums" :title="r.time" x-text="r.clock"></span>
-                        <span class="ml-auto max-w-[130px] truncate rounded-full bg-[#EBF7FE] px-2 py-0.5 text-[12px] font-bold text-wood-700" x-show="r.case" :title="r.case" x-text="r.case"></span>
-                        <button class="hidden shrink-0 rounded-lg bg-white/90 p-1 text-ink-faint transition hover:bg-berry-50 hover:text-berry-600 group-hover:inline-flex" :class="!r.case && 'ml-auto'" title="删除这份报告" @click.stop="deleteReport(r.name)"><svg class="ico h-3.5 w-3.5"><use :href="icon('trash-2')"></use></svg></button>
-                      </div>
-                      <div class="relative z-10 mt-1 flex flex-wrap items-center gap-1 text-[13px] tabular-nums text-ink-soft">
-                        <template x-if="r.summary.ok && !r.summary.ask && !r.summary.warn">
-                          <span class="font-bold text-leaf-600" x-text="'全部通过 · ' + r.summary.pass"></span>
-                        </template>
-                        <template x-if="!r.summary.ok || r.summary.ask || r.summary.warn">
-                          <div class="flex flex-wrap items-center gap-1">
-                            <span x-text="'通过 ' + r.summary.pass"></span>
-                            <span class="text-ink-faint" x-show="r.summary.fail">·</span>
-                            <span class="font-bold text-berry-600" x-show="r.summary.fail" x-text="'失败 ' + r.summary.fail"></span>
-                            <span class="text-ink-faint" x-show="r.summary.ask">·</span>
-                            <span x-show="r.summary.ask" x-text="'待确认 ' + r.summary.ask"></span>
-                          </div>
-                        </template>
-                      </div>
+          <!-- 扁平报告卡片列表：无日期分组，左状态圆点 + 完整日期时间 + 精简柔和排版 -->
+          <div class="flex-1 space-y-2 overflow-y-auto pr-1 scroll-soft">
+            <template x-for="r in filteredReports" :key="r.name">
+              <div class="group relative flex cursor-pointer items-center gap-2.5 overflow-hidden rounded-2xl border px-3 py-2.5 text-left transition"
+                   :class="rep.cur?.name === r.name ? 'border-[#8ED3F9] bg-white shadow-soft ring-2 ring-[#E1F4FE]' : 'border-transparent bg-white/75 hover:border-[#DFEFFA] hover:bg-white'"
+                   @click="openReport(r.name)">
+                <!-- 右下角淡化小图标（缩小一半：15px） -->
+                <img class="pointer-events-none select-none absolute right-2 bottom-1.5 z-0 h-[15px] w-[15px] object-contain opacity-[0.26] transition-opacity duration-200 group-hover:opacity-[0.38]"
+                     :src="pic(!r.summary.ok ? 'fail' : (r.summary.ask || r.summary.warn ? 'bud' : 'sprout'))"
+                     alt="">
+                <!-- 左侧状态圆点：绿=通过，胡萝卜橙=失败，紫=待确认 -->
+                <span class="relative z-10 h-2.5 w-2.5 shrink-0 rounded-full ring-2 ring-white"
+                      :class="!r.summary.ok ? 'bg-[#F28C4B]' : (r.summary.ask || r.summary.warn ? 'bg-[#9A7FD0]' : 'bg-[#63A950]')"></span>
+                <div class="relative z-10 min-w-0 flex-1">
+                  <div class="flex items-center gap-1.5">
+                    <span class="whitespace-nowrap text-[14px] font-normal text-[#b4a69a] tabular-nums" :title="r.time" x-text="r.time"></span>
+                    <button class="ml-auto hidden shrink-0 rounded-lg bg-white/90 p-1 text-ink-faint transition hover:bg-berry-50 hover:text-berry-600 group-hover:inline-flex" title="删除这份报告" @click.stop="deleteReport(r.name)"><svg class="ico h-3.5 w-3.5"><use :href="icon('trash-2')"></use></svg></button>
+                  </div>
+                  <div class="mt-1 flex items-center gap-1.5">
+                    <div class="flex min-w-0 flex-wrap items-center gap-1 text-[13px] font-bold text-[#856241] tabular-nums">
+                      <template x-if="r.summary.ok && !r.summary.ask && !r.summary.warn">
+                        <span x-text="'全部通过 · ' + r.summary.pass"></span>
+                      </template>
+                      <template x-if="!r.summary.ok || r.summary.ask || r.summary.warn">
+                        <span x-text="'通过 ' + r.summary.pass + (r.summary.fail ? ' · 失败 ' + r.summary.fail : '') + (r.summary.ask ? ' · 待确认 ' + r.summary.ask : '')"></span>
+                      </template>
                     </div>
-                  </template>
+                    <span class="ml-auto max-w-[116px] shrink-0 truncate rounded-full bg-[#F1F8FD] px-2 py-0.5 text-[12px] font-normal text-[#86776b]" x-show="r.case" :title="r.case" x-text="r.case"></span>
+                  </div>
                 </div>
               </div>
             </template>
@@ -1802,7 +1877,7 @@
               <div class="panel-pad">
                 <div class="mb-2 flex items-center justify-between"><div class="title"><img class="pic h-5 w-5" src="/static/icons/cases.png" alt=""><span x-text="rep.cur.meta.case ? '用例覆盖：' + rep.cur.meta.case : '点位覆盖'"></span></div><span class="subtle">点某一行只看它的明细</span></div>
                 <div class="max-h-72 overflow-auto rounded-2xl border border-wood-100 bg-white/80 scroll-soft"><table class="tbl"><thead><tr><th class="min-w-[140px]">点位</th><th>次数</th><th>结果</th></tr></thead><tbody>
-                  <template x-for="c in rep.cur.coverage"><tr class="cursor-pointer transition" :class="[c.status === 'FAIL' && 'row-FAIL', rep.evId === c.id ? '!bg-[#EAF7FE] shadow-[inset_3px_0_0_#7CC7F2]' : 'hover:bg-[#F4FAFF]']" :title="c.count ? (rep.evId === c.id ? '再点一次取消筛选' : '点击在下方只看这个点位的明细') : '本轮未触发'" @click="focusCoverage(c)"><td><div class="flex items-start gap-2"><input type="checkbox" class="mt-1" :checked="noteChecked(c.id)" title="这个点位没问题，勾掉（和右侧测试清单同步）" @click.stop @change="toggleNoteCheck({ id: c.id, name: c.name })"><div class="min-w-0"><div class="font-bold text-wood-700" :class="noteChecked(c.id) && 'text-ink-faint line-through decoration-[#A3D490] decoration-2'" x-text="c.name || '未命名'"></div><div><span class="id-copy rounded-md px-1 font-mono text-[13px] text-ink-soft" :data-copy-id="c.id" title="点击复制点位 ID" x-text="c.id"></span></div></div></div></td><td class="font-mono font-bold" x-text="c.count"></td><td><span class="chip" :class="'st-' + c.status" x-text="{PASS: '已触发', FAIL: '未满足', MISS: '未触发'}[c.status]"></span><div class="subtle mt-0.5" x-text="c.expect"></div></td></tr></template>
+                  <template x-for="c in rep.cur.coverage"><tr class="cursor-pointer transition" :class="[c.status === 'FAIL' && 'row-FAIL', rep.evId === c.id ? '!bg-[#EAF7FE] shadow-[inset_3px_0_0_#7CC7F2]' : 'hover:bg-[#F4FAFF]']" :title="c.count ? (rep.evId === c.id ? '再点一次取消筛选' : '点击在下方只看这个点位的明细') : '本轮未触发'" @click="focusCoverage(c)"><td><div class="font-bold text-wood-700" x-text="c.name || '未命名'"></div><div><span class="id-copy rounded-md px-1 font-mono text-[13px] text-ink-soft" :data-copy-id="c.id" title="点击复制点位 ID" x-text="c.id"></span></div></td><td class="font-mono font-bold" x-text="c.count"></td><td><span class="chip" :class="'st-' + c.status" x-text="{PASS: '已触发', FAIL: '未满足', MISS: '未触发'}[c.status]"></span><div class="subtle mt-0.5" x-text="c.expect"></div></td></tr></template>
                 </tbody></table></div>
               </div>
               <div class="panel-pad">
@@ -2126,60 +2201,92 @@
   </div>
 </div>
 
-<!-- ================= 悬浮用例清单小窗（参考 JSON 预览弹窗风格，窄版精简、可拖拽、可收起） ================= -->
+<!-- ================= 动森海岛靓丽风「用例清单」固定长卡片（恢复胡萝卜标记、全选按钮、可拖拽、可收起） ================= -->
 <div x-show="noteShow" x-cloak>
-  <!-- 收起时：停靠在右边缘的轻量书签 -->
+  <!-- 收起时：停靠右边缘的海岛胡萝卜书签 -->
   <button type="button" x-show="!noteOpen" x-transition.opacity
-          class="fixed bottom-20 right-0 z-30 flex flex-col items-center gap-1 rounded-l-2xl border-2 border-r-0 border-[#DCEEF8] bg-cream/95 py-2.5 pl-2 pr-1.5 text-wood-700 shadow-soft transition hover:bg-white hover:pr-2.5"
+          class="fixed right-0 top-[260px] z-30 flex flex-col items-center gap-1.5 rounded-l-2xl border-2 border-r-0 border-white bg-gradient-to-b from-[#E5F6FF] via-[#F4FBFF] to-white py-3 pl-2.5 pr-2 text-wood-700 shadow-[-6px_10px_24px_-10px_rgba(72,148,196,0.38)] transition hover:pr-3"
           :title="'展开用例清单（已勾 ' + noteDone + '/' + noteItems.length + '）'"
           @click="setNoteOpen(true)">
-    <img class="pic h-6 w-6 -scale-x-100" src="/static/icons/fold_right.png" alt="展开">
-    <span class="text-[12px] font-black tracking-[0.16em] [writing-mode:vertical-rl]">用例清单</span>
-    <span class="rounded-full bg-[#EAF8E6] px-1.5 text-[10.5px] font-extrabold text-leaf-700 tabular-nums" x-text="noteDone + '/' + noteItems.length"></span>
+    <img class="pic h-6 w-6" src="/static/icons/pin.png" alt="">
+    <span class="text-[12.5px] font-black tracking-[0.18em] [writing-mode:vertical-rl]">用例清单</span>
+    <span class="rounded-full bg-[#DFF4D4] px-1.5 py-0.5 text-[11px] font-extrabold text-[#3C7130] tabular-nums" x-text="noteDone + '/' + noteItems.length"></span>
+    <img class="pic h-5 w-5 -scale-x-100" src="/static/icons/fold_right.png" alt="展开">
   </button>
-  <!-- 展开时：清爽海岛小窗（按住标题栏可任意拖动位置，双击标题栏复位） -->
-  <div x-show="noteOpen" x-transition:enter="transition duration-150 ease-out" x-transition:enter-start="opacity-0 translate-x-4" x-transition:enter-end="opacity-100 translate-x-0"
-       class="panel fixed z-30 flex w-[200px] flex-col overflow-hidden !rounded-2xl !bg-cream !p-0 shadow-[0_14px_34px_-12px_rgba(90,68,46,0.28)]"
+  <!-- 展开时：固定高度动森海岛靓丽卡片（内容区仿 JSON 预览弹窗清爽底色，顶部小胡萝卜标记，超出平滑滚动） -->
+  <div x-show="noteOpen" x-transition:enter="transition duration-200 ease-out" x-transition:enter-start="opacity-0 translate-x-5" x-transition:enter-end="opacity-100 translate-x-0"
+       class="fixed z-30 flex w-[276px] flex-col rounded-[26px] border-2 border-white bg-white/95 shadow-[0_20px_42px_-16px_rgba(72,148,196,0.35),0_4px_0_0_#D8EDF9]"
        :style="notePosStyle">
-    <div class="flex shrink-0 cursor-move select-none items-center gap-2 border-b border-wood-100 bg-cream px-3 py-2"
-         title="按住可拖动小窗位置；双击复位"
+    <!-- 顶部俏皮胡萝卜标记（居中探头，动森海岛灵魂） -->
+    <img class="pic pointer-events-none absolute -top-4 left-1/2 z-20 h-9 w-9 -translate-x-1/2 drop-shadow-[0_3px_4px_rgba(140,86,44,0.22)]" src="/static/icons/pin.png" alt="">
+    <!-- 晴空海岛顶栏（按住可拖动，双击复位） -->
+    <div class="flex shrink-0 cursor-move select-none items-center gap-2 rounded-t-[24px] border-b-2 border-dashed border-[#D8EDF9] bg-gradient-to-b from-[#E5F6FF] via-[#F2FAFF] to-white px-3.5 pb-2.5 pt-5"
+         title="按住标题栏可任意拖动位置；双击复位"
          @mousedown="startDragNote($event)" @dblclick="note.x = null; note.y = null">
-      <img class="pic h-5 w-5" src="/static/icons/cases.png" alt="">
+      <img class="pic h-7 w-7" src="/static/icons/cases.png" alt="">
       <div class="min-w-0 flex-1">
         <div class="flex items-center gap-1.5">
-          <span class="text-[12.5px] font-black leading-none text-wood-700">用例清单</span>
-          <span class="rounded-full bg-[#EAF8E6] px-1.5 py-0.5 text-[10.5px] font-extrabold leading-none text-leaf-700 tabular-nums" x-text="noteDone + '/' + noteItems.length"></span>
+          <span class="text-[14px] font-black leading-none text-wood-700">用例清单</span>
+          <span class="rounded-full bg-[#DFF4D4] px-2 py-0.5 text-[11px] font-extrabold leading-none text-[#3C7130] tabular-nums" x-text="noteDone + '/' + noteItems.length"></span>
         </div>
-        <div class="mt-0.5 truncate text-[11px] text-ink-soft" :title="noteTitle" x-text="noteTitle"></div>
+        <div class="mt-1 truncate text-[11.5px] font-bold text-ink-soft" :title="noteTitle" x-text="noteTitle"></div>
       </div>
       <button type="button"
-              class="grid h-8 w-8 shrink-0 place-items-center rounded-xl border border-[#E5D8C5] bg-white shadow-sm transition hover:border-[#F5C2D4] hover:bg-[#FFF5F9] active:translate-y-0.5"
+              class="grid h-9 w-9 shrink-0 place-items-center rounded-2xl border-2 border-[#DCEEF8] bg-white shadow-[0_2px_0_#CBE4F5] transition hover:-translate-y-0.5 hover:border-[#F5C2D4] hover:bg-[#FFF5F9] active:translate-y-0"
               title="向右收起清单" @click="setNoteOpen(false)">
         <img class="pic h-6 w-6" src="/static/icons/fold_right.png" alt="收起">
       </button>
     </div>
-    <div class="min-h-0 flex-1 space-y-0.5 overflow-y-auto bg-white/85 px-2 py-1.5 scroll-soft">
-      <template x-for="it in noteItems" :key="'n-' + it.id">
-        <div class="flex items-start gap-1.5 rounded-xl px-1.5 py-1 transition"
-             :class="noteChecked(it.id) ? 'bg-[#F1FAEC]' : 'hover:bg-[#F4FAFF]'">
-          <input type="checkbox" class="chk-xs mt-0.5" :checked="noteChecked(it.id)" @change="toggleNoteCheck(it)" :title="noteChecked(it.id) ? '取消勾选' : '核对无误，勾掉'">
-          <button type="button" class="min-w-0 flex-1 text-left" @click="noteGo(it)" :title="(it.name || it.id) + '（点击定位）'">
-            <span class="block truncate text-[11.5px] font-bold leading-snug transition"
-                  :class="noteChecked(it.id) ? 'text-ink-faint line-through decoration-[#95CE80]' : 'text-wood-700'"
-                  x-text="(it.idx + 1) + '. ' + (it.name || '未命名点位')"></span>
-            <span class="mt-0.5 flex items-center gap-1">
-              <span class="code id-copy !rounded-md !px-1 !py-0 !text-[10.5px]" :data-copy-id="it.id" title="点击复制点位 ID" x-text="it.id"></span>
-              <span class="ml-auto shrink-0 rounded-full px-1.5 text-[10px] font-bold"
-                    :class="{ MISS: 'bg-[#F2F6FA] text-ink-faint', PASS: 'bg-[#E3F6E5] text-[#2F7D44]', FAIL: 'bg-[#FFE6EE] text-[#C24669]', ASK: 'bg-[#E1F4FE] text-wood-700', UNKNOWN: 'bg-[#F2F6FA] text-ink-soft' }[it.st]"
-                    x-text="noteStText(it.st) + (it.n ? '·' + it.n : '')"></span>
-            </span>
-          </button>
-        </div>
-      </template>
+    <!-- 全选与触发统计子栏 -->
+    <div class="flex shrink-0 items-center justify-between border-b border-[#ECF5FB] bg-[#FAFDFE] px-3.5 py-2 text-[12px]">
+      <label class="inline-flex cursor-pointer items-center gap-1.5 font-extrabold text-wood-700 transition hover:text-leaf-700">
+        <input type="checkbox" class="chk-xs" :checked="noteAllChecked" @change="toggleNoteSelectAll()">
+        <span x-text="noteAllChecked ? '取消全选' : '全选'"></span>
+      </label>
+      <span class="inline-flex items-center gap-1 rounded-full bg-[#EBF7FE] px-2 py-0.5 text-[11px] font-bold text-wood-700 tabular-nums">
+        <span class="h-1.5 w-1.5 rounded-full" :class="noteHit === noteItems.length ? 'bg-[#63A950]' : 'bg-[#6BC6F5]'"></span>
+        <span x-text="'已触发 ' + noteHit + '/' + noteItems.length"></span>
+      </span>
     </div>
-    <div x-show="noteDone" class="flex shrink-0 items-center justify-between border-t border-wood-100 bg-cream px-3 py-1 text-[11px] text-ink-soft">
-      <span x-text="'已核对 ' + noteDone + ' 项'"></span>
-      <button type="button" class="font-bold text-ink-faint hover:text-berry-600" @click="clearNoteChecks()">重置</button>
+    <!-- 固定长高度内容滚动区（不管 3 条还是 30 条都舒展大气，超出平滑滑动） -->
+    <div class="flex min-h-0 flex-1 flex-col overflow-y-auto bg-gradient-to-b from-white via-white to-[#F7FCFF] px-2.5 py-2 scroll-soft">
+      <div class="space-y-1.5">
+        <template x-for="it in noteItems" :key="'n-' + it.id">
+          <div class="group flex items-start gap-2 rounded-2xl border px-2.5 py-2 transition"
+               :class="noteChecked(it.id) ? 'border-[#CDEBC2] bg-[#F3FBF0]' : 'border-[#EAF4FB] bg-white shadow-[0_2px_8px_-6px_rgba(72,148,196,0.22)] hover:border-[#C5E5FA] hover:bg-[#F7FCFF]'">
+            <input type="checkbox" class="chk-xs mt-1" :checked="noteChecked(it.id)" @change="toggleNoteCheck(it)" :title="noteChecked(it.id) ? '取消勾选' : '核对无误，勾掉'">
+            <button type="button" class="min-w-0 flex-1 text-left" @click="noteGo(it)" :title="(it.name || it.id) + '（点击定位）'">
+              <div class="flex items-center gap-1.5">
+                <span class="grid h-4 w-4 shrink-0 place-items-center rounded-full text-[10px] font-black"
+                      :class="noteChecked(it.id) ? 'bg-[#63A950] text-white' : 'bg-[#EBF7FE] text-wood-700'"
+                      x-text="it.idx + 1"></span>
+                <span class="truncate text-[12.5px] font-extrabold leading-snug transition"
+                      :class="noteChecked(it.id) ? 'text-ink-faint line-through decoration-[#95CE80] decoration-2' : 'text-wood-700'"
+                      x-text="it.name || '未命名点位'"></span>
+              </div>
+              <div class="mt-1 flex items-center gap-1.5">
+                <span class="code id-copy !rounded-md !px-1.5 !py-0 !text-[11px]" :data-copy-id="it.id" title="点击复制点位 ID" x-text="it.id"></span>
+                <span class="ml-auto shrink-0 rounded-full px-1.5 py-0.5 text-[10.5px] font-bold leading-none"
+                      :class="{ MISS: 'bg-[#F3EFE8] text-ink-faint', PASS: 'bg-[#E3F6E5] text-[#2F7D44]', FAIL: 'bg-[#FFE6EE] text-[#C24669]', ASK: 'bg-[#DFF3FE] text-wood-700', UNKNOWN: 'bg-[#F3EFE8] text-ink-soft' }[it.st]"
+                      x-text="noteStText(it.st) + (it.n ? ' ×' + it.n : '')"></span>
+              </div>
+            </button>
+          </div>
+        </template>
+      </div>
+      <!-- 条目较少时底部的海岛留白陪伴点缀 -->
+      <div class="mt-auto flex flex-col items-center gap-1 pb-2 pt-6 text-center opacity-60" x-show="noteItems.length <= 7">
+        <img class="pic h-9 w-9 opacity-70" src="/static/icons/palm.png" alt="">
+        <span class="text-[11px] font-bold text-ink-faint">核对无误的点位就勾掉吧～</span>
+      </div>
+    </div>
+    <!-- 底部海岛状态条 -->
+    <div class="flex shrink-0 items-center justify-between rounded-b-[24px] border-t border-[#E6F3FC] bg-[#F4FAFF] px-3.5 py-2 text-[11.5px] font-bold text-ink-soft">
+      <span class="inline-flex items-center gap-1" :class="noteAllChecked && 'text-leaf-700'">
+        <img class="pic h-4 w-4" :src="pic(noteAllChecked ? 'sprout' : 'shell')" alt="">
+        <span x-text="noteAllChecked ? '全部核对完成啦！' : ('已核对 ' + noteDone + ' / ' + noteItems.length + ' 项')"></span>
+      </span>
+      <button type="button" x-show="noteDone" class="text-ink-faint transition hover:text-berry-600" @click="clearNoteChecks()">清空</button>
     </div>
   </div>
 </div>
@@ -2480,10 +2587,10 @@
 </div>
 
 <!-- ================= 数据源 JSON 预览弹窗 ================= -->
-<div x-show="dsPreview" x-cloak class="fixed inset-0 z-40 flex items-start justify-center overflow-y-auto bg-wood-700/30 p-6" @keydown.escape.window="dsPreview = null">
+<div x-show="dsPreview" x-cloak class="fixed inset-0 z-40 flex items-start justify-center overflow-y-auto bg-wood-700/35 p-6 backdrop-blur-[2px]" @keydown.escape.window="dsPreview = null">
   <template x-if="dsPreview">
-    <div class="pop panel flex max-h-[calc(100vh-3rem)] w-full max-w-4xl flex-col !bg-cream p-0" @click.outside="dsPreview = null">
-      <div class="flex shrink-0 items-center gap-2 border-b-2 border-wood-100 px-6 py-4">
+    <div class="pop panel flex max-h-[calc(100vh-3rem)] w-full max-w-4xl flex-col !bg-[#FFFEFB] p-0 shadow-2xl" @click.outside="dsPreview = null">
+      <div class="flex shrink-0 items-center gap-2 border-b-2 border-[#DFF0FA] bg-[#FFFEFB] px-6 py-4 rounded-t-3xl">
         <img class="pic h-7 w-7" src="/static/icons/yaml.png" alt="">
         <div class="min-w-0">
           <div class="title font-mono" x-text="dsPreview.title"></div>
@@ -2494,7 +2601,7 @@
           <button class="btn-ghost" @click="dsPreview = null"><svg class="ico h-4 w-4"><use :href="icon('x')"></use></svg></button>
         </div>
       </div>
-      <pre class="min-h-0 flex-1 overflow-auto bg-white/80 p-5 font-mono text-xs leading-relaxed text-wood-700 scroll-soft" style="min-height:45vh" x-text="dsPreview.text"></pre>
+      <pre class="min-h-0 flex-1 overflow-auto rounded-b-3xl bg-white p-5 font-mono text-xs leading-relaxed text-wood-700 scroll-soft" style="min-height:45vh" x-text="dsPreview.text"></pre>
     </div>
   </template>
 </div>

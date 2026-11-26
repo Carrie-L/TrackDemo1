@@ -3,12 +3,23 @@
 @tailwind utilities;
 
 @layer base {
-  html { font-size: 14px; caret-color: transparent; }
-  /* 文字可以选中复制，但不出现闪烁光标、也不把鼠标变成 I 形；按钮 / 可点击卡片不被误选 */
-  body { @apply font-sans text-sm text-ink antialiased; -webkit-user-select: text; user-select: text; caret-color: transparent; cursor: default; }
-  button, summary, label, select, img, svg, nav, [role="button"], .btn, .cursor-pointer { -webkit-user-select: none; user-select: none; }
-  .code, code, pre, kbd, .tbl td, .selectable { -webkit-user-select: text; user-select: text; }
-  input, textarea, [contenteditable="true"] { -webkit-user-select: text; user-select: text; caret-color: #664A30; cursor: text; }
+  html { font-size: 14px; caret-color: transparent !important; }
+  /* 非输入区域绝不出现游离光标，同时表格/正文/代码/日志均支持正常拖选复制 */
+  body { @apply font-sans text-sm text-ink antialiased; -webkit-user-select: none; user-select: none; caret-color: transparent !important; cursor: default; }
+  *:not(input):not(textarea):not([contenteditable="true"]) { caret-color: transparent !important; }
+  p, h1, h2, h3, h4, pre, code, .code, .tbl td, .tbl th, .selectable, .yaml, .subtle {
+    -webkit-user-select: text; user-select: text; cursor: default; caret-color: transparent !important;
+  }
+  button, button *, summary, summary *, label, label *, select, img, svg, nav, nav *, [role="button"], .btn, .btn *, .chip, .chip *, .cursor-pointer {
+    -webkit-user-select: none; user-select: none;
+  }
+  .code, code, pre, .tbl td, .selectable { -webkit-user-select: text !important; user-select: text !important; }
+  input:not([type="checkbox"]):not([type="radio"]), textarea, [contenteditable="true"] {
+    -webkit-user-select: text; user-select: text; caret-color: transparent; cursor: text;
+  }
+  input:not([type="checkbox"]):not([type="radio"]):focus, textarea:focus, [contenteditable="true"]:focus {
+    caret-color: #664A30 !important;
+  }
   input[type="checkbox"]:not(.hidden) {
     -webkit-appearance: none;
     appearance: none;

@@ -62,11 +62,11 @@ function app() {
     fm: null, ai: null,
     evd: { entries: [], docs: [], untracked: [], docsDir: '', modules: [], mod: '', q: '', filter: 'all', open: null, loaded: false, overwrite: false, result: null, limit: 100 },
     ds: { files: [], dir: '', pkg: '', dbs: [], devDbs: null, pasteName: '', pasteText: '', showPaste: false, log: '', advanced: false, drag: false, presets: [], histOpen: {}, keysOpen: {} },
-    dbv: { db: '', dbs: [], path: '', size: 0, tables: [], q: '', cur: '', open: {}, sql: '', res: null, err: '', offset: 0, limit: 100, tableHist: {}, resQ: '', sortCol: -1, sortAsc: true, loading: false, opener: false },
+    dbv: { db: '', dbs: [], path: '', size: 0, tables: [], q: '', cur: '', open: {}, sql: '', res: null, err: '', offset: 0, limit: 100, tableHist: {}, histScope: 'table', mode: '', selCols: [], colQ: '', colMode: 'select', resQ: '', sortCol: -1, sortAsc: true, loading: false, opener: false },
     apiCap: { running: false, endpoint: '', name: '', tag: '', clear: true, lines: 0, captured: [], error: '', showText: false, rawLog: '' },
     dsPreview: null,
     note: { openLive: null, openRep: null, checks: {}, x: null, y: null }, vw: window.innerWidth,
-    srcEd: null, caseEd: null, caseFilter: '', copiedRow: null, settingsEd: null, pullLog: '', caseDrafts: {}, caseFlash: '', caseView: false,
+    srcEd: null, caseEd: null, caseFilter: '', caseModQ: '', caseModOpen: false, caseModEmptyQ: '', caseModEmptyOpen: false, caseAddOpen: false, copiedRow: null, settingsEd: null, pullLog: '', caseDrafts: {}, caseFlash: '', caseView: false,
     rep: { list: [], cur: null, view: 'bad', showUnk: false, q: '', expandAll: false, listFilter: 'all', listQ: '', evId: '' }, rv: null, yv: null,
     srvLog: null, quitAsk: false, srvOff: false,
     checkForm: { path: '', content: '', fileName: '', caseName: '' },
@@ -1502,14 +1502,35 @@ function app() {
     },
     // 先收起编辑器模板、下一帧再清空数据，避免 Alpine 子绑定读到 null 报错
     closeCaseEd() { this.caseView = false; this.$nextTick(() => { if (!this.caseView) this.caseEd = null; }); },
-    // ---- 按埋点字典「模块」一键导入点位到测试用例 ----
+    // ---- 按埋点字典「模块」搜索下拉导入 + 精致点位搜索下拉 ----
     get dictModules() { return this.evd?.modules?.length ? this.evd.modules : (this.st?.evdict?.modules || []); },
+    filterModules(q) {
+      q = String(q || '').trim().toLowerCase();
+      if (!q) return this.dictModules;
+      return this.dictModules.filter(m => m.name.toLowerCase().includes(q)
+        || (m.events || []).some(e => (e.name || '').toLowerCase().includes(q) || String(e.id).includes(q)));
+    },
+    get caseModHits() { return this.filterModules(this.caseModQ); },
+    get caseModEmptyHits() { return this.filterModules(this.caseModEmptyQ); },
+    get caseAddHits() {
+      const q = String(this.caseEd?.addId || '').trim().toLowerCase();
+      const exist = new Set((this.caseEd?.rows || []).map(r => String(r.id)));
+      const list = !q ? this.evPickList : this.evPickList.filter(e => String(e.id).includes(q) || (e.name || '').toLowerCase().includes(q));
+      return list.slice(0, 60).map(e => ({ ...e, added: exist.has(String(e.id)) }));
+    },
+    pickAddEvent(id) {
+      if (!this.caseEd) return;
+      this.caseEd.addId = String(id);
+      this.caseAddOpen = false;
+      this.addCaseRow();
+    },
     caseModInCount(mod) {
       const ids = new Set((this.caseEd?.rows || []).map(r => String(r.id)));
       return (mod?.ids || []).filter(id => ids.has(String(id))).length;
     },
     importModuleToCase(mod) {
       const c = this.caseEd; if (!c || !mod) return;
+      this.caseModOpen = false; this.caseModQ = '';
       const exist = new Set(c.rows.map(r => String(r.id)));
       const toAdd = (mod.ids || []).map(String).filter(id => !exist.has(id));
       if (!toAdd.length) return this.toast(`「${mod.name}」的 ${mod.count} 个点位已经都在当前用例里啦`, 'warn');
@@ -1520,13 +1541,19 @@ function app() {
       this.toast(`已导入「${mod.name}」的 ${toAdd.length} 个点位，不需要的点右侧删除即可`, 'ok');
       this.act(`按模块「${mod.name}」导入 ${toAdd.length} 个点位到用例「${c.name || '新用例'}」`);
     },
+    pickModuleByEnter() {
+      const hits = this.caseModHits;
+      if (hits.length) this.importModuleToCase(hits[0]);
+      else this.toast('没找到匹配的模块', 'warn');
+    },
     createCaseFromModule(modOrName) {
       const mod = typeof modOrName === 'string' ? this.dictModules.find(m => m.name === modOrName) : modOrName;
       if (!mod) return;
+      this.caseModEmptyOpen = false; this.caseModEmptyQ = '';
       this.openCase('', { fresh: true });
       this.$nextTick(() => this.importModuleToCase(mod));
     },
-    // ---- 右侧精简用例清单小窗（参考 JSON 预览弹窗风格，可拖拽 / 可收起） ----
+    // ---- 右侧动森海岛风「用例清单」固定长卡片（可拖拽 / 可收起 / 支持全选） ----
     get noteKey() {
       if (this.page === 'live') return 'case:' + (this.live.caseName || '临时清单');
       if (this.page === 'reports' && this.rep.cur) return 'rep:' + this.rep.cur.name;
@@ -1553,8 +1580,8 @@ function app() {
     },
     get noteShow() { return (this.page === 'live' || this.page === 'reports') && this.noteItems.length > 0; },
     get noteOpen() {
-      if (this.page === 'live') return this.note.openLive !== null ? this.note.openLive : (this.vw >= 2080 || !this.live.results.length);
-      if (this.page === 'reports') return this.note.openRep !== null ? this.note.openRep : (this.vw >= 2080);
+      if (this.page === 'live') return this.note.openLive !== null ? this.note.openLive : (this.vw >= 1980 || !this.live.results.length);
+      if (this.page === 'reports') return this.note.openRep !== null ? this.note.openRep : (this.vw >= 1980);
       return false;
     },
     setNoteOpen(v) {
@@ -1562,12 +1589,13 @@ function app() {
       else if (this.page === 'reports') this.note.openRep = v;
     },
     get notePosStyle() {
+      const h = 'height: calc(100vh - 136px); min-height: 460px; max-height: 780px;';
       if (this.note.x === null || this.note.y === null) {
-        return 'max-height: min(430px, calc(100vh - 395px)); left: min(calc(100vw - 210px), calc(50vw + 852px)); bottom: 64px; top: auto; right: auto;';
+        return `${h} left: min(calc(100vw - 290px), calc(50vw + 856px)); top: 86px; right: auto;`;
       }
-      const cx = Math.max(8, Math.min(this.vw - 210, this.note.x));
-      const cy = Math.max(12, Math.min((window.innerHeight || 900) - 160, this.note.y));
-      return `max-height: calc(100vh - 180px); left:${cx}px; top:${cy}px; bottom:auto; right:auto;`;
+      const cx = Math.max(8, Math.min(this.vw - 284, this.note.x));
+      const cy = Math.max(12, Math.min((window.innerHeight || 900) - 200, this.note.y));
+      return `${h} left:${cx}px; top:${cy}px; right:auto;`;
     },
     startDragNote(ev) {
       if (ev.button !== 0 || ev.target?.closest?.('button')) return;
@@ -1588,9 +1616,21 @@ function app() {
       this.note.checks = { ...this.note.checks, [k]: on ? [...cur, id] : cur.filter(x => x !== id) };
       this._saveNote();
       if (on) this.act(`清单勾掉点位 ${id}「${it.name || ''}」（${this.noteTitle}）`);
-      if (on && this.noteDone === this.noteItems.length) this.toast('清单全部勾完啦，辛苦了～', 'ok');
+      if (on && this.noteDone === this.noteItems.length) this.toast('清单全部核对完成啦，辛苦了～', 'ok');
     },
     get noteDone() { return this.noteItems.filter(it => this.noteChecked(it.id)).length; },
+    get noteHit() { return this.noteItems.filter(it => it.n > 0).length; },
+    get noteAllChecked() { return this.noteItems.length > 0 && this.noteDone === this.noteItems.length; },
+    toggleNoteSelectAll() {
+      const k = this.noteKey; if (!k) return;
+      if (this.noteAllChecked) {
+        const c = { ...this.note.checks }; delete c[k]; this.note.checks = c; this._saveNote();
+      } else {
+        this.note.checks = { ...this.note.checks, [k]: this.noteItems.map(it => String(it.id)) };
+        this._saveNote();
+        this.toast(`已全选本清单全部 ${this.noteItems.length} 个点位`, 'ok');
+      }
+    },
     clearNoteChecks() { const k = this.noteKey; const c = { ...this.note.checks }; delete c[k]; this.note.checks = c; this._saveNote(); },
     noteGo(it) {
       if (this.page === 'reports') return it.cov && this.focusCoverage(it.cov);
@@ -2049,43 +2089,109 @@ function app() {
       return this.dbv.cur || '__all__';
     },
     _saveDbvHist() { try { localStorage.setItem('tc_dbv_hist_v2', JSON.stringify(this.dbv.tableHist)); } catch (e) {} },
+    get dbvTableHistList() {
+      return this.dbv.tableHist[this._dbvHistKey(this.dbv.cur || '__all__')] || [];
+    },
+    get dbvAllHistList() {
+      const prefix = (this.dbv.db || 'default') + '::', out = [];
+      Object.entries(this.dbv.tableHist || {}).forEach(([k, arr]) => {
+        if (!k.startsWith(prefix)) return;
+        const tbl = k.slice(prefix.length);
+        (arr || []).forEach(x => out.push({ ...x, tbl: tbl === '__all__' ? '' : tbl, _k: k }));
+      });
+      return out.sort((a, b) => (b.at || 0) - (a.at || 0)).slice(0, 60);
+    },
     get dbvCurHist() {
+      if (this.dbv.histScope === 'all') return this.dbvAllHistList;
       const k = this._dbvHistKey(this.dbv.cur || '__all__');
-      return this.dbv.tableHist[k] || [];
+      return (this.dbv.tableHist[k] || []).map(x => ({ ...x, tbl: this.dbv.cur, _k: k }));
     },
-    dbvHistCount(tname) {
-      const list = this.dbv.tableHist[this._dbvHistKey(tname)] || [];
-      const def = `SELECT * FROM ${this.dbvQuote(tname)}`.toLowerCase();
-      return list.filter(x => x.sql.trim().toLowerCase() !== def).length;
+    dbvHistTime(at) {
+      if (!at) return '';
+      const d = new Date(at), p = n => String(n).padStart(2, '0');
+      return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
     },
-    dbvDelHist(sql) {
-      const k = this._dbvHistKey(this.dbv.cur || '__all__');
-      const next = (this.dbv.tableHist[k] || []).filter(x => x.sql !== sql);
+    dbvDelHist(h) {
+      const k = h?._k || this._dbvHistKey(this.dbv.cur || '__all__');
+      const next = (this.dbv.tableHist[k] || []).filter(x => x.sql !== h.sql);
       this.dbv.tableHist = { ...this.dbv.tableHist, [k]: next };
       this._saveDbvHist();
     },
     dbvClearHist() {
-      const k = this._dbvHistKey(this.dbv.cur || '__all__');
-      const next = { ...this.dbv.tableHist }; delete next[k];
+      const next = { ...this.dbv.tableHist };
+      if (this.dbv.histScope === 'all') {
+        const prefix = (this.dbv.db || 'default') + '::';
+        Object.keys(next).forEach(k => { if (k.startsWith(prefix)) delete next[k]; });
+      } else {
+        delete next[this._dbvHistKey(this.dbv.cur || '__all__')];
+      }
       this.dbv.tableHist = next; this._saveDbvHist();
-      this.toast('已清空当前表的 SQL 历史', 'ok');
+      this.toast(this.dbv.histScope === 'all' ? '已清空本库全部 SQL 历史' : '已清空当前表的 SQL 历史', 'ok');
     },
     dbvClearSql() {
-      this.dbv.sql = ''; this.dbv.err = '';
+      this.dbv.sql = ''; this.dbv.err = ''; this.dbv.mode = '';
       this.$nextTick(() => this.$refs.dbvSql?.focus());
     },
+    get dbvFilteredCols() {
+      const cols = this.dbvCurTable?.columns || [];
+      const q = (this.dbv.colQ || '').trim().toLowerCase();
+      return !q ? cols : cols.filter(c => c.name.toLowerCase().includes(q) || (c.type || '').toLowerCase().includes(q));
+    },
+    dbvApplyColsToSql(run = false) {
+      const t = this.dbvCurTable; if (!t) return;
+      const tn = this.dbvQuote(t.name);
+      const cols = this.dbv.selCols.length ? this.dbv.selCols.map(c => this.dbvQuote(c)).join(', ') : '*';
+      const cur = String(this.dbv.sql || '').trim().replace(/;+$/, '');
+      const m = cur.match(/^SELECT\s+[\s\S]+?\s+FROM\s+([\s\S]+)$/i);
+      const curTbl = this._dbvDetectTable(cur);
+      if (m && curTbl === t.name) this.dbv.sql = `SELECT ${cols} FROM ${m[1]}`;
+      else this.dbv.sql = `SELECT ${cols} FROM ${tn}`;
+      this.dbv.mode = this.dbv.selCols.length ? '' : 'all';
+      if (run) this.dbvRun(0);
+    },
+    dbvToggleCol(name) {
+      if (this.dbv.colMode === 'group') return this.dbvSnippet('group', name);
+      const cur = this.dbv.selCols;
+      this.dbv.selCols = cur.includes(name) ? cur.filter(x => x !== name) : [...cur, name];
+      this.dbvApplyColsToSql(false);
+    },
+    dbvSelectAllCols() {
+      const cols = this.dbvCurTable?.columns || [];
+      this.dbv.selCols = cols.map(c => c.name);
+      this.dbvApplyColsToSql(false);
+    },
+    dbvClearSelCols() {
+      this.dbv.selCols = [];
+      this.dbvApplyColsToSql(false);
+    },
+    dbvIsLongCell(v) {
+      if (v === null || v === undefined) return false;
+      const s = String(v);
+      return s.length > 90 || (s.trim().startsWith('{') && s.trim().endsWith('}')) || (s.trim().startsWith('[') && s.trim().endsWith(']'));
+    },
+    dbvPreviewCell(v, col) {
+      const raw = String(v ?? '');
+      let text = raw, sub = `${this.dbv.cur ? this.dbv.cur + '.' : ''}${col} · 共 ${raw.length} 字符`;
+      try {
+        const obj = JSON.parse(raw);
+        if (obj && typeof obj === 'object') { text = JSON.stringify(obj, null, 2); sub += '（已自动格式化 JSON）'; }
+      } catch (e) {}
+      this.dsPreview = { title: col, sub, text };
+    },
     dbvOpenTable(t) {
-      const v = this.dbv; v.cur = t.name; v.resQ = ''; v.sortCol = -1;
+      const v = this.dbv; v.cur = t.name; v.resQ = ''; v.sortCol = -1; v.selCols = []; v.colQ = ''; v.mode = 'all';
       v.sql = `SELECT * FROM ${this.dbvQuote(t.name)}`;
       this.dbvRun(0, true);
     },
     dbvSnippet(kind, col) {
       const v = this.dbv, t = this.dbvCurTable; if (!t) return;
       const tn = this.dbvQuote(t.name), c = col ? this.dbvQuote(col) : '';
+      const sel = v.selCols.length ? v.selCols.map(x => this.dbvQuote(x)).join(', ') : '*';
+      v.mode = kind;
       v.sql = {
-        all: `SELECT * FROM ${tn}`,
+        all: `SELECT ${sel} FROM ${tn}`,
         count: `SELECT count(*) FROM ${tn}`,
-        latest: `SELECT * FROM ${tn} ORDER BY rowid DESC LIMIT 20`,
+        latest: `SELECT ${sel} FROM ${tn} ORDER BY rowid DESC LIMIT 20`,
         group: `SELECT ${c}, count(*) AS n FROM ${tn} GROUP BY ${c} ORDER BY n DESC`,
         distinct: `SELECT DISTINCT ${c} FROM ${tn} WHERE ${c} IS NOT NULL LIMIT 50`,
         schema: `PRAGMA table_info(${tn})`,
@@ -2095,6 +2201,7 @@ function app() {
     dbvToCount() {
       const s = String(this.dbv.sql || '').trim().replace(/;+$/, '');
       if (!s) return;
+      this.dbv.mode = 'tocount';
       const m = s.match(/^SELECT\s+[\s\S]+?\s+FROM\s+([\s\S]+)$/i);
       if (!m) { if (this.dbvCurTable) this.dbvSnippet('count'); return; }
       const tail = m[1].replace(/\s+ORDER\s+BY\s+[\s\S]*$/i, '').replace(/\s+LIMIT\s+\d+(?:\s+OFFSET\s+\d+)?\s*$/i, '');

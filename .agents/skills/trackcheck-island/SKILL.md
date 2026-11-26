@@ -79,9 +79,11 @@ trackcheck/
   - 校验报告：点位覆盖行可点 → `rep.evId` 筛选逐条明细（「只看：xxx ×」胶囊取消，计数同步）；每条明细底部和实时调试一样附「Logcat 原始日志」（`r.raw` + `line_no` + 复制）。
   - 文字可复制：`body` 允许 `user-select: text` 但 `caret-color: transparent; cursor: default`（不出现闪烁光标和 I 形鼠标）；按钮/summary/label/`.cursor-pointer` 禁选防误选，`.code/pre/.tbl td` 强制可选。
   - 点位 ID 一点即复制：给元素加 `:data-copy-id="id"` + `.id-copy`，`document` **捕获阶段**监听统一 `preventDefault + stopPropagation`，所以放在折叠按钮 / `<summary>` / 可点行里也不会触发折叠或筛选。
-  - 数据库浏览器：新标签页 `/#dbview?db=&t=`（`window.open(url, '_blank')`，只读 `mode=ro` + 仅允许 SELECT/WITH/PRAGMA/EXPLAIN）；**按表保存成功 SQL 历史**（localStorage `tc_dbv_hist_v2` 以 `db::table` 分组）、SQL 输入框右上角一键清空、单击任意结果单元格复制值 / 单击表头复制列名 / 悬停单元格 `= 筛选` / `转 COUNT(*)`，并通过 `postMessage` + `tc_dbv_sql_pick` 双通道填回主页面字段规则。
-  - 埋点字典文档列表与「模块」列：`api_evdict` 自动隐藏 `docs/` 目录中已删除的文档（不再显示划线记录），识别埋点文档中的「模块」列（含 Excel 纵向合并单元格自动沿用 `last_mod`），汇总 `modules` 供「测试用例」新建/编辑时**按模块一键导入整组点位**。
-  - 右侧悬浮用例清单（`#live` 与 `#reports`）：采用与 JSON 预览弹窗一致的清爽卡片风（`!bg-cream`、`w-[216px]`、小 2 号字、无便利贴装饰/渐变条、带 `fold_right.png` 收起图标，标题栏可拖拽移动，勾选状态与报告覆盖表同步并持久化到 `tc_note_checks`）。
+  - 数据库浏览器：三栏布局（左表栏清爽无多余角标 + 中栏快捷模式切换/多选列生成 SELECT/SQL 编辑器含清空按钮/完整不截断结果表支持单击复制列值与 JSON 完整预览/悬停 `= 筛选` + 右栏独立「SQL 历史」侧栏完整不截断展示本表与本库成功 SQL）；`api_db_query` 返回完整单元格文本（上限 200KB，不再 400 字截断）；支持 `postMessage` + `tc_dbv_sql_pick` 双通道填回主页面字段规则。
+  - 埋点字典文档列表与「模块」列：`api_evdict` 自动隐藏 `docs/` 目录中已删除的文档，识别埋点文档中的「模块」列（含 Excel 纵向合并单元格自动沿用 `last_mod`），汇总 `modules`；「测试用例」页采用**自定义可搜索下拉选择框**（「按模块导入整组点位…」与「添加点位：输入 ID 或名称」），适配几十个模块、900+ 点位且文字不裁切。
+  - 右侧悬浮「用例清单」卡片（`#live` 与 `#reports`）：动森海岛靓丽风固定长高度卡片（`w-[276px]`、`height: calc(100vh - 136px)`、顶部居中胡萝卜图钉 `pin.png`、晴空渐变顶栏、全选/取消全选开关、`fold_right.png` 3D 收起按钮、可拖拽），「校验报告」的「点位覆盖」表不放复选框、与右侧清单解耦。
+  - 校验报告左侧列表：扁平卡片（不做日期分组），左状态圆点（绿 `#63A950` / 卡通胡萝卜橙 `#F28C4B` / 紫 `#9A7FD0`），上行完整日期时间非粗体 `14px #b4a69a`，下行汇总粗体 `#856241`，用例名非粗体 `#86776b`，右下角背景图标缩小至 `15px`。
+  - 游离光标防护：`input.css` 对非输入元素强制 `caret-color: transparent !important` 与工具栏 `user-select: none`，仅在 `:focus` 的输入框/文本框显示 `#664A30` 光标，同时保留表格/正文/代码/日志可正常拖选复制。
   - **数据随 exe 走**：`build_exe.py` 先选好数据 → 复制到 `build/seed_data` → `--add-data seed_data` 内置进 exe；`trackcheck_web._seed_from_exe()` 在默认数据目录为空骨架时释放（已有文件绝不覆盖，写 `.seeded_from_exe` 标记）。用户常直接双击 `dist\埋点小岛.exe`（数据目录是 `dist\埋点小岛数据`），以前那里只有空骨架，所以"打开什么都没有"。
   - 分享包 `api_export(evdict=1)` 附带 `event_dict` + `doc_files`，导入预览出现「埋点字典」「埋点文档」两类（字典只补对方没有的点位）。「导入 / 分享」页顶部「我的数据都在这里」读 `/api/data_info`。
   - 运行日志 = 用户操作日志：`_route` 成功后 `describe_action()` 把接口翻成一句人话记为 `ACT`，`ApiError` 记 `WARN`（"没成功：…"，不计入异常红点）；纯前端操作走 `this.act(text)` → `/api/log/act`。日志抽屉有「全部 / 我的操作 / 只看异常」。新增接口时顺手在 `describe_action` 补一句描述。
