@@ -462,8 +462,48 @@ def parse_doc_tables(text, filename=""):
     return parse_md_tables(text)
 
 
+_MOD_HEADERS = ("模块", "所属模块", "功能模块", "业务模块", "页面模块", "模块名称", "模块名", "一级模块", "二级模块", "module", "Module")
+
+
+def entry_module(e):
+    """提取点位所属模块（优先 module 字段，其次扫描 columns / rows 中的「模块」列）"""
+    if not isinstance(e, dict):
+        return ""
+    m = str(e.get("module") or "").strip()
+    if m:
+        return m
+    cols = e.get("columns") or {}
+    for k in _MOD_HEADERS:
+        if cols.get(k):
+            return str(cols[k]).strip()
+    for k, v in cols.items():
+        if v and re.search(r"(模块|module)", str(k), re.I) and not re.search(r"(id|编号|编码)", str(k), re.I):
+            return str(v).strip()
+    for r in (e.get("rows") or []):
+        if not isinstance(r, dict):
+            continue
+        for k, v in r.items():
+            if v and (k in _MOD_HEADERS or (re.search(r"(模块|module)", str(k), re.I) and not re.search(r"(id|编号|编码)", str(k), re.I))):
+                return str(v).strip()
+    return ""
+
+
+def dict_modules(store):
+    """按文档出现顺序汇总埋点字典里的全部模块 -> [{name, count, ids, events}]"""
+    groups = OrderedDict()
+    for eid, e in (store or {}).get("entries", {}).items():
+        mod = entry_module(e)
+        if not mod:
+            continue
+        groups.setdefault(mod, []).append(str(eid))
+    ents = (store or {}).get("entries", {})
+    return [{"name": m, "count": len(ids), "ids": ids,
+             "events": [{"id": i, "name": (ents.get(i) or {}).get("name") or ""} for i in ids]}
+            for m, ids in groups.items()]
+
+
 def doc_to_event_entries(text, filename=""):
-    """文档 -> OrderedDict(点位ID -> {id, name, columns, rows})。合并单元格导出后 ID 为空的行归到上一个点位。"""
+    """文档 -> OrderedDict(点位ID -> {id, name, module, columns, rows})。合并单元格导出后 ID / 模块为空的行自动沿用上一行。"""
     out = OrderedDict()
     for headers, rows in parse_doc_tables(text, filename):
         if not rows:
@@ -485,25 +525,39 @@ def doc_to_event_entries(text, filename=""):
         namec = next((i for i, h in enumerate(headers) if i != idc and h.strip() in ("事件名称", "点位名称", "埋点名称")), None)
         if namec is None:
             namec = next((i for i, h in enumerate(headers) if i != idc and re.search(r"(事件名|点位名|埋点名|名称|name|Name)", h)), None)
+        modc = next((i for i, h in enumerate(headers) if i not in (idc, namec) and h.strip() in _MOD_HEADERS), None)
+        if modc is None:
+            modc = next((i for i, h in enumerate(headers) if i not in (idc, namec)
+                         and re.search(r"(模块|module)", h, re.I) and not re.search(r"(id|编号|编码)", h, re.I)), None)
         last = None
+        last_mod = ""
         for r in rows:
             row = OrderedDict((h, (r[i] or "").strip()) for i, h in enumerate(headers))
+            if modc is not None:
+                mv = row[headers[modc]]
+                if mv:
+                    last_mod = mv
+                elif last_mod:
+                    row[headers[modc]] = last_mod   # Excel 合并「模块」单元格：沿用当前模块
             m = re.search(r"\d{5,}", row[headers[idc]].replace(" ", ""))
             if m:
                 rid = m.group(0)
             elif not row[headers[idc]] and last:
-                rid = last                      # 合并单元格：沿用上一行的点位
+                rid = last                          # 合并单元格：沿用上一行的点位
             else:
                 continue
+            mod_val = row.get(headers[modc], "") if modc is not None else ""
             e = out.get(rid)
             if e is None:
                 e = out[rid] = {"id": rid, "name": row.get(headers[namec], "") if namec is not None else "",
-                                "columns": OrderedDict(row), "rows": []}
+                                "module": mod_val, "columns": OrderedDict(row), "rows": []}
             for k, v in row.items():
                 if v and not e["columns"].get(k):
                     e["columns"][k] = v
             if not e["name"] and namec is not None:
                 e["name"] = row.get(headers[namec], "")
+            if not e.get("module") and mod_val:
+                e["module"] = mod_val
             if any(v for k, v in row.items() if k != headers[idc]):
                 e["rows"].append(row)
             last = rid
@@ -520,12 +574,18 @@ def merge_event_dict(store, entries, doc_name, overwrite=False):
             if c not in cols:
                 cols.append(c)
         cur = ents.get(rid)
+        mod_val = e.get("module") or entry_module(e)
         if cur is None or overwrite:
             docs = (cur or {}).get("docs", [])
-            ents[rid] = {"id": rid, "name": e["name"], "columns": dict(e["columns"]), "rows": [dict(r) for r in e["rows"]],
-                         "docs": list(dict.fromkeys(docs + [doc_name])), "added_at": time.strftime("%Y-%m-%d %H:%M:%S")}
+            item = {"id": rid, "name": e["name"], "columns": dict(e["columns"]), "rows": [dict(r) for r in e["rows"]],
+                    "docs": list(dict.fromkeys(docs + [doc_name])), "added_at": time.strftime("%Y-%m-%d %H:%M:%S")}
+            if mod_val or (cur or {}).get("module"):
+                item["module"] = mod_val or (cur or {}).get("module")
+            ents[rid] = item
             (updated if cur is not None else added).append(rid)
         else:
+            if mod_val and not cur.get("module"):
+                cur["module"] = mod_val
             if doc_name not in cur.setdefault("docs", []):
                 cur["docs"].append(doc_name)
             skipped.append(rid)

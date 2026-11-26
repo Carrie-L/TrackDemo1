@@ -39,6 +39,7 @@
   input[type="checkbox"].accent-pond-500:not(.hidden):hover:not(:disabled) { border-color: #5EB8EE; }
   input[type="checkbox"].accent-pond-500:not(.hidden):checked { background-color: #5EB8EE; border-color: #5EB8EE; }
   input[type="checkbox"]:not(.hidden):disabled { opacity: .55; cursor: not-allowed; }
+  input[type="checkbox"].chk-xs:not(.hidden) { width: 13.5px; height: 13.5px; min-width: 13.5px; border-radius: 4px; background-size: 10px 10px; }
   select { caret-color: transparent; cursor: pointer; }
   pre, code { -webkit-user-select: text; user-select: text; caret-color: transparent; }
   button:focus:not(:focus-visible), summary:focus { outline: none; }
@@ -65,8 +66,11 @@
   .tbl { @apply w-full border-separate border-spacing-0 text-sm; }
   .tbl th { @apply sticky top-0 z-[1] whitespace-nowrap border-b border-[#DFEEF8] bg-[#F4FAFE] px-3 py-2 text-left text-xs font-extrabold text-wood-600; }
   .tbl td { @apply border-b border-[#EEF6FB] px-3 py-2 align-top; }
-  .code { @apply rounded-lg bg-pond-50 px-1.5 py-0.5 font-mono text-[12.5px] text-wood-700; }
+  .code { @apply rounded-lg bg-pond-50 px-1.5 py-0.5 font-mono text-[13.5px] text-wood-700; }
   /* 点位 ID：点一下复制（不会触发外层折叠），悬停变樱花粉，复制后闪一下嫩绿 */
+  /* 数据库单元格复制微交互 */
+  .dbv-cell { cursor: copy; transition: background-color .14s ease, color .14s ease; }
+  .dbv-cell:hover { background-color: #FFF6FA !important; }
   .id-copy { cursor: copy; transition: background-color .15s ease, color .15s ease, box-shadow .15s ease; }
   .id-copy:hover { background-color: #FCDCE6; color: #664A30; }
   .id-copied, .id-copied:hover { background-color: #DFF4D4 !important; color: #3F7F31 !important; box-shadow: 0 0 0 2px #C7E7BA; }
@@ -108,8 +112,10 @@ body {
 .wood-sign-wrap:hover { filter: drop-shadow(0 8px 14px rgba(107,76,49,.34)); }
 .wood-title { color: #6B401B; text-shadow: 0 1px 0 rgba(255,248,225,.85), 0 -1px 0 rgba(88,48,16,.25); }
 .wood-sub { color: #FFFDF5; text-shadow: 0 1px 2px rgba(82,42,14,.65); }
-.scroll-soft::-webkit-scrollbar { width: 8px; height: 8px; }
-.scroll-soft::-webkit-scrollbar-thumb { background: #D2E7F5; border-radius: 99px; }
+.scroll-soft { scrollbar-width: thin; scrollbar-color: #C5E2F5 transparent; }
+.scroll-soft::-webkit-scrollbar { width: 7px; height: 7px; }
+.scroll-soft::-webkit-scrollbar-thumb { background: #C8E4F6; border-radius: 99px; }
+.scroll-soft::-webkit-scrollbar-thumb:hover { background: #9FD4F4; }
 .scroll-soft::-webkit-scrollbar-track { background: transparent; }
 .json-row:hover { background: #F2F9EB; }
 .json-hit { background: #FDF1C9 !important; }

@@ -16,12 +16,12 @@ module.exports = {
         sun: { 50: "#FFFAEA", 100: "#FDF1C9", 200: "#F8E094", 500: "#DDA92C", 600: "#B98914", 700: "#8F6A0E" },
       },
       fontSize: {
-        xs: ["12.5px", "1.5"],
-        sm: ["13.5px", "1.55"],
-        base: ["14.5px", "1.6"],
-        lg: ["16px", "1.45"],
-        xl: ["18px", "1.4"],
-        "2xl": ["21px", "1.3"],
+        xs: ["13.5px", "1.5"],
+        sm: ["14.5px", "1.55"],
+        base: ["15.5px", "1.6"],
+        lg: ["17px", "1.45"],
+        xl: ["19.5px", "1.4"],
+        "2xl": ["23px", "1.3"],
       },
       fontFamily: {
         sans: ['"Nunito"', '"Quicksand"', '"PingFang SC"', '"HarmonyOS Sans SC"', '"Microsoft YaHei UI"', '"Microsoft YaHei"', "sans-serif"],

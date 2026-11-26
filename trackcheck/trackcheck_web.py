@@ -1207,7 +1207,9 @@ class App:
             "log": self.store.main.get("log") or {},
             "reports": reps, "sessions": self.sessions(), "live": live, "ask_fields": ask,
             "event_fields": ev_fields, "tpl_refs": tpl_refs, "all_apis": self.resolve_event_apis(),
-            "evdict": {"count": len(evd.get("entries", {})), "docs": evd.get("docs", [])},
+            "evdict": {"count": len(evd.get("entries", {})),
+                       "docs": [x for x in evd.get("docs", []) if self._doc_path(x.get("name"), x.get("path"))],
+                       "modules": tc.dict_modules(evd)},
             "server": {"frozen": FROZEN, "pid": os.getpid(), "err_count": SERVER_LOG.err_count, "log_path": SERVER_LOG.path},
         }
 
@@ -2651,19 +2653,24 @@ class App:
     def api_evdict(self, q):
         d = tc.load_event_dict(self.spec.event_dict_path)
         conf = {eid for eid, es in self.spec.events.items() if not tc.is_stub_event(es)}
-        ents = sorted(d["entries"].values(), key=lambda e: e["id"])
-        for e in ents:
-            e["configured"] = e["id"] in conf
-        docs, known = [], set()
+        docs, known, valid_names = [], set(), set()
         for x in d.get("docs", []):
             item = dict(x)
             p = self._doc_path(item.get("name"), item.get("path"))
-            item["missing"] = not p
-            if p:
-                item["path"] = p
-                known.add(os.path.normcase(os.path.abspath(p)))
+            if not p:
+                continue  # docs 目录里已删除的文档直接不显示
+            item["path"] = p
+            known.add(os.path.normcase(os.path.abspath(p)))
+            valid_names.add(item.get("name"))
             item["entries"] = sum(1 for e in d["entries"].values() if item.get("name") in (e.get("docs") or []))
             docs.append(item)
+        ents = []
+        for raw_e in sorted(d["entries"].values(), key=lambda e: e["id"]):
+            e = dict(raw_e)
+            e["configured"] = e["id"] in conf
+            e["module"] = tc.entry_module(e)
+            e["docs"] = [dn for dn in (e.get("docs") or []) if dn in valid_names]
+            ents.append(e)
         # docs 目录里有、但还没导入字典的文档（比如手动拷进来的）
         untracked = []
         dd = self._docs_dir()
@@ -2671,9 +2678,10 @@ class App:
             for fn in sorted(os.listdir(dd)):
                 fp = os.path.join(dd, fn)
                 if os.path.isfile(fp) and fn.lower().endswith(DOC_EXTS) and os.path.normcase(os.path.abspath(fp)) not in known \
-                        and fn not in {x.get("name") for x in docs}:
+                        and fn not in valid_names:
                     untracked.append({"name": fn, "size": os.path.getsize(fp)})
-        return {"entries": ents, "docs": docs, "untracked": untracked, "docs_dir": dd, "columns": d.get("columns", [])}
+        return {"entries": ents, "docs": docs, "untracked": untracked, "docs_dir": dd,
+                "columns": d.get("columns", []), "modules": tc.dict_modules(d)}
 
     def api_evdict_doc_remove(self, b):
         """把一份文档从字典的文档列表里移除；drop_entries=True 时顺带删掉只来自这份文档的点位"""
