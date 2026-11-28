@@ -160,3 +160,7 @@ uv run --no-project C:\Users\windows\.gemini\config\skills\trackcheck-island\scr
    - `Sources.close_dbs()` 必须在 `source_status()` / `api_source_json` / `api_db_schema` 的 `finally` 中释放连接，并在删除/覆盖 `.db` 前先 `self.sources.close()` 且清理旧 `-wal/-shm/-journal`，否则 Windows 会触发 `WinError 32` 且无法在资源管理器删改 `.db`。
    - `App.sync_auto_sources(force=...)` 按目录文件 `(name, mtime_ns, size)` 指纹自动重扫并重建 `tc.Sources`，保障删除/重新放入 `.db` 或 `.json` 后，引用它们的 `sqlite_json` / `merged_json` 立即更新为「可用 / 降级可用 / 不可用」。
    - 默认拉库包名为 `com.honor.browser`，手机端发现 `honor_browser.db` 时置顶并默认只选该库；`#dbview` 支持直接通过 `POST /api/db/import`（原始二进制流）导入本地 `.db` 并自动打开。
+8. **全站「看操作（`ask`）」端到端闭环与规则弹窗直存**：
+   - `#rules` 字段规则弹窗内点击「保存规则」必须直接落盘生效（调用 `saveEditor(true, field)`），严禁只改内存等用户去点右上角第二次保存；弹窗顶部醒目展示「由用户操作决定」开关，支持 `POST /api/field/batch_ask` 一键同步其他同名字段点位。
+   - `#cases`、`#live` 顶部均直接展平列出「看操作」与多点位共用枚举字段的选项胶囊，点一次即同步全部点位（`#live` 同时即时重判待确认记录）；`#live` 逐条明细提供「全部 `field=val` 都对」一键批量确认，`#reports` 提供 `POST /api/report/review_batch` 批量改判待确认。
+   - 「小岛运行日志」仅记录系统启动、后台任务（adb / 接口监听 / 快照 / 目录同步）、系统提示与异常报错，不记录用户点击操作。

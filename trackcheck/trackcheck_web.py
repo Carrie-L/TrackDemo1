@@ -911,6 +911,7 @@ class App:
         fp = self._scan_ds_fp()
         if not force and fp == self._ds_fp:
             return False
+        changed = self._ds_fp is not None and fp != self._ds_fp
         self._ds_fp = fp
         if hasattr(self, "sources") and self.sources:
             self.sources.close()
@@ -918,6 +919,8 @@ class App:
         explicit = self.spec.raw.get("sources") or {}
         self.spec.sources = {**auto_sources, **explicit}
         self.sources = tc.Sources(self.spec)
+        if changed:
+            SERVER_LOG.emit("INFO", f"检测到数据源目录变更，已自动同步 {len(auto_sources)} 个数据源文件")
         return True
 
     def reload(self):
@@ -929,6 +932,7 @@ class App:
             self.spec_error = None
         except Exception as e:  # 规则写坏了也让网站能打开
             self.spec_error = f"{type(e).__name__}: {e}"
+            SERVER_LOG.emit("WARN", f"规则文件解析失败：{self.spec_error}")
             if not hasattr(self, "spec"):
                 raise
         self.sources = tc.Sources(self.spec)
@@ -1464,6 +1468,89 @@ class App:
         rep["name"] = name
         return rep
 
+    def api_report_review_batch(self, b):
+        """批量人工改判报告中的多个待确认/字段项（一次落盘并重生成 HTML）"""
+        name = os.path.basename(str(b.get("name", "")).strip())
+        if not name:
+            raise ApiError("缺少报告名称")
+        jp = os.path.join(self.out, name + ".json")
+        if not os.path.exists(jp):
+            raise ApiError("报告不存在")
+        status = str(b.get("status", "")).strip().upper()
+        if status not in ("PASS", "FAIL", "ASK"):
+            raise ApiError("状态无效，仅支持 PASS / FAIL / ASK")
+        items = b.get("items") or []
+        if not items:
+            raise ApiError("没有要批量判定的项")
+        note = str(b.get("note") or "").strip()
+        old_stat = os.stat(jp)
+        with open(jp, encoding="utf-8") as f:
+            rep = json.load(f)
+        by_seq = {int(r.get("seq", -1)): r for r in rep.get("results", [])}
+        st_label = {"PASS": "通过", "FAIL": "有问题", "ASK": "待确认"}[status]
+        updated = 0
+        touched = set()
+        for it in items:
+            seq = int(it.get("seq", -1))
+            field = str(it.get("field") or "").strip()
+            target = by_seq.get(seq)
+            if not target or not field:
+                continue
+            fobj = next((x for x in target.get("fields", []) if x.get("field") == field), None)
+            if not fobj:
+                continue
+            fobj.setdefault("orig_status", fobj.get("status"))
+            fobj.setdefault("orig_reason", fobj.get("reason", ""))
+            fobj["status"] = status
+            fobj["manual"] = True
+            fobj["note"] = note
+            fobj["reason"] = f"人工判定为「{st_label}」：{note}" if note else f"人工判定为「{st_label}」"
+            touched.add(seq)
+            updated += 1
+        for seq in touched:
+            target = by_seq[seq]
+            fields_list = target.get("fields", [])
+            if status == "PASS" and fields_list and not any(x.get("status") in ("FAIL", "WARN", "ASK") for x in fields_list):
+                for er in target.get("errors", []):
+                    if er.get("status") in ("FAIL", "WARN", "ASK"):
+                        er.setdefault("orig_status", er.get("status"))
+                        er["status"] = "PASS"
+                        er["manual"] = True
+                        er["note"] = "全部子项已人工判定通过"
+            target.pop("manual_status", None)
+            target.pop("manual_note", None)
+            target["status"] = tc.worst([x["status"] for x in fields_list] + [e["status"] for e in target.get("errors", [])])
+        cnt = Counter(r["status"] for r in rep.get("results", []))
+        hot = defaultdict(lambda: {"count": 0, "reason": "", "name": ""})
+        for r in rep.get("results", []):
+            for x in r.get("fields", []):
+                if x.get("status") in ("FAIL", "WARN"):
+                    h = hot[(r["id"], x["field"])]
+                    h["count"] += 1
+                    h["reason"] = h["reason"] or x.get("reason", "")
+                    h["name"] = r.get("name", "")
+        rep["hot_fields"] = sorted(({"id": k[0], "field": k[1], **v} for k, v in hot.items()), key=lambda x: -x["count"])
+        cov_fail = sum(1 for c in rep.get("coverage", []) if c.get("status") == "FAIL")
+        rep["summary"] = {
+            "total": len(rep.get("results", [])),
+            "pass": cnt.get("PASS", 0),
+            "warn": cnt.get("WARN", 0),
+            "fail": cnt.get("FAIL", 0),
+            "unknown": cnt.get("UNKNOWN", 0),
+            "ask": cnt.get("ASK", 0),
+            "coverage_fail": cov_fail,
+            "ok": cnt.get("FAIL", 0) == 0 and cov_fail == 0,
+        }
+        hp, jp_out = tc.write_report(rep, self.out, name)
+        try:
+            os.utime(jp_out, (old_stat.st_atime, old_stat.st_mtime))
+            os.utime(hp, (old_stat.st_atime, old_stat.st_mtime))
+        except OSError:
+            pass
+        rep["name"] = name
+        rep["updated"] = updated
+        return rep
+
     def api_source_json(self, q):
         self.sync_auto_sources()
         try:
@@ -1546,6 +1633,48 @@ class App:
         if self.spec_error:
             raise ApiError("已保存，但规则文件解析出错：" + self.spec_error)
         return {"ok": True, "id": eid}
+
+    def api_field_batch_ask(self, b):
+        """一键把所有包含同名字段的点位/模板同步开启或关闭「看操作（ask）」"""
+        field = str(b.get("field") or "").strip()
+        if not field:
+            raise ApiError("缺少字段名")
+        ask = bool(b.get("ask"))
+        exclude = str(b.get("exclude_id") or "").strip()
+        sync_enum = b.get("enum")
+        sync_desc = str(b.get("desc") or "").strip()
+        touched = set()
+        updated = 0
+        for sec in ("templates", "events"):
+            for k, (raw, _) in self.store.items(sec).items():
+                if sec == "events" and str(k) == exclude:
+                    continue
+                if not isinstance(raw, dict):
+                    continue
+                fs = raw.get("fields")
+                if not isinstance(fs, dict) or field not in fs:
+                    continue
+                cur_rule = fs.get(field)
+                rule = dict(cur_rule) if isinstance(cur_rule, dict) else ({"eq": cur_rule} if cur_rule is not None else {})
+                if ask:
+                    rule["ask"] = True
+                    if sync_enum and not any(x in rule for x in ("enum", "from", "sql", "expr", "eq")):
+                        rule["enum"] = sync_enum
+                    if sync_desc and not rule.get("desc"):
+                        rule["desc"] = sync_desc
+                else:
+                    rule.pop("ask", None)
+                new_raw = dict(raw)
+                new_fs = dict(fs)
+                new_fs[field] = rule
+                new_raw["fields"] = new_fs
+                touched.add(self.store.put(sec, k, new_raw, save=False))
+                updated += 1
+        for p in touched:
+            self.store.save(p)
+        if updated:
+            self.reload()
+        return {"ok": True, "updated": updated}
 
     def _autotag(self, raws):
         """点位规则引用了某个字典 -> 自动把这个点位加到字典的「关联点位」标签里"""
@@ -2365,7 +2494,13 @@ class App:
             self.live = LiveSession(self, b.get("serial"), b.get("clear", True), case_name, only,
                                     b.get("scenario"), b.get("snapshot", True), capture_apis=apis)
         except FileNotFoundError:
+            SERVER_LOG.emit("WARN", "启动实时抓取失败：系统 PATH 中未找到 adb")
             raise ApiError("找不到 adb，请把 Android SDK platform-tools 加到 PATH")
+        SERVER_LOG.emit("INFO", f"实时抓取服务已启动（DB 快照：{'开启' if self.live.snap_on else '关闭'}，自动抓接口：{len(self.live.api_targets)} 个）")
+        if self.live.snap_err:
+            SERVER_LOG.emit("WARN", f"DB 快照未开启：{self.live.snap_err}")
+        if self.live.api_err:
+            SERVER_LOG.emit("WARN", f"自动接口监听提示：{self.live.api_err}")
         return {"ok": True, "raw": self.live.raw, "snap_on": self.live.snap_on, "snap_err": self.live.snap_err,
                 "api_targets": self.live.api_targets, "api_err": self.live.api_err}
 
@@ -2687,7 +2822,9 @@ class App:
         try:
             self.api_cap = ApiCaptureSession(self, ep, name, b.get("serial"), b.get("clear", True), tag)
         except FileNotFoundError:
+            SERVER_LOG.emit("WARN", "启动接口监听失败：系统 PATH 中未找到 adb")
             raise ApiError("找不到 adb，请把 Android SDK platform-tools 加到 PATH")
+        SERVER_LOG.emit("INFO", f"OkHttp 接口监听服务已启动：{ep} → {name}.json")
         self._remember_api_preset(ep, name, tag)
         return self.api_cap.snapshot()
 
@@ -2701,6 +2838,7 @@ class App:
             return {"ok": True, "captured": []}
         self.api_cap.stop()
         snap = self.api_cap.snapshot()
+        SERVER_LOG.emit("INFO", f"OkHttp 接口监听服务已停止（捕获 {len(snap.get('captured') or [])} 条响应）")
         return {"ok": True, **snap}
 
     def api_ds_api_capture_extract(self, b):
@@ -3093,7 +3231,9 @@ class App:
     def api_live_stop(self, b):
         if not self.live or not self.live.running:
             raise ApiError("当前没有在抓取")
-        return self.live.stop(bool(b.get("pull")))
+        res = self.live.stop(bool(b.get("pull")))
+        SERVER_LOG.emit("INFO", f"实时抓取服务已停止，已生成校验报告：{res.get('report')}")
+        return res
 
     def api_live_recheck(self, b):
         if not self.live:
@@ -3313,10 +3453,7 @@ class App:
         threading.Thread(target=_bye, daemon=True).start()
         return {"ok": True}
     def api_log_act(self, b):
-        """网页端纯前端操作（复制点位、粘贴、恢复草稿…）也记进运行日志"""
-        txt = re.sub(r"\s+", " ", str(b.get("text") or "")).strip()[:240]
-        if txt:
-            SERVER_LOG.emit("ACT", txt)
+        """运行日志仅记录系统运行与系统提示，不再记录前端点击行为"""
         return {"ok": True}
 
 
@@ -3451,6 +3588,7 @@ ROUTES = {
     ("GET", "/api/db/tables"): "api_db_tables", ("POST", "/api/db/query"): "api_db_query",
     ("POST", "/api/db/import"): "api_db_import",
     ("POST", "/api/event/save"): "api_event_save", ("POST", "/api/event/delete"): "api_event_delete",
+    ("POST", "/api/field/batch_ask"): "api_field_batch_ask",
     ("POST", "/api/dict/save"): "api_dict_save", ("POST", "/api/source/save"): "api_source_save",
     ("POST", "/api/case/save"): "api_case_save", ("POST", "/api/template/save"): "api_template_save",
     ("POST", "/api/item/delete"): "api_item_delete", ("POST", "/api/settings/save"): "api_settings_save",
@@ -3475,7 +3613,7 @@ ROUTES = {
     ("POST", "/api/import/preview"): "api_import_preview", ("POST", "/api/import/apply"): "api_import_apply",
     ("POST", "/api/open_path"): "api_open_path",
     ("POST", "/api/report/delete"): "api_report_delete", ("POST", "/api/reports/clear"): "api_reports_clear",
-    ("POST", "/api/report/review"): "api_report_review",
+    ("POST", "/api/report/review"): "api_report_review", ("POST", "/api/report/review_batch"): "api_report_review_batch",
     ("POST", "/api/log/act"): "api_log_act", ("GET", "/api/data_info"): "api_data_info",
     ("POST", "/api/evdict/doc_remove"): "api_evdict_doc_remove", ("POST", "/api/evdict/import_file"): "api_evdict_import_file",
 }
@@ -3541,13 +3679,6 @@ def make_handler(app):
                     else:
                         with lock:
                             res = getattr(app, fn)(arg)
-                    if method == "POST" or fn == "api_export":
-                        try:
-                            txt = describe_action(app, fn, arg, res if not isinstance(res, FileResponse) else {})
-                            if txt:
-                                SERVER_LOG.emit("ACT", txt)
-                        except Exception:
-                            pass
                     if isinstance(res, FileResponse):
                         try:
                             self.send_response(200)
@@ -3563,12 +3694,6 @@ def make_handler(app):
                 except _CLIENT_DISCONNECT:
                     return
                 except ApiError as e:
-                    try:
-                        what = describe_action(app, fn, arg if isinstance(arg, dict) else {}, {})
-                        if what:
-                            SERVER_LOG.emit("WARN", f"{what.split('，')[0]} —— {e}")
-                    except Exception:
-                        pass
                     self._send(400, {"error": str(e)})
                 except Exception as e:
                     tb = traceback.format_exc().rstrip()

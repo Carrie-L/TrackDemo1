@@ -54,7 +54,7 @@ function app() {
   return {
     NAV, CARD_TONES, STATUS_TEXT, DRAFT_TEXT, fmtSize,
     page: 'home', st: null, busy: false, toasts: [], tipIdx: 0, devices: [], devErr: '', search: '', searchOpen: false,
-    live: { serial: '', clear: true, pull: false, snapshot: true, autoApi: true, apiTargets: [], apiHits: [], ver: 0, caseName: '', only: '', results: [], running: false, sel: -1, report: null, raw: '', filter: 'all', scn: {}, snapErr: '', plan: [], addId: '', onlyPlan: false, showUnk: false, planOpen: true, planSel: '', planQ: '', scope: 'plan', dedupe: true, flash: '' },
+    live: { serial: '', clear: true, pull: false, snapshot: true, autoApi: true, apiTargets: [], apiHits: [], ver: 0, caseName: '', only: '', results: [], running: false, sel: -1, report: null, raw: '', filter: 'all', scn: {}, opTexts: {}, snapErr: '', plan: [], addId: '', onlyPlan: false, showUnk: false, planOpen: true, planSel: '', planQ: '', scope: 'plan', dedupe: true, flash: '' },
     inf: { mode: 'session', path: '', content: '', fileName: '', drafts: [], dicts: {}, warns: [], log: '', open: 0 },
     ed: null, ruleFilter: '', ruleTab: 'all',
     exp: { mode: 'all', ids: [], q: '', author: '', note: '', sources: true, samples: true, evdict: true }, dataInfo: null,
@@ -350,6 +350,86 @@ function app() {
       await this.call(() => this.api('/api/live/scenario', { scenario: this.live.scn, apply_pending: true }), '已按「本次操作」重新判定待确认的事件');
       await this.reloadLive();
     },
+    // ---- 实时调试「本次操作」一键批量设期望 + 同类待确认一键确认 ----
+    _liveMatchRows(name, includeShared = true) {
+      return (this.live.plan || []).filter(r => this._rowAll(r).some(f => f.name === name && (f.ask || (includeShared && (!f.kind || f.kind === 'enum')))));
+    },
+    get liveOpFields() {
+      const m = new Map();
+      const ensure = (name) => {
+        if (!m.has(name)) m.set(name, { name, desc: '', options: {}, rows: 0, set: 0, pending: 0, ask: false });
+        return m.get(name);
+      };
+      (this.live.plan || []).forEach(row => this._rowAll(row).forEach(f => {
+        if (!f.ask && !(Object.keys(f.options || {}).length && (!f.kind || f.kind === 'enum'))) return;
+        const e = ensure(f.name);
+        e.rows++;
+        if (f.ask) e.ask = true;
+        if (!e.desc && f.desc) e.desc = f.desc;
+        Object.entries(f.options || {}).forEach(([k, v]) => { if (!(k in e.options) || (!e.options[k] && v)) e.options[k] = v; });
+        if (this._vals((row.values || {})[f.name]).length) e.set++;
+      }));
+      // 已经上报且处于「待确认」的字段也自动纳入（即使点位不在 plan 里）
+      const askMeta = this.st?.ask_fields || {};
+      (this.live.results || []).forEach(r => (r.fields || []).forEach(f => {
+        if (f.status !== 'ASK') return;
+        const e = ensure(f.field);
+        e.ask = true; e.pending++;
+        if (!e.desc && (f.desc || askMeta[f.field]?.desc)) e.desc = f.desc || askMeta[f.field]?.desc || '';
+        const opts = askMeta[f.field]?.options || this.st?.event_fields?.[r.id]?.[f.field]?.options || {};
+        Object.entries(opts).forEach(([k, v]) => { if (!(k in e.options) || (!e.options[k] && v)) e.options[k] = v; });
+        if (f.actual !== undefined && f.actual !== '' && f.actual !== 'null' && !(String(f.actual) in e.options)) {
+          e.options[String(f.actual)] = '';
+        }
+      }));
+      return [...m.values()]
+        .filter(e => e.ask || e.pending > 0 || e.rows >= 2)
+        .sort((a, b) => (b.pending - a.pending) || ((b.ask && b.set < b.rows ? 1 : 0) - (a.ask && a.set < a.rows ? 1 : 0)) || (b.ask - a.ask) || (b.rows - a.rows) || a.name.localeCompare(b.name));
+    },
+    get liveOpUnsetCount() {
+      return this.liveOpFields.filter(e => (e.ask && e.rows > 0 && e.set < e.rows) || e.pending > 0).length;
+    },
+    liveBatchOn(name, k) {
+      k = String(k);
+      const rows = this._liveMatchRows(name);
+      if (rows.length) return rows.every(r => { const v = this._vals((r.values || {})[name]); return v.length === 1 && v[0] === k; });
+      return String(this.live.scn[name] ?? '') === k;
+    },
+    async liveBatchApply(name, val) {
+      const rows = this._liveMatchRows(name);
+      const clear = val === null || val === '' || (Array.isArray(val) && !val.length);
+      rows.forEach(r => { const v = { ...(r.values || {}) }; if (clear) delete v[name]; else v[name] = val; r.values = v; });
+      const nextScn = { ...this.live.scn };
+      if (clear) delete nextScn[name]; else nextScn[name] = Array.isArray(val) ? val[0] : String(val);
+      this.live.scn = nextScn;
+      const merged = { ...this.live.scn, ...this.planScenario };
+      if (this.live.running || this.live.results.length) {
+        clearTimeout(this._planT);
+        await this.api('/api/live/scenario', { scenario: merged, apply_pending: 'all' }).catch(e => this.toast(e.message, 'err'));
+        await this.reloadLive();
+      }
+      const txt = Array.isArray(val) ? val.join(' / ') : val;
+      if (clear) this.toast(`已清除「${name}」的操作期望值`, 'ok');
+      else this.toast(rows.length ? `已同步给 ${rows.length} 个点位：${name} = ${txt}` + (this.live.results.length ? '，并已重判' : '') : `已设本次操作 ${name} = ${txt}`, 'ok');
+    },
+    liveBatchToggle(name, k) { return this.liveBatchApply(name, this.liveBatchOn(name, k) ? null : String(k)); },
+    liveBatchText(name) {
+      const list = String(this.live.opTexts?.[name] || '').split('|').map(x => x.trim()).filter(Boolean);
+      return this.liveBatchApply(name, list.length <= 1 ? (list[0] || null) : list);
+    },
+    sameAskSeqs(r, f) {
+      if (!r || !f || f.status !== 'ASK') return [];
+      const val = norm(f.actual);
+      return (this.live.results || []).filter(x => (x.fields || []).some(xf => xf.field === f.field && xf.status === 'ASK' && norm(xf.actual) === val)).map(x => x.seq);
+    },
+    async decideSame(r, f, value) {
+      const seqs = this.sameAskSeqs(r, f);
+      if (!seqs.length) return;
+      await this.api('/api/live/decide', { seq: r.seq, seqs, field: f.field, value }).catch(e => this.toast(e.message, 'err'));
+      await this.reloadLive();
+      this.toast(`已一键确认全部 ${seqs.length} 条 ${f.field}=${f.actual} 为「${value === 'ok' ? '对' : '不对'}」`, 'ok');
+      if (value === 'ok' || value === 'bad') this.$nextTick(() => this.gotoNextAsk(r.seq));
+    },
     async decide(r, f, value) {
       // 合并重复上报时，同一组完全相同的上报一起判定，免得重复点
       const key = this._dupKey(r);
@@ -387,7 +467,7 @@ function app() {
       const only = this.live.onlyPlan && this.live.plan.length ? this.live.plan.map(r => r.id) : [];
       const r = await this.call(() => this.api('/api/live/start', {
         serial: this.live.serial, clear: this.live.clear, case: this.live.caseName, only,
-        scenario: this.planScenario, snapshot: this.live.snapshot, auto_api: this.live.autoApi,
+        scenario: { ...this.live.scn, ...this.planScenario }, snapshot: this.live.snapshot, auto_api: this.live.autoApi,
       }));
       Object.assign(this.live, {
         results: [], running: true, sel: -1, report: null, snapErr: r.snap_err || '',
@@ -650,7 +730,7 @@ function app() {
       clearTimeout(this._planT);
       this._planT = setTimeout(async () => {
         if (!this.live.running && !this.live.results.length) return;
-        await this.api('/api/live/scenario', { scenario: this.planScenario, apply_pending: 'all' }).catch(e => this.toast(e.message, 'err'));
+        await this.api('/api/live/scenario', { scenario: { ...this.live.scn, ...this.planScenario }, apply_pending: 'all' }).catch(e => this.toast(e.message, 'err'));
         await this.reloadLive();
       }, 350);
     },
@@ -769,7 +849,7 @@ function app() {
         enumMode: enumIsDict ? 'dict' : 'inline', enumDict: enumIsDict ? rule.enum : '',
         enumRows: enumInline ? toRows(rule.enum) : Array.isArray(rule.enum) ? rule.enum.map(x => ({ k: String(x), v: '' })) : [], enumBulk: '',
         allowEmpty: !!rule.allow_empty, eq: rule.eq ?? '', expr: rule.expr || '',
-        cmp: rule.compare || 'eq', tol: rule.tolerance ?? '', trend: rule.trend || '', ask: !!rule.ask,
+        cmp: rule.compare || 'eq', tol: rule.tolerance ?? '', trend: rule.trend || '', ask: !!rule.ask, syncAskAll: false,
         type: rule.type || '', regex: rule.regex || '', rmin: rule.range ? rule.range[0] : '', rmax: rule.range ? rule.range[1] : '',
         notEmpty: !!rule.not_empty, optional: rule.required === false, when: rule.when || '', warn: rule.severity === 'warn',
         assert: rule.assert || '', msg: rule.msg || '',
@@ -783,6 +863,18 @@ function app() {
     },
     get fmValue() { return this.fm ? norm(this.fm.sample[this.fm.field]) : ''; },
     get fmDoc() { return this.fm && this.fm.field ? this.docRowsFor(this.fm.eventId, this.fm.field) : []; },
+    get fmSameFieldEvents() {
+      const m = this.fm, fname = String(m?.field || '').trim();
+      if (!m || !fname) return { total: 0, diff: 0 };
+      const ef = this.st?.event_fields || {};
+      let total = 0, diff = 0;
+      Object.entries(ef).forEach(([eid, fs]) => {
+        if (eid === String(m.eventId) || !fs || !(fname in fs)) return;
+        total++;
+        if (!!fs[fname]?.ask !== !!m.ask) diff++;
+      });
+      return { total, diff };
+    },
     get fmKeyHints() {
       const m = this.fm; if (!m) return [];
       const out = new Set(Object.keys(m.sample || {})), e = this.evdEntry(m.eventId);
@@ -966,10 +1058,29 @@ function app() {
       m.field = String(m.field || '').trim();
       if (!m.field) return this.toast('先填字段名（上报的 key）', 'err');
       if (m.isNew && t.kind === 'editor' && (this.ed.raw.fields || {})[m.field] !== undefined && !confirm(`字段 ${m.field} 已经有规则了，覆盖它？`)) return;
+      const syncBatch = async (excludeId) => {
+        if (!m.syncAskAll || !this.fmSameFieldEvents.total) return 0;
+        const r = await this.api('/api/field/batch_ask', {
+          field: m.field, ask: !!m.ask, exclude_id: excludeId || '',
+          enum: rule.enum, desc: rule.desc || '',
+        }).catch(() => ({ updated: 0 }));
+        return r.updated || 0;
+      };
       if (t.kind === 'editor') {
         this.ed.raw.fields = { ...(this.ed.raw.fields || {}), [m.field]: rule };
         if (Object.keys(m.newCtx).length) this.ed.raw.context = { ...(this.ed.raw.context || {}), ...m.newCtx };
-        this.ed.dirty = true; this.fm = null; this.tryEditor(); return;
+        const hasId = !!String(this.ed.id || '').trim();
+        this.fm = null;
+        if (hasId) {
+          const synced = await syncBatch(this.ed.kind === 'template' ? '' : this.ed.id);
+          await this.saveEditor(true, m.field, synced);
+          this.tryEditor();
+        } else {
+          this.ed.dirty = true;
+          this.tryEditor();
+          this.toast(`已暂存「${m.field}」规则，填好点位 ID 后点右上角保存`, 'warn');
+        }
+        return;
       }
       if (t.kind === 'draft') {
         const d = this.inf.drafts[t.di];
@@ -979,7 +1090,9 @@ function app() {
       }
       if (t.kind === 'live') {
         const raw = this.fmRawWithCtx(); raw.fields = { ...(raw.fields || {}), [m.field]: rule };
-        await this.call(() => this.api('/api/event/save', { id: m.eventId, raw }), `已保存 ${m.field} 的规则，以后自动复用`);
+        await this.call(() => this.api('/api/event/save', { id: m.eventId, raw }));
+        const synced = await syncBatch(m.eventId);
+        this.toast(`已保存「${m.field}」的规则` + (synced ? `，并同步了另外 ${synced} 个点位` : '，已自动生效'), 'ok');
         this.fm = null; await this.refresh(); await this.recheckLive();
       }
     },
@@ -1136,7 +1249,29 @@ function app() {
       const e = this.ed;
       this.openField({ field: f.name, rule: f.rule, sample: e.sample?.fields || {}, eventId: e.id || 'new', raw: this.edRaw(), target: { kind: 'editor' } });
     },
-    delEdField(name) { const e = this.ed, f = { ...(e.raw.fields || {}) }; delete f[name]; e.raw.fields = f; e.dirty = true; },
+    async quickToggleAsk(f) {
+      const e = this.ed; if (!e) return;
+      const base = f.rule && typeof f.rule === 'object' ? clone(f.rule) : (f.rule !== undefined ? { eq: f.rule } : {});
+      const nextAsk = !base.ask;
+      if (nextAsk) base.ask = true; else delete base.ask;
+      e.raw.fields = { ...(e.raw.fields || {}), [f.name]: base };
+      if (String(e.id || '').trim()) {
+        await this.saveEditor(true, f.name);
+        this.tryEditor();
+      } else {
+        e.dirty = true; this.tryEditor();
+      }
+    },
+    async delEdField(name) {
+      const e = this.ed, f = { ...(e.raw.fields || {}) }; delete f[name]; e.raw.fields = f;
+      if (!e.isNew && String(e.id || '').trim()) {
+        await this.saveEditor(true);
+        this.toast(`已删除字段「${name}」的规则并保存`, 'ok');
+        this.tryEditor();
+      } else {
+        e.dirty = true;
+      }
+    },
     addEdField() {
       const e = this.ed;
       this.openField({ field: '', rule: {}, sample: e.sample?.fields || {}, eventId: e.id || 'new', raw: this.edRaw(), target: { kind: 'editor' }, isNew: true });
@@ -1182,19 +1317,22 @@ function app() {
       try { e.tryRes = await this.api('/api/try', { id: e.id, fields: e.sample.fields, cls: e.sample.cls, raw: this.edRaw() }); }
       catch (err) { this.toast(err.message, 'err'); }
     },
-    async saveEditor() {
+    async saveEditor(quiet = false, fieldName = '', synced = 0) {
       const e = this.ed;
+      const okMsg = fieldName
+        ? `已保存字段「${fieldName}」的规则并立即生效` + (synced ? `（同时同步了另外 ${synced} 个点位）` : '')
+        : (quiet ? '' : (e.kind === 'template' ? '模板已保存，继承它的点位都会用新规则' : '保存成功，以后测试这个点位自动复用'));
       if (e.kind === 'template') {
         if (!e.id) return this.toast('先填模板名', 'err');
         const raw = this.edRaw(); delete raw.name; delete raw.extends;
-        await this.call(() => this.api('/api/template/save', { name: e.id, old_name: e.oldId, value: raw }), '模板已保存，继承它的点位都会用新规则');
+        await this.call(() => this.api('/api/template/save', { name: e.id, old_name: e.oldId, value: raw }), okMsg || undefined);
         e.isNew = false; e.oldId = e.id; e.dirty = false; await this.refresh();
         e.resolved = clone(this.st.templates[e.id]) || {};
         if (this.live.results.length) this.recheckLive();
         return;
       }
       if (!e.id) return this.toast('先填点位ID', 'err');
-      await this.call(() => this.api('/api/event/save', { id: e.id, old_id: e.oldId, raw: this.edRaw() }), '保存成功，以后测试这个点位自动复用');
+      await this.call(() => this.api('/api/event/save', { id: e.id, old_id: e.oldId, raw: this.edRaw() }), okMsg || undefined);
       e.isNew = false; e.oldId = e.id; e.dirty = false;
       await this.refresh(); const ev = await this.api('/api/event?id=' + e.id); e.resolved = ev.resolved; e.file = ev.file;
       if (this.live.results.length) this.recheckLive();
@@ -1517,7 +1655,7 @@ function app() {
       if (name && !srv && !dr) return this.toast(`用例「${name}」不存在了`, 'warn');
       const c = clone(srv || { expect: [] });
       this.caseEd = { name: name || '', old: name || '', desc: c.desc || '', addId: '', rows: this.caseRows(c), dirty: false,
-                      sources: [].concat(c.sources || []).map(String), batchField: '', batchText: '', draftAt: 0, modOpen: false };
+                      sources: [].concat(c.sources || []).map(String), batchField: '', batchText: '', batchTexts: {}, draftAt: 0, modOpen: false };
       if (dr?.data) {
         const d = dr.data, e = this.caseEd;
         e.name = d.name ?? e.name; e.desc = d.desc ?? ''; e.sources = [].concat(d.sources || []).map(String);
@@ -1775,22 +1913,32 @@ function app() {
         { n: 6, t: '开始实时调试', d: '对着清单在手机上操作', done: false, go: () => c?.old ? this.useCaseInLive(c.old) : this.toast('先保存用例', 'warn') },
       ];
     },
-    // ---- 批量设置：只列「需要人工确认（看操作）」的字段，其它字段有规则自动比对 ----
+    // ---- 批量设置：直接列出本用例所有「看操作」字段与多点位共用枚举字段，点一次所有点位立刻生效 ----
     _rowHas(row, name) { return this._rowAll(row).some(f => f.name === name); },
+    _isBatchCandidate(f) { return !!(f.ask || (Object.keys(f.options || {}).length && (!f.kind || f.kind === 'enum'))); },
     get caseBatchFields() {
-      const c = this.caseEd; if (!c || c.rows.length < 2) return [];
+      const c = this.caseEd; if (!c || !c.rows.length) return [];
       const m = new Map();
       c.rows.forEach(row => this._rowAll(row).forEach(f => {
-        if (!f.ask) return;
-        const e = m.get(f.name) || { name: f.name, desc: '', options: {}, rows: 0, set: 0 };
-        e.rows++; if (!e.desc && f.desc) e.desc = f.desc;
+        if (!this._isBatchCandidate(f)) return;
+        const e = m.get(f.name) || { name: f.name, desc: '', options: {}, rows: 0, set: 0, ask: false };
+        e.rows++;
+        if (f.ask) e.ask = true;
+        if (!e.desc && f.desc) e.desc = f.desc;
         Object.entries(f.options || {}).forEach(([k, v]) => { if (!(k in e.options) || (!e.options[k] && v)) e.options[k] = v; });
         if (this._vals((row.values || {})[f.name]).length) e.set++;
         m.set(f.name, e);
       }));
-      return [...m.values()].filter(e => e.rows >= 2).sort((a, b) => b.rows - a.rows || a.name.localeCompare(b.name));
+      return [...m.values()]
+        .filter(e => e.ask || e.rows >= 2)
+        .sort((a, b) => ((b.ask && b.set < b.rows ? 1 : 0) - (a.ask && a.set < a.rows ? 1 : 0)) || (b.ask - a.ask) || (b.rows - a.rows) || a.name.localeCompare(b.name));
     },
-    _askRows(name) { return (this.caseEd?.rows || []).filter(r => this._rowAll(r).some(f => f.name === name && f.ask)); },
+    get caseBatchUnsetCount() {
+      return this.caseBatchFields.filter(e => e.ask && e.set < e.rows).length;
+    },
+    _askRows(name) {
+      return (this.caseEd?.rows || []).filter(r => this._rowAll(r).some(f => f.name === name && this._isBatchCandidate(f)));
+    },
     get caseBatchCur() { return this.caseBatchFields.find(f => f.name === this.caseEd?.batchField) || null; },
     batchOn(name, k) {
       const rows = this._askRows(name);
@@ -1802,11 +1950,12 @@ function app() {
       const clear = val === null || val === '' || (Array.isArray(val) && !val.length);
       rows.forEach(r => { const v = { ...(r.values || {}) }; if (clear) delete v[name]; else v[name] = val; r.values = v; });
       c.dirty = true;
-      this.toast(clear ? `已清除 ${rows.length} 个点位的「${name}」期望值` : `已给 ${rows.length} 个点位设置 ${name} = ${Array.isArray(val) ? val.join(' / ') : val}`, 'ok');
+      this.toast(clear ? `已清除 ${rows.length} 个点位的「${name}」期望值` : `已给 ${rows.length} 个点位统一设置 ${name} = ${Array.isArray(val) ? val.join(' / ') : val}`, 'ok');
     },
     batchToggle(name, k) { this.batchApply(name, this.batchOn(name, k) ? null : String(k)); },
     batchText(name) {
-      const list = String(this.caseEd?.batchText || '').split('|').map(x => x.trim()).filter(Boolean);
+      const raw = (this.caseEd?.batchTexts || {})[name] ?? this.caseEd?.batchText ?? '';
+      const list = String(raw).split('|').map(x => x.trim()).filter(Boolean);
       this.batchApply(name, list.length <= 1 ? (list[0] || null) : list);
     },
     addCaseRow() {
@@ -2012,6 +2161,30 @@ function app() {
       const q = this.rep.q.trim().toLowerCase();
       return r.results.filter(x => this.repKeep(x, this.rep.view) && (!q || JSON.stringify(x).toLowerCase().includes(q)));
     },
+    get repAskGroups() {
+      const r = this.rep.cur; if (!r) return [];
+      const m = new Map();
+      (r.results || []).forEach(ev => (ev.fields || []).forEach(f => {
+        if (f.status !== 'ASK') return;
+        const val = norm(f.actual);
+        const key = f.field + '::' + val;
+        const g = m.get(key) || { key, field: f.field, actual: val, desc: f.desc || '', items: [] };
+        g.items.push({ seq: ev.seq, field: f.field });
+        m.set(key, g);
+      }));
+      return [...m.values()].sort((a, b) => b.items.length - a.items.length);
+    },
+    async reviewAskGroup(g, status) {
+      if (!this.rep.cur || !g?.items?.length) return;
+      const updated = await this.call(() => this.api('/api/report/review_batch', {
+        name: this.rep.cur.name, items: g.items, status, note: '',
+      }), `已批量将 ${g.items.length} 条 ${g.field}=${g.actual || '(空)'} 判定为「${status === 'PASS' ? '通过' : '有问题'}」`);
+      this.rep.cur = updated;
+      if (this.st?.reports) {
+        const it = this.st.reports.find(x => x.name === updated.name);
+        if (it) it.summary = updated.summary;
+      }
+    },
 
     // ---------------- 规则文件 ----------------
     async openYaml() { const d = await this.call(() => this.api('/api/spec_text')); this.yv = { files: d.files, cur: 0, edit: false, text: '' }; },
@@ -2030,8 +2203,8 @@ function app() {
       this.toast(`已复制点位 ID ${id}` + (nm ? `（${nm}）` : ''), 'ok');
       this.act(`复制点位 ID ${id}` + (nm ? `「${nm}」` : ''));
     },
-    // 纯前端操作也记进运行日志（fire-and-forget）
-    act(text) { if (!this.srvOff) fetch('/api/log/act', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) }).catch(() => {}); },
+    // 运行日志只记录系统运行状态与系统提示，不再记录前端点击行为
+    act() {},
     async copyText(t) { try { await navigator.clipboard.writeText(t); this.toast('已复制', 'ok'); } catch (e) { this.toast('复制失败，请手动选择复制', 'err'); } },
     yamlHtml(t) {
       const esc = x => x.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -2052,14 +2225,13 @@ function app() {
       await this.refresh(); this.openReport(r.report);
     },
 
-    // ---------------- 小岛后台服务日志与优雅退出 ----------------
+    // ---------------- 小岛系统运行日志与优雅退出 ----------------
     get srvErrCount() { return this.st?.server?.err_count || 0; },
     get srvLogErrTotal() { return (this.srvLog?.lines || []).filter(x => x.level === 'ERROR').length; },
     get srvLogHasErr() { return this.srvLogErrTotal > 0; },
     get srvLogLines() {
-      const ls = this.srvLog?.lines || [];
-      if (this.srvLog?.onlyErr) return ls.filter(x => x.level === 'ERROR');
-      if (this.srvLog?.onlyAct) return ls.filter(x => x.level === 'ACT' || x.level === 'WARN');
+      const ls = (this.srvLog?.lines || []).filter(x => x.level !== 'ACT');
+      if (this.srvLog?.onlyErr) return ls.filter(x => x.level === 'ERROR' || x.level === 'WARN');
       return ls;
     },
     get srvLogText() {
@@ -2069,14 +2241,14 @@ function app() {
       const hadUnread = this.srvErrCount > 0;
       const d = await this.call(() => this.api('/api/server_log?seen=1'));
       if (this.st?.server) this.st.server.err_count = 0;
-      this.srvLog = { ...d, onlyErr: hadUnread && (d.lines || []).some(x => x.level === 'ERROR'), onlyAct: false };
+      this.srvLog = { ...d, onlyErr: hadUnread && (d.lines || []).some(x => x.level === 'ERROR') };
       this.$nextTick(() => { const b = document.getElementById('srv-log-body'); if (b) b.scrollTop = b.scrollHeight; });
     },
     async reloadServerLog() {
-      const onlyErr = !!this.srvLog?.onlyErr, onlyAct = !!this.srvLog?.onlyAct;
+      const onlyErr = !!this.srvLog?.onlyErr;
       const d = await this.call(() => this.api('/api/server_log?seen=1'));
       if (this.st?.server) this.st.server.err_count = 0;
-      this.srvLog = { ...d, onlyErr, onlyAct };
+      this.srvLog = { ...d, onlyErr };
       this.$nextTick(() => { const b = document.getElementById('srv-log-body'); if (b) b.scrollTop = b.scrollHeight; });
     },
     async clearServerLog() {
