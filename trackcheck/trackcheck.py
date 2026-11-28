@@ -751,6 +751,19 @@ class Sources:
     def has(self, name):
         return name in self.spec.sources
 
+    def close_dbs(self):
+        for conn, _ in list(self._db.values()):
+            try:
+                conn.close()
+            except Exception:
+                pass
+        self._db.clear()
+
+    def close(self):
+        self.close_dbs()
+        self._json.clear()
+        self._merge_meta.clear()
+
     def merge_info(self, name):
         return self._merge_meta.get(name)
 
@@ -796,11 +809,12 @@ class Sources:
                 p_used = pn
                 break
             except SourceError as e:
-                p_errs.append(str(e))
+                msg = str(e)
+                p_errs.append(msg if msg.startswith(pn) else f"{pn}: {msg}")
         fb_data, fb_err = None, None
         if fb_name:
             if not self.has(fb_name):
-                fb_err = f"{fb_name} 未定义"
+                fb_err = f"{fb_name} 不存在"
             else:
                 try:
                     fb_data = self.json(fb_name, seen)
@@ -829,7 +843,7 @@ class Sources:
             out = copy.deepcopy(p_data)
             self._merge_meta[name] = {
                 "primary_used": p_used, "fallback": fb_name or None, "mode": "primary_only",
-                "fallback_error": fb_err, "replaced_keys": [], "appended_keys": [], "kept_keys": [],
+                "primary_errors": p_errs, "fallback_error": fb_err, "replaced_keys": [], "appended_keys": [], "kept_keys": [],
             }
             self._json[name] = (ck, out)
             return out
@@ -917,7 +931,7 @@ class Sources:
 
         self._merge_meta[name] = {
             "primary_used": p_used, "fallback": fb_name, "mode": "merged",
-            "replaced_keys": replaced, "appended_keys": appended, "kept_keys": kept,
+            "primary_errors": p_errs, "replaced_keys": replaced, "appended_keys": appended, "kept_keys": kept,
         }
         self._json[name] = (ck, out)
         return out
@@ -956,7 +970,10 @@ class Sources:
             except Exception as e:
                 raise SourceError(f"{name}: JSON 解析失败 {path}: {e}")
         elif t == "sqlite_json":
-            conn, mt = self._conn(cfg["db"])
+            db_name = str(cfg.get("db") or "").strip()
+            if not db_name or not self.has(db_name):
+                raise SourceError(f"{name}: 依赖的数据库「{db_name or '未指定'}」不存在或已被删除")
+            conn, mt = self._conn(db_name)
             key = (cfg["sql"], mt)
             c = self._json.get(name)
             if c and c[0] == key:

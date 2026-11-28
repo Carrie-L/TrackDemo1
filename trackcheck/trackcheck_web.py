@@ -180,10 +180,12 @@ class _LogStream(io.TextIOBase):
 
 SERVER_LOG = ServerLogger()
 
+DEFAULT_PACKAGE = "com.honor.browser"
+
 SKELETON = {
     "options": {"null_equals_empty": True, "strict_fields": False},
     "log": {"pattern": tc.DEFAULT_PATTERN, "logcat_args": []},
-    "device": {"package": "com.example.app", "pull": []},
+    "device": {"package": DEFAULT_PACKAGE, "pull": []},
     "sources": {},
     "dicts": {},
     "templates": {},
@@ -877,12 +879,51 @@ class App:
         self.live = None
         self.api_cap = None
         self._ds_lock = threading.RLock()
+        self._ds_fp = None
         self.spec_error = None
         self.reload()
 
     # ---- 基础 ----
+    def _scan_ds_fp(self):
+        d = getattr(getattr(self, "spec", None), "datasource_dir", None)
+        if not d or not os.path.isdir(d):
+            return ()
+        items = []
+        try:
+            for f in sorted(os.listdir(d)):
+                if f.startswith("."):
+                    continue
+                p = os.path.join(d, f)
+                try:
+                    st = os.stat(p)
+                    if os.path.isfile(p):
+                        items.append((f, st.st_mtime_ns, st.st_size))
+                except OSError:
+                    pass
+        except OSError:
+            pass
+        return tuple(items)
+
+    def sync_auto_sources(self, force=False):
+        """实时同步 datasources 目录的文件增删改，并刷新依赖它的特殊数据源缓存"""
+        if not hasattr(self, "spec"):
+            return False
+        fp = self._scan_ds_fp()
+        if not force and fp == self._ds_fp:
+            return False
+        self._ds_fp = fp
+        if hasattr(self, "sources") and self.sources:
+            self.sources.close()
+        auto_sources = tc.scan_datasources(self.spec.datasource_dir)
+        explicit = self.spec.raw.get("sources") or {}
+        self.spec.sources = {**auto_sources, **explicit}
+        self.sources = tc.Sources(self.spec)
+        return True
+
     def reload(self):
         self.store.load()
+        if hasattr(self, "sources") and self.sources:
+            self.sources.close()
         try:
             self.spec = tc.Spec(self.store.path)
             self.spec_error = None
@@ -891,6 +932,7 @@ class App:
             if not hasattr(self, "spec"):
                 raise
         self.sources = tc.Sources(self.spec)
+        self._ds_fp = self._scan_ds_fp()
 
     def spec_with(self, eid, raw):
         s = copy.copy(self.spec)
@@ -933,29 +975,69 @@ class App:
                  if os.path.basename(p).lower() != "server.log"]
         return [{"path": p, "name": os.path.basename(p), **file_info(p)} for p in files[:40]]
 
-    def source_status(self):
+    def source_status(self, force=False):
+        self.sync_auto_sources(force=force)
         out = {}
-        for name, cfg in self.spec.sources.items():
-            t = cfg.get("type", "json_file")
-            info = {"type": t}
-            try:
-                if t in ("json_file", "sqlite"):
-                    info.update(file_info(self.sources._file(cfg["path"])))
-                elif t == "merged_json":
-                    obj = self.sources.json(name)
-                    mi = self.sources.merge_info(name) or {}
-                    keys = list(obj.keys())[:8] if isinstance(obj, dict) else [f"[{len(obj)}]"]
-                    pr = mi.get("primary_used") or "兜底全量"
-                    fb = mi.get("fallback") or ""
-                    p_txt = f"主源 {pr}" + (f" + 兜底 {fb}" if fb else "")
-                    info.update(exists=True, path=p_txt, keys=keys, merge_info=mi)
-                else:
-                    obj = self.sources.json(name)
-                    keys = list(obj.keys())[:8] if isinstance(obj, dict) else [f"[{len(obj)}]"]
-                    info.update(exists=True, path=f"{cfg.get('db')} · SQL", keys=keys)
-            except Exception as e:
-                info.update(exists=False, error=str(e))
-            out[name] = info
+        try:
+            for name, cfg in self.spec.sources.items():
+                t = cfg.get("type", "json_file")
+                info = {"type": t}
+                try:
+                    if t == "json_file":
+                        p = self.sources._file(cfg["path"])
+                        info.update(file_info(p))
+                        obj = self.sources.json(name)
+                        info["keys"] = list(obj.keys())[:8] if isinstance(obj, dict) else [f"[{len(obj)}]"]
+                    elif t == "sqlite":
+                        p = self.sources._file(cfg["path"])
+                        info.update(file_info(p))
+                        uri = "file:" + urllib_quote(os.path.abspath(p).replace("\\", "/")) + "?mode=ro"
+                        conn = sqlite3.connect(uri, uri=True)
+                        try:
+                            conn.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone()
+                        finally:
+                            conn.close()
+                    elif t == "merged_json":
+                        primaries = tc.Sources._str_list(cfg.get("primary") or cfg.get("sources"))
+                        fb_cfg = str(cfg.get("fallback") or "").strip()
+                        info["deps"] = primaries + ([fb_cfg] if fb_cfg else [])
+                        obj = self.sources.json(name)
+                        mi = self.sources.merge_info(name) or {}
+                        keys = list(obj.keys())[:8] if isinstance(obj, dict) else [f"[{len(obj)}]"]
+                        pr = mi.get("primary_used") or "兜底全量"
+                        fb = mi.get("fallback") or ""
+                        p_txt = f"主源 {pr}" + (f" + 兜底 {fb}" if fb else "")
+                        p_errs = mi.get("primary_errors") or []
+                        fb_err = mi.get("fallback_error") or ""
+                        mode = mi.get("mode") or "merged"
+                        degraded, warn = False, ""
+                        if mode == "fallback_all":
+                            degraded = True
+                            warn = f"主源不可用（{'；'.join(p_errs)}），当前降级仅用兜底「{fb}」"
+                        elif mode == "primary_only" and fb_cfg:
+                            degraded = True
+                            warn = f"兜底源「{fb_cfg}」不可用（{fb_err}），当前仅用主源「{mi.get('primary_used')}」"
+                        elif p_errs:
+                            degraded = True
+                            warn = f"高优先级主源不可用（{'；'.join(p_errs)}），已自动切到「{mi.get('primary_used')}」"
+                        info.update(exists=True, degraded=degraded, warn=warn, path=p_txt, keys=keys, merge_info=mi)
+                    elif t == "sqlite_json":
+                        db_name = str(cfg.get("db") or "").strip()
+                        info["deps"] = [db_name] if db_name else []
+                        if not db_name or db_name not in self.spec.sources:
+                            raise tc.SourceError(f"依赖的数据库「{db_name or '未指定'}」不存在或已被删除")
+                        obj = self.sources.json(name)
+                        keys = list(obj.keys())[:8] if isinstance(obj, dict) else [f"[{len(obj)}]"]
+                        info.update(exists=True, path=f"{db_name} · SQL", keys=keys)
+                    else:
+                        obj = self.sources.json(name)
+                        keys = list(obj.keys())[:8] if isinstance(obj, dict) else [f"[{len(obj)}]"]
+                        info.update(exists=True, path=f"{cfg.get('db')} · SQL", keys=keys)
+                except Exception as e:
+                    info.update(exists=False, error=str(e))
+                out[name] = info
+        finally:
+            self.sources.close_dbs()
         return out
 
     @staticmethod
@@ -1121,6 +1203,8 @@ class App:
 
     # ---- GET ----
     def api_state(self, q):
+        force = str(q.get("force") or "") in ("1", "true", "yes")
+        self.sync_auto_sources(force=force)
         s = self.spec
         reps = self.reports(20)
         last = {}
@@ -1381,21 +1465,27 @@ class App:
         return rep
 
     def api_source_json(self, q):
+        self.sync_auto_sources()
         try:
             name = q["name"]
             return {"data": self.sources.json(name), "merge_info": self.sources.merge_info(name)}
         except tc.SourceError as e:
             raise ApiError(str(e))
+        finally:
+            self.sources.close_dbs()
 
     def api_db_schema(self, q):
+        self.sync_auto_sources()
         try:
             conn = self.sources.db(q.get("db") or None)
+            out = {}
+            for (t,) in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"):
+                out[t] = [r[1] for r in conn.execute(f'PRAGMA table_info("{t}")')]
+            return {"tables": out}
         except tc.SourceError as e:
             raise ApiError(str(e))
-        out = {}
-        for (t,) in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"):
-            out[t] = [r[1] for r in conn.execute(f'PRAGMA table_info("{t}")')]
-        return {"tables": out}
+        finally:
+            self.sources.close_dbs()
 
     def api_devices(self, q):
         try:
@@ -1594,9 +1684,10 @@ class App:
         return [k for k, v in self.spec.sources.items() if v.get("type") == "sqlite"]
 
     def _db_ro(self, name):
+        self.sync_auto_sources()
         dbs = self._db_names()
         if not dbs:
-            raise ApiError("还没有数据库：去「数据源」页从手机拉一个 .db，或把 .db 放进数据源目录")
+            raise ApiError("还没有数据库：点右上角「导入 DB」上传本地 .db，或去「数据源」页从手机拉取")
         name = name if name in dbs else dbs[0]
         try:
             path = self.sources._file(str(self.spec.sources[name].get("path") or ""))
@@ -1607,6 +1698,10 @@ class App:
         return name, path, conn
 
     def api_db_tables(self, q):
+        force = str(q.get("force") or "") in ("1", "true", "yes")
+        self.sync_auto_sources(force=force)
+        if not self._db_names():
+            return {"db": "", "dbs": [], "path": "", "tables": [], "size": 0, "empty": True}
         name, path, conn = self._db_ro(q.get("db"))
         try:
             tables = []
@@ -1621,7 +1716,61 @@ class App:
         finally:
             conn.close()
         return {"db": name, "dbs": self._db_names(), "path": path, "tables": tables,
-                "size": os.path.getsize(path) if os.path.exists(path) else 0}
+                "size": os.path.getsize(path) if os.path.exists(path) else 0, "empty": False}
+
+    def _validate_sqlite_bytes(self, data, fn):
+        if len(data) < 100 or data[:16] != b"SQLite format 3\x00":
+            raise ApiError(f"「{fn}」不是有效的 SQLite 数据库文件（请选择 .db / .sqlite / .sqlite3 文件）")
+        tmp = None
+        try:
+            fd, tmp = tempfile.mkstemp(prefix="tc_dbchk_", suffix=".db")
+            try:
+                os.write(fd, data)
+            finally:
+                os.close(fd)
+            uri = "file:" + urllib_quote(os.path.abspath(tmp).replace("\\", "/")) + "?mode=ro"
+            conn = sqlite3.connect(uri, uri=True)
+            try:
+                rows = conn.execute("SELECT count(*) FROM sqlite_master WHERE type IN ('table','view') AND name NOT LIKE 'sqlite_%'").fetchone()
+                return int(rows[0] if rows else 0)
+            finally:
+                conn.close()
+        except sqlite3.Error as e:
+            raise ApiError(f"「{fn}」数据库无法读取或已损坏：{e}")
+        finally:
+            if tmp and os.path.exists(tmp):
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+
+    def api_db_import(self, b):
+        import base64
+        fn = os.path.basename(str(b.get("filename") or "")).strip()
+        if not fn:
+            raise ApiError("请选择要导入的数据库文件")
+        raw = b.get("raw")
+        if raw is None:
+            raw = base64.b64decode(b.get("b64") or "")
+        if not raw:
+            raise ApiError(f"「{fn}」文件内容为空")
+        n_tables = self._validate_sqlite_bytes(raw, fn)
+        d = self._ds_dir()
+        p = os.path.join(d, fn)
+        with self._ds_lock:
+            self.sources.close()
+            for suffix in ("-wal", "-shm", "-journal"):
+                if os.path.exists(p + suffix):
+                    try:
+                        os.remove(p + suffix)
+                    except OSError:
+                        pass
+            with open(p, "wb") as f:
+                f.write(raw)
+            self.sync_auto_sources(force=True)
+        auto = tc.scan_datasources(d)
+        ds_name = next((k for k, v in auto.items() if os.path.basename(v["path"]) == fn), re.sub(r"[^\w]", "_", os.path.splitext(fn)[0]) or "db")
+        return {"ok": True, "file": fn, "name": ds_name, "tables": n_tables, "dbs": self._db_names()}
 
     def api_db_query(self, b):
         sql = str(b.get("sql") or "").strip().rstrip(";").strip()
@@ -2397,6 +2546,8 @@ class App:
         self.store.put_top("device", dev)
 
     def api_ds_list(self, q):
+        force = str(q.get("force") or "") in ("1", "true", "yes")
+        self.sync_auto_sources(force=force)
         d = self._ds_dir()
         auto = tc.scan_datasources(d)
         by_file = {os.path.basename(v["path"]): k for k, v in auto.items()}
@@ -2410,9 +2561,12 @@ class App:
             info = {"file": f, "name": name, "type": auto.get(name, {}).get("type") if name else None, **file_info(p)}
             if info["type"] == "sqlite":
                 try:
-                    conn = sqlite3.connect(f"file:{p}?mode=ro", uri=True)
-                    info["tables"] = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name != 'android_metadata' ORDER BY name")]
-                    conn.close()
+                    uri = "file:" + urllib_quote(os.path.abspath(p).replace("\\", "/")) + "?mode=ro"
+                    conn = sqlite3.connect(uri, uri=True)
+                    try:
+                        info["tables"] = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name != 'android_metadata' ORDER BY name")]
+                    finally:
+                        conn.close()
                 except sqlite3.Error as e:
                     info["error"] = str(e)
             elif info["type"] == "json_file":
@@ -2432,7 +2586,6 @@ class App:
         return {"dir": d, "files": files, "api_presets": dev.get("api_presets") or []}
 
     def api_ds_upload(self, b):
-        import base64
         fn = os.path.basename(str(b.get("filename") or "")).strip()
         if not fn:
             raise ApiError("文件名为空")
@@ -2444,12 +2597,26 @@ class App:
                 raise ApiError(f"{fn} 不是合法的 JSON：{e}")
             stem = os.path.splitext(fn)[0]
             rec = self._save_json_ds(stem, obj, source="上传文件")
-            return {"ok": True, "file": rec["file"]}
-        p = os.path.join(self._ds_dir(), fn)
-        with open(p, "wb") as f:
-            f.write(data)
-        self.reload()
-        return {"ok": True, "file": fn}
+            return {"ok": True, "file": rec["file"], "name": rec["name"], "type": "json_file"}
+        if fn.lower().endswith((".db", ".sqlite", ".sqlite3")):
+            self._validate_sqlite_bytes(data, fn)
+        d = self._ds_dir()
+        p = os.path.join(d, fn)
+        with self._ds_lock:
+            self.sources.close()
+            for suffix in ("-wal", "-shm", "-journal"):
+                if os.path.exists(p + suffix):
+                    try:
+                        os.remove(p + suffix)
+                    except OSError:
+                        pass
+            with open(p, "wb") as f:
+                f.write(data)
+            self.sync_auto_sources(force=True)
+        auto = tc.scan_datasources(d)
+        ds_name = next((k for k, v in auto.items() if os.path.basename(v["path"]) == fn), os.path.splitext(fn)[0])
+        ds_type = auto.get(ds_name, {}).get("type")
+        return {"ok": True, "file": fn, "name": ds_name, "type": ds_type}
 
     def api_ds_paste(self, b):
         name = re.sub(r"[^\w\-]", "_", str(b.get("name") or "").strip())
@@ -2472,11 +2639,12 @@ class App:
             if not os.path.isfile(hp):
                 raise ApiError("该历史记录不存在")
             dst = os.path.join(self._ds_dir(), fname)
+            self.sources.close()
             shutil.copyfile(hp, dst)
             meta = self._hist_meta_load()
             meta["active"][fname] = hname
             self._hist_meta_save(meta)
-            self.reload()
+            self.sync_auto_sources(force=True)
             rec = meta.get("records", {}).get(hname) or {}
             return {"ok": True, "file": fname, "hist": hname, "time": rec.get("time") or hname}
 
@@ -2564,10 +2732,12 @@ class App:
         p = os.path.join(self._ds_dir(), fn)
         if not os.path.isfile(p):
             raise ApiError("文件不存在")
-        for suffix in ("", "-wal", "-shm", "-journal"):
-            if os.path.exists(p + suffix):
-                os.remove(p + suffix)
-        self.reload()
+        with self._ds_lock:
+            self.sources.close()
+            for suffix in ("", "-wal", "-shm", "-journal"):
+                if os.path.exists(p + suffix):
+                    os.remove(p + suffix)
+            self.sync_auto_sources(force=True)
         return {"ok": True}
 
     def api_device_dbs(self, b):
@@ -2588,6 +2758,7 @@ class App:
             raise ApiError("需要包名和至少一个数据库")
         adb = tc.adb_base(self.spec, b.get("serial"))
         ok, errs = [], []
+        self.sources.close()
         for db in dbs:
             try:
                 self._backup_ds(db)
@@ -2619,7 +2790,8 @@ class App:
                 pass
 
     def api_pull_apidump(self, b):
-        pkg = str(b.get("package") or (self.spec.device or {}).get("package") or "").strip()
+        saved_pkg = str((self.spec.device or {}).get("package") or "").strip()
+        pkg = str(b.get("package") or ("" if saved_pkg == "com.example.app" else saved_pkg) or DEFAULT_PACKAGE).strip()
         if not pkg:
             raise ApiError("先填 App 包名")
         adb = tc.adb_base(self.spec, b.get("serial"))
@@ -3261,6 +3433,8 @@ def describe_action(app, fn, a, res):
         return "重新加载了规则文件"
     if fn == "api_db_query":
         return f"数据库浏览器查询 {a.get('db')}：返回 {len(r.get('rows') or [])} 行"
+    if fn == "api_db_import":
+        return f"数据库浏览器导入数据库 {a.get('filename')}（共 {r.get('tables', 0)} 张表）"
     if fn == "api_dict_tag":
         return "给字典映射打上点位标签"
     if fn == "api_server_log_clear":
@@ -3275,6 +3449,7 @@ ROUTES = {
     ("GET", "/api/server_log"): "api_server_log", ("POST", "/api/server_log/clear"): "api_server_log_clear",
     ("POST", "/api/shutdown"): "api_shutdown",
     ("GET", "/api/db/tables"): "api_db_tables", ("POST", "/api/db/query"): "api_db_query",
+    ("POST", "/api/db/import"): "api_db_import",
     ("POST", "/api/event/save"): "api_event_save", ("POST", "/api/event/delete"): "api_event_delete",
     ("POST", "/api/dict/save"): "api_dict_save", ("POST", "/api/source/save"): "api_source_save",
     ("POST", "/api/case/save"): "api_case_save", ("POST", "/api/template/save"): "api_template_save",
@@ -3353,7 +3528,12 @@ def make_handler(app):
                 try:
                     if method == "POST":
                         n = int(self.headers.get("Content-Length") or 0)
-                        arg = json.loads(self.rfile.read(n) or b"{}")
+                        ctype = (self.headers.get("Content-Type") or "").lower()
+                        if u.path == "/api/db/import" and not ctype.startswith("application/json"):
+                            qs = {k: v[0] for k, v in parse_qs(u.query).items()}
+                            arg = {"filename": unquote(qs.get("filename", "")), "raw": self.rfile.read(n)}
+                        else:
+                            arg = json.loads(self.rfile.read(n) or b"{}")
                     else:
                         arg = {k: v[0] for k, v in parse_qs(u.query).items()}
                     if fn in ("api_live_poll", "api_devices"):

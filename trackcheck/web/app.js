@@ -61,11 +61,11 @@ function app() {
     imp: { fileName: '', content: '', preview: null, choices: {}, mode: 'merge', overwriteNames: true, catalog: true },
     fm: null, ai: null,
     evd: { entries: [], docs: [], untracked: [], docsDir: '', modules: [], mod: '', q: '', filter: 'all', open: null, loaded: false, overwrite: false, result: null, limit: 100 },
-    ds: { files: [], dir: '', pkg: '', dbs: [], devDbs: null, pasteName: '', pasteText: '', showPaste: false, log: '', advanced: false, drag: false, presets: [], histOpen: {}, keysOpen: {} },
-    dbv: { db: '', dbs: [], path: '', size: 0, tables: [], q: '', cur: '', open: {}, sql: '', res: null, err: '', offset: 0, limit: 100, tableHist: {}, histScope: 'table', mode: '', selCols: [], colQ: '', colMode: 'select', resQ: '', sortCol: -1, sortAsc: true, loading: false, opener: false },
+    ds: { files: [], dir: '', pkg: 'com.honor.browser', _pkgInit: false, dbs: [], devDbs: null, pasteName: '', pasteText: '', showPaste: false, log: '', advanced: false, drag: false, refreshing: false, presets: [], histOpen: {}, keysOpen: {} },
+    dbv: { db: '', dbs: [], path: '', size: 0, tables: [], q: '', cur: '', open: {}, sql: '', res: null, err: '', offset: 0, limit: 100, tableHist: {}, histScope: 'table', mode: '', selCols: [], colQ: '', colMode: 'select', resQ: '', sortCol: -1, sortAsc: true, loading: false, importing: false, drag: false, opener: false },
     apiCap: { running: false, endpoint: '', name: '', tag: '', clear: true, lines: 0, captured: [], error: '', showText: false, rawLog: '' },
     dsPreview: null,
-    note: { openLive: null, openRep: null, checks: {}, x: null, y: null }, vw: window.innerWidth,
+    note: { openLive: false, openRep: false, checks: {}, x: null, y: null }, vw: window.innerWidth,
     srcEd: null, caseEd: null, caseFilter: '', caseModQ: '', caseModOpen: false, caseModEmptyQ: '', caseModEmptyOpen: false, caseAddOpen: false, copiedRow: null, settingsEd: null, pullLog: '', caseDrafts: {}, caseFlash: '', caseView: false,
     rep: { list: [], cur: null, view: 'bad', showUnk: false, q: '', expandAll: false, listFilter: 'all', listQ: '', evId: '' }, rv: null, yv: null,
     srvLog: null, quitAsk: false, srvOff: false,
@@ -92,10 +92,11 @@ function app() {
         const el = e.target?.closest?.('[data-copy-id]'); if (!el) return;
         e.preventDefault(); e.stopPropagation(); this.copyId(el.dataset.copyId, el);
       }, true);
-      window.addEventListener('storage', e => {          // 多个标签页之间同步「复制的点位」、草稿与数据库 SQL 回填
+      window.addEventListener('storage', e => {          // 多个标签页之间同步「复制的点位」、草稿、数据源变更与数据库 SQL 回填
         if (e.key === 'tc_copied_row') { try { this.copiedRow = e.newValue ? JSON.parse(e.newValue) : null; } catch (x) {} }
         if (e.key === 'tc_case_drafts') this._loadDrafts();
         if (e.key === 'tc_dbv_sql_pick' && e.newValue) { try { this.onSqlFromDbv(JSON.parse(e.newValue)); } catch (x) {} }
+        if (e.key === 'tc_ds_changed') { this.refresh(true); if (this.page === 'sources') this.loadDs(true); }
       });
       const h = location.hash.slice(1); if (NAV.some(n => n.id === h)) this.go(h, true);
       window.addEventListener('hashchange', () => { const x = location.hash.slice(1); if (NAV.some(n => n.id === x) && x !== this.page) this.go(x, true); });
@@ -120,7 +121,7 @@ function app() {
       if (this.page === 'cases' && p !== 'cases') this.saveCaseDraft();
       this.page = p; if (!quiet) location.hash = p; window.scrollTo({ top: 0 });
       if (p === 'evdict') this.loadEvdict();   // 每次进来都重新检查 docs 目录
-      if (p === 'sources') { this.loadDs(); this.pollApiCap(true); if (!this.settingsEd && this.st) this.openSettings(); }
+      if (p === 'sources') { this.loadDs(true); this.refresh(true); this.pollApiCap(true); if (!this.settingsEd && this.st) this.openSettings(); }
       if (p === 'cases' && !this.caseEd) this.restoreLastCase();
       if (p === 'share') this.loadDataInfo();
     },
@@ -194,10 +195,10 @@ function app() {
     pickQuickEvent(id) { this.searchOpen = false; this.loadEditor(id); this.go('rules'); },
     pickQuickDict(e) { this.searchOpen = false; this.evd.q = e.id; this.evd.open = e.id; this.evd.filter = 'all'; this.go('evdict'); },
     pickQuickCase(name) { this.searchOpen = false; this.openCase(name); },
-    async refresh() {
+    async refresh(force = false) {
       // 刷新前记下用例编辑器是否有未保存修改：没改过的话，服务器数据变了（实时调试存回用例 / 导入 / 改 YAML）就跟着同步
       const ce = this.caseEd, ceClean = !!(ce && ce.old && !ce.dirty && !this._caseDiffers(ce));
-      try { this.st = await this.api('/api/state'); } catch (e) { this.toast(e.message, 'err'); }
+      try { this.st = await this.api('/api/state' + (force ? '?force=1' : '')); } catch (e) { this.toast(e.message, 'err'); }
       if (ceClean && this.caseEd === ce) {
         const srv = this.st?.cases?.[ce.old];
         if (!srv) this.closeCaseEd();
@@ -221,7 +222,12 @@ function app() {
           });
         }
       }
-      if (this.st && !this.ds.pkg) { this.ds.pkg = this.st.device.package || ''; this.ds.dbs = [...(this.st.device.dbs || [])]; }
+      if (this.st && !this.ds._pkgInit) {
+        const savedPkg = String(this.st.device?.package || '').trim();
+        this.ds.pkg = (!savedPkg || savedPkg === 'com.example.app') ? 'com.honor.browser' : savedPkg;
+        this.ds.dbs = [...(this.st.device?.dbs || [])];
+        this.ds._pkgInit = true;
+      }
     },
     async loadDevices() {
       try { const d = await this.api('/api/devices'); this.devices = d.devices; this.devErr = d.error || '';
@@ -1202,13 +1208,30 @@ function app() {
     // ---------------- 数据源 ----------------
     chipsCut(list, key, n = 8) { list = list || []; return this.ds.keysOpen[key] ? list : list.slice(0, n); },
     toggleChips(key) { this.ds.keysOpen = { ...this.ds.keysOpen, [key]: !this.ds.keysOpen[key] }; },
-    async loadDs() {
+    _notifyDsChanged() { try { localStorage.setItem('tc_ds_changed', String(Date.now())); } catch (e) {} },
+    async loadDs(force = false) {
       try {
-        const d = await this.api('/api/ds/list');
+        const d = await this.api('/api/ds/list' + (force ? '?force=1' : ''));
         this.ds.files = d.files || [];
         this.ds.dir = d.dir || '';
         this.ds.presets = d.api_presets || [];
       } catch (e) { this.toast(e.message, 'err'); }
+    },
+    async refreshDs() {
+      this.ds.refreshing = true;
+      try {
+        await this.loadDs(true);
+        await this.refresh(true);
+        const sp = Object.keys(this.st?.sources_explicit || {});
+        const bad = sp.filter(k => !this.st?.source_status?.[k]?.exists).length;
+        const deg = sp.filter(k => this.st?.source_status?.[k]?.exists && this.st?.source_status?.[k]?.degraded).length;
+        const msg = bad ? `已刷新数据源状态（${bad} 个不可用` + (deg ? `，${deg} 个降级` : '') + '）'
+          : deg ? `已刷新数据源状态（${deg} 个部分依赖缺失，已降级）`
+          : '数据源状态已刷新';
+        this.toast(msg, bad ? 'warn' : 'ok');
+      } finally {
+        this.ds.refreshing = false;
+      }
     },
     inferApiName(ep) {
       let s = String(ep || '').trim();
@@ -1240,7 +1263,7 @@ function app() {
       const r = await this.call(() => this.api('/api/ds/api_capture/stop', {}), '已停止抓取接口');
       this.apiCap.running = false;
       if (r.captured) this.apiCap.captured = r.captured;
-      await this.loadDs(); this.refresh();
+      await this.loadDs(true); await this.refresh(true); this._notifyDsChanged();
     },
     async pollApiCap(force) {
       if (!force && !this.apiCap.running) return;
@@ -1259,7 +1282,7 @@ function app() {
         if ((d.captured || []).length > prev) {
           const top = d.captured[0];
           this.toast(`已捕获接口数据「${top.file}」（默认已设为最新）`, 'ok');
-          await this.loadDs(); this.refresh();
+          await this.loadDs(true); await this.refresh(true); this._notifyDsChanged();
         } else if (wasRunning && !d.running && d.error) {
           this.toast('接口监听异常：' + d.error, 'err');
         }
@@ -1275,7 +1298,7 @@ function app() {
       this.apiCap.captured = [...(r.saved || []).slice().reverse(), ...(this.apiCap.captured || [])].slice(0, 30);
       this.apiCap.rawLog = '';
       this.toast(`已提取 ${r.count} 条响应并保存为「${r.latest.file}」（默认使用最新）`, 'ok');
-      await this.loadDs(); this.refresh();
+      await this.loadDs(true); await this.refresh(true); this._notifyDsChanged();
     },
     toggleDsHist(file) {
       this.ds.histOpen = { ...this.ds.histOpen, [file]: !this.ds.histOpen[file] };
@@ -1283,7 +1306,7 @@ function app() {
     async useDsHistory(file, hist) {
       const r = await this.call(() => this.api('/api/ds/history/use', { file, hist }));
       this.toast(`「${file}」已加载 ${r?.time || hist} 的历史记录`, 'ok');
-      await this.loadDs(); this.refresh();
+      await this.loadDs(true); await this.refresh(true); this._notifyDsChanged();
     },
     async delDsHistory(file, hist) {
       if (!confirm(`删除历史记录 ${hist}？`)) return;
@@ -1315,29 +1338,37 @@ function app() {
           const b64 = await new Promise(res => { const rd = new FileReader(); rd.onload = () => res(String(rd.result).split(',')[1] || ''); rd.readAsDataURL(f); });
           await this.call(() => this.api('/api/ds/upload', { filename: f.name, b64 }), `已放入数据源目录：${f.name}`).catch(() => {});
         }
-        await this.loadDs(); this.refresh();
+        await this.loadDs(true); await this.refresh(true); this._notifyDsChanged();
       })();
     },
     async pasteDs() {
       await this.call(() => this.api('/api/ds/paste', { name: this.ds.pasteName, text: this.ds.pasteText }), '已保存接口 JSON');
-      Object.assign(this.ds, { pasteName: '', pasteText: '', showPaste: false }); await this.loadDs(); this.refresh();
+      Object.assign(this.ds, { pasteName: '', pasteText: '', showPaste: false }); await this.loadDs(true); await this.refresh(true); this._notifyDsChanged();
     },
     async delDs(f) {
       if (!confirm(`删除数据源文件 ${f}？`)) return;
-      await this.call(() => this.api('/api/ds/delete', { file: f }), '已删除'); await this.loadDs(); this.refresh();
+      await this.call(() => this.api('/api/ds/delete', { file: f }), '已删除'); await this.loadDs(true); await this.refresh(true); this._notifyDsChanged();
     },
     async listDevDbs() {
       const r = await this.call(() => this.api('/api/device/dbs', { package: this.ds.pkg, serial: this.live.serial }));
-      this.ds.devDbs = r.dbs; if (!this.ds.dbs.length) this.ds.dbs = r.dbs.filter(x => /\.db$/.test(x)).slice(0, 1);
+      const raw = r.dbs || [];
+      const honor = raw.find(x => x.toLowerCase() === 'honor_browser.db') || raw.find(x => x.toLowerCase().endsWith('/honor_browser.db'));
+      this.ds.devDbs = honor ? [honor, ...raw.filter(x => x !== honor)] : raw;
+      if (honor) {
+        this.ds.dbs = [honor];
+      } else {
+        const keep = (this.ds.dbs || []).filter(x => raw.includes(x));
+        this.ds.dbs = keep.length ? keep : raw.filter(x => /\.db$/i.test(x)).slice(0, 1);
+      }
     },
     async pullDbs() {
       const r = await this.call(() => this.api('/api/pull/dbs', { package: this.ds.pkg, dbs: this.ds.dbs, serial: this.live.serial }));
       this.toast(`已拉取 ${r.ok.join('、')}` + (r.errors.length ? `；失败：${r.errors.join('；')}` : ''), r.errors.length ? 'warn' : 'ok');
-      await this.loadDs(); this.refresh();
+      await this.loadDs(true); await this.refresh(true); this._notifyDsChanged();
     },
     async pullApiDump() {
       const r = await this.call(() => this.api('/api/pull/apidump', { package: this.ds.pkg, serial: this.live.serial }), '已拉取接口 dump');
-      this.ds.log = r.log; await this.loadDs(); this.refresh();
+      this.ds.log = r.log; await this.loadDs(true); await this.refresh(true); this._notifyDsChanged();
     },
     get jsonSourceNames() {
       const cur = this.srcEd?.name || '';
@@ -1394,7 +1425,7 @@ function app() {
       }
       if (s.root) v.root = s.root;
       await this.call(() => this.api('/api/source/save', { name: s.name, old_name: s.old, value: v }), '数据源已保存');
-      this.srcEd = null; this.refresh();
+      this.srcEd = null; await this.loadDs(true); await this.refresh(true); this._notifyDsChanged();
     },
     async delItem(section, name) {
       if (!confirm(`确定删除 ${name}？`)) return;
@@ -1580,13 +1611,13 @@ function app() {
     },
     get noteShow() { return (this.page === 'live' || this.page === 'reports') && this.noteItems.length > 0; },
     get noteOpen() {
-      if (this.page === 'live') return this.note.openLive !== null ? this.note.openLive : (this.vw >= 1980 || !this.live.results.length);
-      if (this.page === 'reports') return this.note.openRep !== null ? this.note.openRep : (this.vw >= 1980);
+      if (this.page === 'live') return !!this.note.openLive;
+      if (this.page === 'reports') return !!this.note.openRep;
       return false;
     },
     setNoteOpen(v) {
-      if (this.page === 'live') this.note.openLive = v;
-      else if (this.page === 'reports') this.note.openRep = v;
+      if (this.page === 'live') this.note.openLive = !!v;
+      else if (this.page === 'reports') this.note.openRep = !!v;
     },
     get notePosStyle() {
       const h = 'height: calc(100vh - 136px); min-height: 460px; max-height: 780px;';
@@ -2062,15 +2093,44 @@ function app() {
       this.srvOff = true;
     },
 
-    // ---------------- 数据库浏览器（新标签页 #dbview，只读，按表保存成功 SQL 历史） ----------------
-    async loadDbv(db) {
+    // ---------------- 数据库浏览器（新标签页 #dbview，只读，支持导入 DB，按表保存成功 SQL 历史） ----------------
+    async loadDbv(db, force = false) {
       const v = this.dbv; v.loading = true; v.err = '';
       try {
-        const d = await this.api('/api/db/tables' + (db ? '?db=' + encodeURIComponent(db) : ''));
-        Object.assign(v, { db: d.db, dbs: d.dbs, path: d.path, size: d.size, tables: d.tables });
-        if (v.cur && !d.tables.some(t => t.name === v.cur)) v.cur = '';
+        const p = new URLSearchParams();
+        if (db) p.set('db', db);
+        if (force) p.set('force', '1');
+        const d = await this.api('/api/db/tables' + (p.toString() ? '?' + p : ''));
+        Object.assign(v, { db: d.db || '', dbs: d.dbs || [], path: d.path || '', size: d.size || 0, tables: d.tables || [] });
+        if (d.empty || !d.tables?.length) { v.cur = ''; v.res = null; }
+        else if (v.cur && !d.tables.some(t => t.name === v.cur)) { v.cur = ''; v.res = null; }
       } catch (e) { v.err = e.message; v.tables = []; }
       v.loading = false;
+    },
+    async dbvImportFile(ev) {
+      const files = [...(ev.target?.files || ev.dataTransfer?.files || [])];
+      if (ev.target?.value !== undefined) ev.target.value = '';
+      this.dbv.drag = false;
+      const f = files[0]; if (!f) return;
+      this.dbv.importing = true; this.dbv.err = '';
+      try {
+        const resp = await fetch('/api/db/import?filename=' + encodeURIComponent(f.name), {
+          method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: f,
+        });
+        const d = await resp.json().catch(() => ({ error: '导入失败：服务器返回异常' }));
+        if (!resp.ok) throw new Error(d.error || resp.statusText);
+        Object.assign(this.dbv, { cur: '', res: null, selCols: [], colQ: '', mode: '', err: '', q: '' });
+        await this.loadDbv(d.name, true);
+        try { history.replaceState(null, '', '#dbview?db=' + encodeURIComponent(d.name)); } catch (e) {}
+        const first = this.dbv.tables[0];
+        if (first) this.dbvOpenTable(first);
+        this._notifyDsChanged();
+        this.toast(`已导入数据库「${d.name}」（共 ${d.tables} 张表）`, 'ok');
+      } catch (e) {
+        this.toast(e.message || '导入数据库失败', 'err');
+      } finally {
+        this.dbv.importing = false;
+      }
     },
     get dbvTables() {
       const q = this.dbv.q.trim().toLowerCase();
@@ -2312,7 +2372,10 @@ function app() {
       this.page = 'dbview'; this.dbv.opener = !!window.opener;
       document.title = '数据库浏览器 · 埋点小岛';
       try { this.dbv.tableHist = JSON.parse(localStorage.getItem('tc_dbv_hist_v2') || '{}') || {}; } catch (e) { this.dbv.tableHist = {}; }
-      this.loadDbv(qs.get('db') || '').then(() => {
+      window.addEventListener('storage', e => {
+        if (e.key === 'tc_ds_changed') this.loadDbv(this.dbv.db, true);
+      });
+      this.loadDbv(qs.get('db') || '', true).then(() => {
         const t = this.dbv.tables.find(x => x.name === qs.get('t')) || this.dbv.tables[0];
         if (t) this.dbvOpenTable(t);
       });

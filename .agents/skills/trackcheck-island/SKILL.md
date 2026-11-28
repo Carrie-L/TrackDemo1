@@ -156,3 +156,7 @@ uv run --no-project C:\Users\windows\.gemini\config\skills\trackcheck-island\scr
    - `api_open_path` 返回 `sandbox: true` 时，前端直接复制到剪贴板并清晰提示「已复制路径：xxx」，不再展示误导性的“已打开资源管理器”。
 6. **Alpine 状态读取顺序陷阱**：
    - 如 `openServerLog()` 中若先清零 `this.st.server.err_count = 0`，后面再判断 `this.srvErrCount > 0` 会永远为 `false`。类似“标记已读 + 根据旧状态决定 UI 默认 tab”的逻辑，务必先用局部变量缓存旧值（`const hadUnread = this.srvErrCount > 0`）。
+7. **Windows SQLite 文件锁与数据源依赖联动**：
+   - `Sources.close_dbs()` 必须在 `source_status()` / `api_source_json` / `api_db_schema` 的 `finally` 中释放连接，并在删除/覆盖 `.db` 前先 `self.sources.close()` 且清理旧 `-wal/-shm/-journal`，否则 Windows 会触发 `WinError 32` 且无法在资源管理器删改 `.db`。
+   - `App.sync_auto_sources(force=...)` 按目录文件 `(name, mtime_ns, size)` 指纹自动重扫并重建 `tc.Sources`，保障删除/重新放入 `.db` 或 `.json` 后，引用它们的 `sqlite_json` / `merged_json` 立即更新为「可用 / 降级可用 / 不可用」。
+   - 默认拉库包名为 `com.honor.browser`，手机端发现 `honor_browser.db` 时置顶并默认只选该库；`#dbview` 支持直接通过 `POST /api/db/import`（原始二进制流）导入本地 `.db` 并自动打开。

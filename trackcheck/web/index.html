@@ -125,8 +125,17 @@
     <div x-show="st?.spec_error" x-cloak class="panel flex items-center gap-2 border-berry-200 bg-berry-50 p-4 text-sm text-berry-700"><img class="pic h-6 w-6" src="/static/icons/warn.png" alt="">规则文件解析出错：<span x-text="st?.spec_error"></span></div>
 
     <main class="flex-1">
-      <!-- ========== 数据库浏览器（新标签页 #dbview：左表栏 + 中多选列/SQL/完整结果 + 右完整SQL历史栏） ========== -->
-      <section x-show="page === 'dbview'" x-cloak class="flex h-[calc(100vh-40px)] flex-col gap-3.5">
+      <!-- ========== 数据库浏览器（新标签页 #dbview：支持导入 DB、左表栏 + 中多选列/SQL/完整结果 + 右完整SQL历史栏） ========== -->
+      <section x-show="page === 'dbview'" x-cloak class="relative flex h-[calc(100vh-40px)] flex-col gap-3.5"
+               @dragover.prevent="dbv.drag = true" @dragleave.self="dbv.drag = false" @drop.prevent="dbvImportFile($event)">
+        <!-- 拖入 .db 时的海岛柔光蒙层 -->
+        <div x-show="dbv.drag" x-cloak class="pointer-events-none fixed inset-4 z-50 grid place-items-center rounded-[32px] border-4 border-dashed border-leaf-400 bg-[#F2FBF0]/90 backdrop-blur-sm">
+          <div class="text-center">
+            <img class="pic mx-auto h-16 w-16" src="/static/icons/db.png" alt="">
+            <div class="mt-2 text-lg font-black text-wood-700">松开即可导入并查看数据库</div>
+            <div class="mt-1 text-xs font-bold text-ink-soft">支持 .db / .sqlite / .sqlite3，导入后自动同步到数据源目录</div>
+          </div>
+        </div>
         <div class="panel flex flex-wrap items-center gap-3 px-4 py-2.5">
           <img class="pic h-9 w-9" src="/static/icons/db.png" alt="">
           <div class="min-w-0">
@@ -134,19 +143,37 @@
               <span class="text-lg font-black text-wood-700">数据库浏览器</span>
               <span class="rounded-full bg-[#EAF8E6] px-2 py-0.5 text-[11.5px] font-bold text-leaf-700">只读安全模式</span>
             </div>
-            <div class="truncate font-mono text-xs text-ink-soft" x-text="dbv.path ? dbv.path + ' · ' + fmtSize(dbv.size || 0) : '只读查看，不会改动数据库'"></div>
+            <div class="truncate font-mono text-xs text-ink-soft" x-text="dbv.path ? dbv.path + ' · ' + fmtSize(dbv.size || 0) : '只读查看，不会改动数据库 · 支持直接导入或拖入 .db 文件'"></div>
           </div>
-          <select class="input !w-44 !py-1.5 font-mono text-sm" x-show="dbv.dbs.length > 1" :value="dbv.db" @change="dbv.cur = ''; dbv.res = null; dbv.selCols = []; dbv.mode = ''; loadDbv($event.target.value)">
+          <select class="input !w-48 !py-1.5 font-mono text-sm" x-show="dbv.dbs.length > 1" :value="dbv.db" @change="dbv.cur = ''; dbv.res = null; dbv.selCols = []; dbv.mode = ''; loadDbv($event.target.value, true)">
             <template x-for="d in dbv.dbs" :key="d"><option :value="d" :selected="d === dbv.db" x-text="d"></option></template>
           </select>
           <span class="chip bg-[#EBF7FE] font-mono text-wood-700" x-show="dbv.dbs.length === 1" x-text="dbv.db"></span>
           <div class="ml-auto flex items-center gap-2">
             <span class="subtle hidden xl:inline">单击单元格复制完整值 · 单击表头复制列名 · Ctrl+Enter 运行</span>
-            <button class="btn-wood btn-xs" @click="loadDbv(dbv.db)"><img class="pic h-4 w-4" src="/static/icons/refresh.png" alt="">刷新表</button>
+            <label class="btn-leaf btn-xs cursor-pointer" :class="dbv.importing && 'pointer-events-none opacity-60'" title="选择本地 .db / .sqlite 文件导入并只读查看">
+              <svg class="ico h-3.5 w-3.5"><use :href="icon('upload')"></use></svg>
+              <span x-text="dbv.importing ? '导入中…' : '导入 DB'"></span>
+              <input type="file" class="hidden" accept=".db,.sqlite,.sqlite3,.db3" @change="dbvImportFile($event)">
+            </label>
+            <button class="btn-wood btn-xs" x-show="dbv.dbs.length" @click="loadDbv(dbv.db, true)"><img class="pic h-4 w-4" src="/static/icons/refresh.png" alt="">刷新表</button>
           </div>
         </div>
         <div x-show="dbv.err && !dbv.tables.length" class="panel border-berry-200 bg-berry-50 p-4 text-sm text-berry-700" x-text="dbv.err"></div>
-        <div class="grid min-h-0 flex-1 grid-cols-1 gap-4 lg:grid-cols-[235px_1fr_290px]">
+        <!-- 还没有任何数据库时的友好导入引导 -->
+        <div x-show="!dbv.dbs.length && !dbv.loading" class="panel grid flex-1 place-items-center p-10 text-center">
+          <div class="max-w-md space-y-4">
+            <img class="pic mx-auto h-20 w-20" src="/static/icons/db.png" alt="">
+            <div class="text-xl font-black text-wood-700">还没有导入数据库</div>
+            <p class="text-sm leading-relaxed text-ink-soft">点击下方按钮或直接把本地 <span class="code">.db</span> / <span class="code">.sqlite</span> 文件拖到这个页面里，就能立即只读查看表结构、多选列查询并保存 SQL 历史（同时自动同步到「数据源」目录）。</p>
+            <label class="btn-leaf inline-flex cursor-pointer px-5 py-2.5 text-sm">
+              <svg class="ico h-4 w-4"><use :href="icon('upload')"></use></svg>
+              <span x-text="dbv.importing ? '正在导入…' : '导入本地 .db 文件查看'"></span>
+              <input type="file" class="hidden" accept=".db,.sqlite,.sqlite3,.db3" @change="dbvImportFile($event)">
+            </label>
+          </div>
+        </div>
+        <div x-show="dbv.dbs.length" class="grid min-h-0 flex-1 grid-cols-1 gap-4 lg:grid-cols-[235px_1fr_290px]">
           <!-- 左栏：数据表列表（清爽干净，无多余角标） -->
           <div class="panel flex min-h-0 flex-col p-3">
             <div class="relative mb-2">
@@ -1265,11 +1292,11 @@
             <div class="title text-lg"><img class="pic h-7 w-7" src="/static/icons/phone.png" alt="">从手机拉数据库</div>
             <p class="subtle mt-1">root 测试机或 debug 包都可以，只需要包名。拉下来的数据库放进数据源目录；实时调试时还会用它在事件前后自动拍快照。</p>
             <div class="mt-4 flex gap-2">
-              <input class="input font-mono" placeholder="App 包名，如 com.example.app" x-model="ds.pkg" @keydown.enter="listDevDbs()">
+              <input class="input font-mono" placeholder="App 包名，如 com.honor.browser" x-model="ds.pkg" @keydown.enter="listDevDbs()">
               <button class="btn-wood" :disabled="busy || !ds.pkg" @click="listDevDbs()"><svg class="ico h-4 w-4"><use :href="icon('search')"></use></svg>查看手机上的数据库</button>
             </div>
             <div class="mt-3" x-show="ds.devDbs">
-              <div class="label">选择要拉取的数据库</div>
+              <div class="label" x-text="'选择要拉取的数据库（已选 ' + ds.dbs.length + ' / ' + (ds.devDbs?.length || 0) + '）'"></div>
               <div class="flex flex-wrap gap-2">
                 <template x-for="db in ds.devDbs || []" :key="db">
                   <label class="chip cursor-pointer border transition" :class="ds.dbs.includes(db) ? 'border-leaf-400 bg-leaf-500 text-white' : 'border-wood-200 bg-white text-wood-700'">
@@ -1309,9 +1336,9 @@
             <div class="title"><img class="pic h-6 w-6" src="/static/icons/data.png" alt="">数据源目录</div>
             <button class="path-link font-mono text-xs text-ink-soft" title="点击在文件管理器中打开数据源目录" @click="openPath(ds.dir)"><svg class="ico h-3.5 w-3.5 shrink-0 text-wood-500"><use :href="icon('folder-open')"></use></svg><span class="break-all" x-text="ds.dir"></span></button>
             <div class="ml-auto flex items-center gap-2">
-              <button class="btn-wood btn-xs" x-show="ds.files.some(f => f.type === 'sqlite')" @click="openDbBrowser()"><svg class="ico h-3.5 w-3.5"><use :href="icon('table')"></use></svg>数据库浏览器</button>
+              <button class="btn-wood btn-xs" @click="openDbBrowser()"><svg class="ico h-3.5 w-3.5"><use :href="icon('table')"></use></svg>数据库浏览器</button>
               <button class="btn-wood btn-xs" @click="openSrc()"><svg class="ico h-3.5 w-3.5"><use :href="icon('plus')"></use></svg>添加特殊数据源</button>
-              <button class="btn-ghost btn-xs" @click="loadDs(); refresh()"><img class="pic h-5 w-5" src="/static/icons/refresh.png" alt="">刷新</button>
+              <button class="btn-ghost btn-xs" :disabled="ds.refreshing" @click="refreshDs()"><img class="pic h-5 w-5" :class="ds.refreshing && 'animate-spin'" src="/static/icons/refresh.png" alt="">刷新</button>
             </div>
           </div>
           <div class="grid grid-cols-1 gap-3 md:grid-cols-2 2xl:grid-cols-3">
@@ -1374,7 +1401,9 @@
                   <img class="pic h-5 w-5" :src="pic(s.type === 'sqlite_json' ? 'db' : s.type === 'merged_json' ? 'data' : 'yaml')" alt="">
                   <span class="truncate font-mono font-bold text-wood-700" x-text="name"></span>
                   <span class="chip bg-white/80 text-wood-600" x-text="srcBadge(s)"></span>
-                  <span class="chip" :class="st?.source_status?.[name]?.exists ? 'st-PASS' : 'st-FAIL'" x-text="st?.source_status?.[name]?.exists ? '可用' : '不可用'" :title="st?.source_status?.[name]?.error"></span>
+                  <span class="chip" :class="!st?.source_status?.[name]?.exists ? 'st-FAIL' : (st?.source_status?.[name]?.degraded ? 'st-WARN' : 'st-PASS')"
+                        x-text="!st?.source_status?.[name]?.exists ? '不可用' : (st?.source_status?.[name]?.degraded ? '降级可用' : '可用')"
+                        :title="st?.source_status?.[name]?.error || st?.source_status?.[name]?.warn || ''"></span>
                   <div class="ml-auto flex shrink-0 items-center gap-0.5">
                     <button class="btn-ghost btn-xs !px-1.5" x-show="st?.source_status?.[name]?.exists && s.type !== 'sqlite'" title="预览合并 / 查询到的 JSON 数据" @click="previewDsJson(name, srcSummary(s))"><svg class="ico h-3.5 w-3.5"><use :href="icon('eye')"></use></svg></button>
                     <button class="btn-ghost btn-xs !px-1.5" title="编辑特殊数据源" @click="openSrc(name)"><svg class="ico h-3.5 w-3.5"><use :href="icon('pencil')"></use></svg></button>
@@ -1388,7 +1417,8 @@
                 </div>
                 <div class="mt-2 flex flex-wrap gap-1" x-show="s.type !== 'merged_json' && st?.source_status?.[name]?.keys"><template x-for="k in chipsCut(st?.source_status?.[name]?.keys, 'sp:' + name)"><span class="chip bg-white font-mono font-normal text-ink-soft" x-text="k"></span></template>
                   <button type="button" class="chip border border-dashed border-[#C7E6FA] bg-[#F7FCFF] text-ink-soft hover:text-wood-700" x-show="(st?.source_status?.[name]?.keys || []).length > 8" @click="toggleChips('sp:' + name)" x-text="ds.keysOpen['sp:' + name] ? '收起' : '+' + ((st?.source_status?.[name]?.keys || []).length - 8) + ' 个'"></button></div>
-                <div class="mt-2 text-xs text-berry-600" x-show="st?.source_status?.[name]?.error" x-text="st?.source_status?.[name]?.error"></div>
+                <div class="mt-2 rounded-xl bg-[#FFF8E6] px-2.5 py-1.5 text-xs font-bold text-[#9A6E12]" x-show="st?.source_status?.[name]?.warn" x-text="st?.source_status?.[name]?.warn"></div>
+                <div class="mt-2 text-xs font-bold text-berry-600" x-show="st?.source_status?.[name]?.error" x-text="st?.source_status?.[name]?.error"></div>
               </div>
             </template>
           </div>
@@ -1406,7 +1436,9 @@
               <template x-for="[name, s] in Object.entries(st?.sources_explicit || {})" :key="name">
                 <div class="mb-2 flex items-center gap-2 rounded-xl bg-white/70 px-3 py-2 text-sm">
                   <span class="font-mono font-bold" x-text="name"></span><span class="truncate text-xs text-ink-soft" x-text="srcSummary(s)"></span>
-                  <span class="chip ml-auto" :class="st.source_status[name]?.exists ? 'st-PASS' : 'st-FAIL'" x-text="st.source_status[name]?.exists ? '可用' : '不可用'" :title="st.source_status[name]?.error"></span>
+                  <span class="chip ml-auto" :class="!st.source_status[name]?.exists ? 'st-FAIL' : (st.source_status[name]?.degraded ? 'st-WARN' : 'st-PASS')"
+                        x-text="!st.source_status[name]?.exists ? '不可用' : (st.source_status[name]?.degraded ? '降级可用' : '可用')"
+                        :title="st.source_status[name]?.error || st.source_status[name]?.warn || ''"></span>
                   <button class="btn-ghost btn-xs" @click="openSrc(name)"><svg class="ico h-3.5 w-3.5"><use :href="icon('pencil')"></use></svg></button>
                 </div>
               </template>
@@ -1778,9 +1810,9 @@
                 <img class="pointer-events-none select-none absolute right-2 bottom-1.5 z-0 h-[15px] w-[15px] object-contain opacity-[0.26] transition-opacity duration-200 group-hover:opacity-[0.38]"
                      :src="pic(!r.summary.ok ? 'fail' : (r.summary.ask || r.summary.warn ? 'bud' : 'sprout'))"
                      alt="">
-                <!-- 左侧状态圆点：绿=通过，胡萝卜橙=失败，紫=待确认 -->
-                <span class="relative z-10 h-2.5 w-2.5 shrink-0 rounded-full ring-2 ring-white"
-                      :class="!r.summary.ok ? 'bg-[#F28C4B]' : (r.summary.ask || r.summary.warn ? 'bg-[#9A7FD0]' : 'bg-[#63A950]')"></span>
+                <!-- 左侧状态圆点（带柔和微光）：失败 #f8715f，通过 #9eda61，待确认 #d8a5dc -->
+                <span class="relative z-10 h-2.5 w-2.5 shrink-0 rounded-full ring-2 ring-white/90"
+                      :class="!r.summary.ok ? 'bg-[#f8715f] shadow-[0_0_8px_2px_rgba(248,113,95,0.55)]' : (r.summary.ask || r.summary.warn ? 'bg-[#d8a5dc] shadow-[0_0_8px_2px_rgba(216,165,220,0.65)]' : 'bg-[#9eda61] shadow-[0_0_8px_2px_rgba(158,218,97,0.6)]')"></span>
                 <div class="relative z-10 min-w-0 flex-1">
                   <div class="flex items-center gap-1.5">
                     <span class="whitespace-nowrap text-[14px] font-normal text-[#b4a69a] tabular-nums" :title="r.time" x-text="r.time"></span>
@@ -1808,16 +1840,12 @@
           <div class="flex min-w-0 flex-col gap-5">
             <div class="panel-pad">
               <div class="flex flex-wrap items-center gap-2.5">
-                <div class="inline-flex items-center gap-2 rounded-full border border-[#F2E2C9] bg-[#FFF5E4] py-1 pl-3 pr-1.5 text-sm font-black text-wood-700 shadow-[inset_0_1px_0_rgba(255,255,255,0.85)]">
+                <div class="inline-flex items-center gap-2.5 rounded-full border border-[#F2E2C9] bg-[#FFF5E4] py-1.5 pl-3 pr-3.5 text-sm font-black text-wood-700 shadow-[inset_0_1px_0_rgba(255,255,255,0.85)]">
                   <img class="pic h-6 w-6" src="/static/icons/report.png" alt="">
                   <span x-text="(rep.cur.summary.ok ? (rep.cur.summary.ask ? '待确认' : '本轮通过') : '本次校验') + ' · ' + (rep.cur.meta.generated_at || '')"></span>
-                  <span class="grid h-7 w-7 shrink-0 place-items-center rounded-full text-white ring-2 ring-white shadow-sm"
-                        :class="!rep.cur.summary.ok ? 'bg-[#E55E7A]' : (rep.cur.summary.ask || rep.cur.summary.warn ? 'bg-[#9A7FD0]' : 'bg-[#63A950]')"
-                        :title="!rep.cur.summary.ok ? '存在不通过项' : (rep.cur.summary.ask ? '含待确认项' : '本轮全部通过')">
-                    <svg x-show="rep.cur.summary.ok && !rep.cur.summary.ask && !rep.cur.summary.warn" class="h-4 w-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 10.5l3.6 3.7 7.4-8"/></svg>
-                    <svg x-show="!rep.cur.summary.ok" class="h-4 w-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" aria-hidden="true"><path d="M5.5 5.5l9 9M14.5 5.5l-9 9"/></svg>
-                    <span x-show="rep.cur.summary.ok && (rep.cur.summary.ask || rep.cur.summary.warn)" class="text-sm font-black leading-none">?</span>
-                  </span>
+                  <span class="inline-block h-3.5 w-3.5 shrink-0 rounded-full ring-2 ring-white/85"
+                        :class="!rep.cur.summary.ok ? 'bg-[#f8715f] shadow-[0_0_0_4px_rgba(248,113,95,0.22),0_0_12px_3px_rgba(248,113,95,0.58)]' : (rep.cur.summary.ask || rep.cur.summary.warn ? 'bg-[#d8a5dc] shadow-[0_0_0_4px_rgba(216,165,220,0.28),0_0_12px_3px_rgba(216,165,220,0.68)]' : 'bg-[#9eda61] shadow-[0_0_0_4px_rgba(158,218,97,0.24),0_0_12px_3px_rgba(158,218,97,0.62)]')"
+                        :title="!rep.cur.summary.ok ? '存在不通过项' : (rep.cur.summary.ask ? '含待确认项' : '本轮全部通过')"></span>
                 </div>
                 <span class="rounded-full border border-pond-200 bg-pond-100/90 px-2.5 py-0.5 text-xs font-bold text-wood-700" x-show="rep.cur.meta.case" x-text="'用例：' + rep.cur.meta.case"></span>
                 <button x-show="rep.cur.meta.log" class="path-link font-mono text-xs text-ink-soft" :title="'点击定位日志文件：' + rep.cur.meta.log" @click="openPath(rep.cur.meta.log)"><svg class="ico h-3.5 w-3.5 text-wood-400"><use :href="icon('folder-open')"></use></svg><span x-text="fileName(rep.cur.meta.log)"></span></button>
@@ -2252,10 +2280,12 @@
     <div class="flex min-h-0 flex-1 flex-col overflow-y-auto bg-gradient-to-b from-white via-white to-[#F7FCFF] px-2.5 py-2 scroll-soft">
       <div class="space-y-1.5">
         <template x-for="it in noteItems" :key="'n-' + it.id">
-          <div class="group flex items-start gap-2 rounded-2xl border px-2.5 py-2 transition"
-               :class="noteChecked(it.id) ? 'border-[#CDEBC2] bg-[#F3FBF0]' : 'border-[#EAF4FB] bg-white shadow-[0_2px_8px_-6px_rgba(72,148,196,0.22)] hover:border-[#C5E5FA] hover:bg-[#F7FCFF]'">
-            <input type="checkbox" class="chk-xs mt-1" :checked="noteChecked(it.id)" @change="toggleNoteCheck(it)" :title="noteChecked(it.id) ? '取消勾选' : '核对无误，勾掉'">
-            <button type="button" class="min-w-0 flex-1 text-left" @click="noteGo(it)" :title="(it.name || it.id) + '（点击定位）'">
+          <div class="group flex cursor-pointer select-none items-start gap-2 rounded-2xl border px-2.5 py-2 transition"
+               :class="noteChecked(it.id) ? 'border-[#CDEBC2] bg-[#F3FBF0]' : 'border-[#EAF4FB] bg-white shadow-[0_2px_8px_-6px_rgba(72,148,196,0.22)] hover:border-[#C5E5FA] hover:bg-[#F7FCFF]'"
+               :title="noteChecked(it.id) ? '点击取消勾选' : '点击勾选已核对'"
+               @click="toggleNoteCheck(it)">
+            <input type="checkbox" class="chk-xs mt-1" :checked="noteChecked(it.id)" @click.stop @change="toggleNoteCheck(it)" :title="noteChecked(it.id) ? '取消勾选' : '核对无误，勾掉'">
+            <div class="min-w-0 flex-1 text-left">
               <div class="flex items-center gap-1.5">
                 <span class="grid h-4 w-4 shrink-0 place-items-center rounded-full text-[10px] font-black"
                       :class="noteChecked(it.id) ? 'bg-[#63A950] text-white' : 'bg-[#EBF7FE] text-wood-700'"
@@ -2270,7 +2300,7 @@
                       :class="{ MISS: 'bg-[#F3EFE8] text-ink-faint', PASS: 'bg-[#E3F6E5] text-[#2F7D44]', FAIL: 'bg-[#FFE6EE] text-[#C24669]', ASK: 'bg-[#DFF3FE] text-wood-700', UNKNOWN: 'bg-[#F3EFE8] text-ink-soft' }[it.st]"
                       x-text="noteStText(it.st) + (it.n ? ' ×' + it.n : '')"></span>
               </div>
-            </button>
+            </div>
           </div>
         </template>
       </div>
